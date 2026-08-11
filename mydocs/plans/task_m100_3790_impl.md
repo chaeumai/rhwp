@@ -5,13 +5,14 @@
 - **브랜치**: Stage 1 `codex/issue-3790-ci-impact-shadow`, Stage 2·2.5
   `codex/issue-3790-shadow-observation`, Stage 3 `codex/issue-3790-stage3-frontend`, Stage 4
   `issue-3790-stage4-rust-native`, Stage 5A `issue-3790-stage5a-codeql-safety`, Stage 5B
-  `issue-3790-stage5b-codeql-languages`
+  `issue-3790-stage5b-codeql-languages`, Stage 5B canary `issue-3790-stage5b-codeql-canary`
 - **절차 상태**: Stage 3·4 merge·canary 완료. Stage 5A는 원격 SARIF·시간 비교, 최종 CI·GHAS와 리뷰
   보정을 통과해 PR #4341 merge commit `8ea92cdad120`으로 완료했다. Stage 5A 전용 worktree와 브랜치는
   정리했고 Stage 2.6 controller 유일본은 보존했다. 2026-08-11 `devel` required context가 `Build & Test`
   하나임을 직접 확인한 뒤 Stage 5B의 trusted-base 언어 선택과 고정 check identity를 구현·focused
-  검증했다. Draft PR #4519에는 최신 devel `32ecfd113690`을 반영하고 reviewer `edwardkim` 지정과
-  archive 검토 기록을 완료했으며, 최종 head의 수동 full CI·CodeQL 확인을 남겼다.
+  검증했다. PR #4519는 최신 head의 full CI·CodeQL을 통과해 merge commit `c64b5c70a700`으로 완료했다.
+  현재는 그 merge 직후 frontend-only canary에서 같은 SHA의 selective/full 실행과 최종 절감량을
+  실측하는 단계다.
 
 ## Stage 1 — shadow classifier
 
@@ -249,7 +250,13 @@ Stage 3 merge 직후 frontend-only canary PR #3951에서 unit/package/render 진
 
 ## Stage 5B 이후
 
-- Stage 3 merge 직후 첫 canary와 Stage 5 canary의 selective/full 결과를 비교한다.
+- Stage 5B canary는 `shortcut-map.ts`와 회귀 테스트의 frontend unit 변경을 사용한다. 작업 기록 문서를
+  함께 포함해도 `mydocs/**`는 review-only 경로이므로 classifier 결과는 `classified:studio-unit`,
+  `codeql_languages=javascript-typescript`여야 한다.
+- 일반 PR selective에서 frontend unit과 JavaScript/TypeScript CodeQL만 실제 실행하고, Rust·Native Skia·
+  package·Canvas 및 Python/Rust CodeQL은 기대한 skip/no-op 상태여야 한다. 같은 head SHA를 수동 CI·CodeQL·
+  Render Diff로 실행해 full 기준선을 만들고 Stage 3·4 canary와 최종 runner-minute·wall time을 비교한다.
+- 결과를 #3790과 canary PR에 기록한 뒤 measurement-only PR은 merge하지 않고 close한다.
 - default-branch controller는 Stage 3~5 진리표가 확정된 뒤 축소 구현하고 정상 릴리즈로 main에 등록한다.
 - artifact 재시도는 #3892의 논리 label `slow/1/2/3`별 test archive, archive expected count와 worker run
   count를 함께 다루고, draft 경량화와 별도 PR로 진행한다.
