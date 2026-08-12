@@ -53,6 +53,7 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
+import { shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -803,7 +804,10 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
       if (wasm.getSourceFormat() === 'hwpx') {
         const report = wasm.getValidationWarnings();
         console.log(`[validation] ${report.count} warnings`, report.summary);
-        if (report.count > 0) {
+        if (report.count > 0 && !shouldPromptValidationWarnings()) {
+          // 임베드: 묻지 않고 원본 그대로 연다. 자동 보정은 저장본까지 바꾼다.
+          console.log('[validation] embedded — 자동 보정 없이 원본 그대로 진행');
+        } else if (report.count > 0) {
           const choice = await showValidationModalIfNeeded(report);
           console.log(`[validation] user choice: ${choice}`);
           if (choice === 'auto-fix') {
@@ -854,6 +858,11 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
     await loadStoredLocalFonts();
     const report = analyzeDocumentFonts(docInfo.fontsUsed);
     if (!report.shouldPromptLocalAccess) return;
+    if (!shouldPromptLocalFonts()) {
+      // 임베드: 묻지 않고 번들 대체 글꼴로 표시한다.
+      console.log('[fonts] embedded — 로컬 글꼴 감지를 건너뛰고 대체 글꼴 사용');
+      return;
+    }
 
     const choice = await showLocalFontsModalIfNeeded(report, {
       disableExternalWebFonts: extensionViewerSettings.disableExternalWebFonts,
