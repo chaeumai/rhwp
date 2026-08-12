@@ -1,0 +1,274 @@
+{
+  "_comment": "rhwp 자체 호스팅 배포에 번들하는 폰트의 라이선스 근거. 폰트 배포 범위 판정(2026-08-12)의 Tier B 승격 절차 — 가족별 원문 확보와 출처/hash 등재 — 를 이행한 결과다.",
+  "bundled_families": [
+    {
+      "family": "Noto Sans KR",
+      "font_files": [
+        {
+          "name": "NotoSansKR-Bold.woff2",
+          "sha256": "dab3d492daa687386292cff1499225db580f931f800ee0d124eb0636378c6020"
+        },
+        {
+          "name": "NotoSansKR-ExtraLight.woff2",
+          "sha256": "3b5cac6af73fd94fa91ded10f6cfc54c7ce52189986fe7ca6fd457208f1d3673"
+        },
+        {
+          "name": "NotoSansKR-Regular.woff2",
+          "sha256": "d1bf8649914a4fe9477a8735bf056383e44e466141fb3d61897252e06d900c1a"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4388,
+      "license_file": "licenses/NotoSansKR-OFL.txt",
+      "license_sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/notosanskr/OFL.txt"
+    },
+    {
+      "family": "Noto Serif KR",
+      "font_files": [
+        {
+          "name": "NotoSerifKR-Bold.woff2",
+          "sha256": "504d6af6abb882acd912d47bafa383c4512a6c8c33635e4e8fb37111d9310941"
+        },
+        {
+          "name": "NotoSerifKR-Regular.woff2",
+          "sha256": "c9a1e3ac69994d680883b53b1fd83d520733b704792522a932bfaa276117de45"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4350,
+      "license_file": "licenses/NotoSerifKR-OFL.txt",
+      "license_sha256": "5e0da210fb04058a8c0087985d2d456b931c2579811a49655721d3cf0c36b6d6",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/notoserifkr/OFL.txt"
+    },
+    {
+      "family": "나눔고딕",
+      "font_files": [
+        {
+          "name": "NanumGothic-Bold.woff2",
+          "sha256": "0bd36842cc218a7b0e1c0f5ec796d90152a02e4cd487b2d868f1130708fe551a"
+        },
+        {
+          "name": "NanumGothic-ExtraBold.woff2",
+          "sha256": "cffea22fa5791731b3de9f9c48b58f4c9eff52581f29377d364a751e63b81ca3"
+        },
+        {
+          "name": "NanumGothic-Regular.woff2",
+          "sha256": "4a000e3bca1298c43c70dc97447e537a27e0a8c1585f410be57dfeff06d3f713"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4534,
+      "license_file": "licenses/NanumGothic-OFL.txt",
+      "license_sha256": "eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/nanumgothic/OFL.txt"
+    },
+    {
+      "family": "나눔명조",
+      "font_files": [
+        {
+          "name": "NanumMyeongjo-Bold.woff2",
+          "sha256": "f2c95c35d72782f71cb60e3cc537c461ae3f5ee7e7504db9653ba7a7024dd548"
+        },
+        {
+          "name": "NanumMyeongjo-ExtraBold.woff2",
+          "sha256": "b3d23b3f93f4bdad6c9b7f69b11156f90f1576b8383f6117448ee79e27609e56"
+        },
+        {
+          "name": "NanumMyeongjo-Regular.woff2",
+          "sha256": "561e9193a6e848b3f7ce9f8f5907310a13e175bc9d69e77da2842a7517a97c16"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4497,
+      "license_file": "licenses/NanumMyeongjo-OFL.txt",
+      "license_sha256": "8eb1c1019fe7fe6d0b6e7d7bbbba1d9cbdd969d8c5f26455708f6cfb8a77284c",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/nanummyeongjo/OFL.txt"
+    },
+    {
+      "family": "나눔고딕코딩",
+      "font_files": [
+        {
+          "name": "NanumGothicCoding-Bold.woff2",
+          "sha256": "2fe66da1c9c3f8beca2c618a139e7edabd36a26dd810a324ced06f8b214b2ccd"
+        },
+        {
+          "name": "NanumGothicCoding-Regular.woff2",
+          "sha256": "87ab32ebaf4e1f803099ad1d096744092c8f985b2e08a24e2304f5ac05d81d6a"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4534,
+      "license_file": "licenses/NanumGothicCoding-OFL.txt",
+      "license_sha256": "eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/nanumgothiccoding/OFL.txt"
+    },
+    {
+      "family": "고운바탕",
+      "font_files": [
+        {
+          "name": "GowunBatang-Bold.woff2",
+          "sha256": "aef1b91ea9ea4688fb296044959b38dfeeaa3e1650af5d543a2b5c160fa30b36"
+        },
+        {
+          "name": "GowunBatang-Regular.woff2",
+          "sha256": "0c6a288aa0c12081dccde769c312f71f290b353243747dd24fb8c57f94f01d72"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4397,
+      "license_file": "licenses/GowunBatang-OFL.txt",
+      "license_sha256": "49a57cc769fa9affd6eefb9070a61e3d3f6b757c97cafb15848bc6d1c81acc78",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/gowunbatang/OFL.txt"
+    },
+    {
+      "family": "고운돋움",
+      "font_files": [
+        {
+          "name": "GowunDodum-Regular.woff2",
+          "sha256": "349c098a6181952dab564bf891b8efcacfbf855adc28d40b4aa2e5937c101c56"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4395,
+      "license_file": "licenses/GowunDodum-OFL.txt",
+      "license_sha256": "a7c73f9521cd646bbdfb6684c99a62311bbd7bce11898dc11ef0b3c69eda1aca",
+      "source_url": "https://github.com/google/fonts/raw/HEAD/ofl/gowundodum/OFL.txt"
+    },
+    {
+      "family": "D2Coding",
+      "font_files": [
+        {
+          "name": "D2Coding-Bold.woff2",
+          "sha256": "41273810f9aed2775c6f1b9eb7e4f12997da644002872b20a31d3d3144e0cc0a"
+        },
+        {
+          "name": "D2Coding-Regular.woff2",
+          "sha256": "358df12fdf9b65d0fd31554a826f97af4eeefd96a047297a28a856315fe872c1"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4511,
+      "license_file": "licenses/D2Coding-OFL.txt",
+      "license_sha256": "1807e8dec4d65f474cbf9be39f5e2254ecb81702babc320749e272ea66ffcc69",
+      "source_url": "https://github.com/naver/d2codingfont/raw/HEAD/OFL.txt"
+    },
+    {
+      "family": "Pretendard",
+      "font_files": [
+        {
+          "name": "Pretendard-Black.woff2",
+          "sha256": "c5fd0c3568fc1368a3edc0d0fbb36df029935954276e3573451b3bae09e27296"
+        },
+        {
+          "name": "Pretendard-Bold.woff2",
+          "sha256": "4609c3356e536fafe38f4add0daeceb3d8595d3057bce13c428c33ddbd43d362"
+        },
+        {
+          "name": "Pretendard-ExtraBold.woff2",
+          "sha256": "dd7c1e156f508eb962acc7a33a7a1896d1e0b71e11156fad96e731689ceb6dc3"
+        },
+        {
+          "name": "Pretendard-ExtraLight.woff2",
+          "sha256": "df43dc9165dff4542114674bcd8b79b7daae6dec004004586d5d076fec6fe2aa"
+        },
+        {
+          "name": "Pretendard-Light.woff2",
+          "sha256": "b7426635cce2ea2b95c9c802e43fba1c620e0dafaf25f737c069b8b4e09fa841"
+        },
+        {
+          "name": "Pretendard-Medium.woff2",
+          "sha256": "d03481330eeba0659ab5b87f25ceb504a35de377dd90a0d0aba2982eb2d05e2c"
+        },
+        {
+          "name": "Pretendard-Regular.woff2",
+          "sha256": "fad853f7f47c6c8b103171e7193fa095708cdcd70850a71d93aa5379e8a61d63"
+        },
+        {
+          "name": "Pretendard-SemiBold.woff2",
+          "sha256": "c863f76a7de5c1ddc1ed8b2fa794964530774592c4f31407a84e2a2ae93f17f0"
+        },
+        {
+          "name": "Pretendard-Thin.woff2",
+          "sha256": "1539755224a64719d5b18406762c476db74fcc299b9e4641ca1e9812fbc7a09b"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4816,
+      "license_file": "licenses/Pretendard-OFL.txt",
+      "license_sha256": "82e9c8a4b203261f10ddba1296422d64914ff3d4b7bd8a12896d03f0f088d70a",
+      "source_url": "https://github.com/orioncactus/pretendard/raw/HEAD/LICENSE"
+    },
+    {
+      "family": "Spoqa Han Sans",
+      "font_files": [
+        {
+          "name": "SpoqaHanSans-Regular.woff2",
+          "sha256": "6568bf80b50c14f2e54f56f2c07e668416f39f880baf5ea2825d315767f98f69"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4562,
+      "license_file": "licenses/SpoqaHanSans-OFL.txt",
+      "license_sha256": "279753543734e7a1846e3cb3f80d4dcdcc91f49c436411adaba82e3913c61cde",
+      "source_url": "https://github.com/spoqa/spoqa-han-sans/raw/HEAD/LICENSE"
+    },
+    {
+      "family": "Latin Modern Math",
+      "font_files": [
+        {
+          "name": "LatinModernMath-Regular.woff2",
+          "sha256": "1177d9025d1e797c54b3c7676976365abd90f903423091de7f0f4e7a4b372162"
+        }
+      ],
+      "license": "GUST-Font-License",
+      "license_bytes": 1417,
+      "license_file": "licenses/LatinModernMath-GUST-FONT-LICENSE.txt",
+      "license_sha256": "5eb61bb836bb1845ef668717cb15b382e997748ce2629e4388cc5e4c3fa4e433",
+      "source_url": "https://www.gust.org.pl/projects/e-foundry/licenses/GUST-FONT-LICENSE.txt"
+    },
+    {
+      "family": "Source Han Serif K (Old Hangul subset)",
+      "font_files": [
+        {
+          "name": "SourceHanSerifK-OldHangul-subset.woff2",
+          "sha256": "9e419cd16df2ea3b220aa7751320d956ac2493440ba412484d98325078f09d43"
+        }
+      ],
+      "license": "OFL-1.1",
+      "license_bytes": 4463,
+      "license_file": "licenses/SourceHanSerifK-OFL.txt",
+      "license_sha256": "9ff5bb567e1b92c801fc1069e5fbf992ff8efccacb9db94e5959a5b3ba9bb903",
+      "source_url": "in-repo:assets/fonts/SourceHanSerifK-OFL.txt"
+    }
+  ],
+  "bundled_font_count": 30,
+  "excluded_font_count": 6,
+  "excluded_from_browser_bundle": [
+    {
+      "file": "Cafe24Ssurround-v2.0.woff2",
+      "reason": "Cafe24 자체 약관 — 제3자 상용 번들 권리 미증명"
+    },
+    {
+      "file": "Cafe24Supermagic-Regular-v1.0.woff2",
+      "reason": "Cafe24 자체 약관 — 제3자 상용 번들 권리 미증명"
+    },
+    {
+      "file": "Happiness-Sans-Bold.woff2",
+      "reason": "행복나눔 자체 약관 — 제3자 상용 번들 권리 미증명"
+    },
+    {
+      "file": "Happiness-Sans-Regular.woff2",
+      "reason": "행복나눔 자체 약관 — 제3자 상용 번들 권리 미증명"
+    },
+    {
+      "file": "Happiness-Sans-Title.woff2",
+      "reason": "행복나눔 자체 약관 — 제3자 상용 번들 권리 미증명"
+    },
+    {
+      "file": "HappinessSansVF.woff2",
+      "reason": "행복나눔 자체 약관 — 제3자 상용 번들 권리 미증명"
+    }
+  ],
+  "generated_at": "2026-08-12T07:53:22Z"
+}
