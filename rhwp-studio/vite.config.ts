@@ -10,8 +10,15 @@ const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
 // 함께 움직여야 한다 — 한 곳에서만 정하고 파생시킨다. 기본값은 upstream 그대로다.
 const BASE = process.env.RHWP_BASE ?? '/rhwp/';
 
+// 한채움 fork: 배포본에서 제외해야 하는 정적 자산(번들 권리가 증명되지 않은 폰트,
+// samples)이 있다. 빌드가 끝난 뒤 dist에서 지우면 PWA precache manifest가 이미
+// 사라진 파일을 참조해 service worker 설치가 깨지므로, 걸러낸 publicDir를 빌드
+// 전에 주입한다. 기본값은 upstream 그대로다.
+const PUBLIC_DIR = process.env.RHWP_PUBLIC_DIR ?? 'public';
+
 export default defineConfig({
   base: BASE,
+  publicDir: PUBLIC_DIR,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
