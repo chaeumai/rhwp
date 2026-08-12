@@ -20,23 +20,26 @@ export interface WebFontLoadOptions {
   disableExternalWebFonts?: boolean;
 }
 
-// 함초롬체 CDN (눈누 jsdelivr — 비상업적 사용 허용, 한컴 라이선스)
-const CDN_HAMCHOB_R = 'https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2104@1.0/HANBatang.woff';
-const CDN_HAMCHOB_B = 'https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2104@1.0/HANBatangB.woff';
-const CDN_HAMCHOD_R = 'https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_four@1.0/HCRDotum.woff';
+// 한채움 fork: upstream은 함초롬/HCR 계열을 눈누 jsdelivr CDN에서 받았다. 그
+// 배포본은 비상업적 사용만 허용하는 한컴 라이선스라 상용 제품에 번들·재배포할 수
+// 없고(폰트 배포 범위 판정 Tier D), 원격 CDN 의존 자체도 자체 호스팅 원칙에
+// 어긋난다. 두 조건 모두에 걸리므로 동일 출처 OFL 대체로 매핑한다.
+// 바탕(명조) 계열 → Noto Serif KR, 돋움(고딕) 계열 → Noto Sans KR.
+const HAMCHOM_BATANG_SUB = 'fonts/NotoSerifKR-Regular.woff2';
+const HAMCHOM_DOTUM_SUB = 'fonts/NotoSansKR-Regular.woff2';
 
 // 한컴 webhwp CSS(@font-face) 매핑 기준 + HWP 문서에서 사용하는 별칭
 const FONT_LIST: FontEntry[] = [
-  // === 함초롬/함초롱/한컴 폰트 (CDN 참조) ===
-  { name: '함초롬돋움', file: CDN_HAMCHOD_R, format: 'woff' },
-  { name: '함초롬바탕', file: CDN_HAMCHOB_R, format: 'woff' },
-  { name: '함초롱돋움', file: CDN_HAMCHOD_R, format: 'woff' },
-  { name: '함초롱바탕', file: CDN_HAMCHOB_R, format: 'woff' },
-  { name: '한컴돋움', file: CDN_HAMCHOD_R, format: 'woff' },
-  { name: '한컴바탕', file: CDN_HAMCHOB_R, format: 'woff' },
-  { name: '한컴산뜻돋움', file: CDN_HAMCHOD_R, format: 'woff' },
-  { name: '새돋움', file: CDN_HAMCHOD_R, format: 'woff' },
-  { name: '새바탕', file: CDN_HAMCHOB_R, format: 'woff' },
+  // === 함초롬/함초롱/한컴 폰트 → 동일 출처 OFL 대체 ===
+  { name: '함초롬돋움', file: HAMCHOM_DOTUM_SUB },
+  { name: '함초롬바탕', file: HAMCHOM_BATANG_SUB },
+  { name: '함초롱돋움', file: HAMCHOM_DOTUM_SUB },
+  { name: '함초롱바탕', file: HAMCHOM_BATANG_SUB },
+  { name: '한컴돋움', file: HAMCHOM_DOTUM_SUB },
+  { name: '한컴바탕', file: HAMCHOM_BATANG_SUB },
+  { name: '한컴산뜻돋움', file: HAMCHOM_DOTUM_SUB },
+  { name: '새돋움', file: HAMCHOM_DOTUM_SUB },
+  { name: '새바탕', file: HAMCHOM_BATANG_SUB },
   // === 한컴 HY 폰트 → 오픈소스 대체 ===
   { name: 'HY헤드라인M', file: 'fonts/NotoSansKR-Bold.woff2' },
   { name: 'HYHeadLine M', file: 'fonts/NotoSansKR-Bold.woff2' },
@@ -94,19 +97,12 @@ const FONT_LIST: FontEntry[] = [
   { name: 'Pretendard Black', file: 'fonts/Pretendard-Black.woff2' },
   // === D2 Coding (OFL, 로컬) ===
   { name: 'D2Coding', file: 'fonts/D2Coding-Regular.woff2' },
-  // === Happiness Sans ===
-  { name: '해피니스 산스 레귤러', file: 'fonts/Happiness-Sans-Regular.woff2' },
-  { name: 'Happiness Sans Regular', file: 'fonts/Happiness-Sans-Regular.woff2' },
-  { name: '해피니스 산스 볼드', file: 'fonts/Happiness-Sans-Bold.woff2' },
-  { name: 'Happiness Sans Bold', file: 'fonts/Happiness-Sans-Bold.woff2' },
-  { name: '해피니스 산스 타이틀', file: 'fonts/Happiness-Sans-Title.woff2' },
-  { name: 'Happiness Sans Title', file: 'fonts/Happiness-Sans-Title.woff2' },
-  { name: '해피니스 산스 VF', file: 'fonts/HappinessSansVF.woff2' },
-  { name: 'Happiness Sans VF', file: 'fonts/HappinessSansVF.woff2' },
-  // === Cafe24 ===
-  { name: 'Cafe24 Ssurround Bold', file: 'fonts/Cafe24Ssurround-v2.0.woff2' },
-  { name: '카페24 슈퍼매직', file: 'fonts/Cafe24Supermagic-Regular-v1.0.woff2' },
-  { name: 'Cafe24 Supermagic', file: 'fonts/Cafe24Supermagic-Regular-v1.0.woff2' },
+  // 한채움 fork: Happiness Sans 4종과 Cafe24 2종을 등록하지 않는다. 무료 배포
+  // 폰트지만 OFL이 아닌 자체 약관이라 제3자 상용 서비스에 번들·재배포할 권리가
+  // 문서로 증명되지 않는다(폰트 배포 범위 판정 Tier C — 가족별 조건 검토 전
+  // 브라우저 금지). 배포 packaging에서도 해당 woff2를 제외하므로, 여기 남겨두면
+  // 404가 난다. canonical asset(assets/fonts)은 그대로 두고 등록만 뺀다.
+  // 이 이름을 쓰는 문서는 CanvasKit 기본 typeface로 대체 표시된다.
   // === 수식 전용 폰트 (OFL/GUST, 로컬) ===
   { name: 'Latin Modern Math', file: 'fonts/LatinModernMath-Regular.woff2' },
   // === 기타 ===

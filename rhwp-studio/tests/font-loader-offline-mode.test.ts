@@ -29,7 +29,11 @@ function usesExternalFontUrl(source: string): boolean {
   ));
 }
 
-test('외부 웹폰트 사용 안 함 옵션은 CDN @font-face와 FontFace.load를 건너뛴다', async () => {
+// 한채움 fork: upstream은 기본 경로에서 jsdelivr CDN 함초롬 폰트를 받았고 이
+// 테스트도 그 동작을 단언했다. fork는 원격 폰트 의존을 제거했으므로 단언을
+// 뒤집는다 — 옵션과 무관하게 어떤 모드에서도 외부 폰트 URL이 나와서는 안 된다.
+// CDN이 다시 들어오면 이 테스트가 실패한다.
+test('기본 경로와 외부 웹폰트 차단 모드 모두 외부 폰트 URL을 쓰지 않는다', async () => {
   const styles: Array<{ id: string; textContent: string }> = [];
   const fontFaceRequests: Array<{ family: string; source: string }> = [];
   const previousDocument = (globalThis as typeof globalThis & { document?: unknown }).document;
@@ -92,8 +96,9 @@ test('외부 웹폰트 사용 안 함 옵션은 CDN @font-face와 FontFace.load�
     fontFaceRequests.length = 0;
     await loadWebFonts([]);
 
-    assert.equal(usesJsDelivrFontUrl(styles[0].textContent), true);
-    assert.equal(fontFaceRequests.some(request => usesJsDelivrFontUrl(request.source)), true);
+    assert.equal(usesJsDelivrFontUrl(styles[0].textContent), false);
+    assert.equal(usesExternalFontUrl(styles[0].textContent), false);
+    assert.equal(fontFaceRequests.some(request => usesExternalFontUrl(request.source)), false);
   } finally {
     Object.defineProperty(globalThis, 'document', {
       configurable: true,

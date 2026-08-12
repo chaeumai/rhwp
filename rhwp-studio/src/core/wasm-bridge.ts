@@ -188,7 +188,12 @@ export class WasmBridge {
       // [Task #741 후속] 외부 file path 그림 영역 영역 dev 환경 영역 영역 fetch (basename 영역
       // 영역 영역 same dir 영역 image 영역 영역 영역 — 본 환경 dev 영역 영역 samples/ 영역
       // Vite asset). 영역 영역 영역 영역 영역 부재 영역 영역 placeholder 표시.
-      void this.populateExternalImagesFromDevServer();
+      // 한채움 fork: dev 서버에서만 시도한다. 이 경로는 문서가 선언한 basename으로
+      // `/samples/<name>` URL을 만들어 fetch하므로, 자체 호스팅 배포에서는 사용자
+      // 문서가 요청을 유도하는 표면이 되고 samples/도 배포하지 않아 항상 실패한다.
+      if (import.meta.env.DEV) {
+        void this.populateExternalImagesFromDevServer();
+      }
 
       return info;
     } catch (error) {

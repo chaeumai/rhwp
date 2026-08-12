@@ -5,7 +5,13 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
 
+// 한채움 fork: upstream은 GitHub Pages 전용으로 base와 PWA start_url/scope에
+// '/rhwp/'를 각각 하드코딩했다. 자체 호스팅은 origin 루트에서 서빙하므로 세 값이
+// 함께 움직여야 한다 — 한 곳에서만 정하고 파생시킨다. 기본값은 upstream 그대로다.
+const BASE = process.env.RHWP_BASE ?? '/rhwp/';
+
 export default defineConfig({
+  base: BASE,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -71,11 +77,11 @@ export default defineConfig({
         theme_color: '#2b6cb0',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/rhwp/',
-        scope: '/rhwp/',
+        start_url: BASE,
+        scope: BASE,
         file_handlers: [
           {
-            action: '/rhwp/',
+            action: BASE,
             accept: {
               'application/x-hwp': ['.hwp'],
               'application/hwp+zip': ['.hwpx'],

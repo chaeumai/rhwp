@@ -11,7 +11,8 @@
 
 import { EditorTransport } from './transport.js';
 
-const DEFAULT_STUDIO_URL = 'https://edwardkim.github.io/rhwp/';
+// 한채움 fork: 외부 출처 기본값을 두지 않는다. 호출자가 자체 호스팅 Studio의
+// URL을 명시해야 하며, 누락 시 조용히 외부로 나가지 않고 즉시 실패한다.
 
 /**
  * HWP 에디터를 생성하여 지정된 컨테이너에 마운트합니다.
@@ -36,7 +37,12 @@ export async function createEditor(container, options = {}) {
     throw new Error(`Container not found: ${container}`);
   }
 
-  const studioUrl = options.studioUrl || DEFAULT_STUDIO_URL;
+  const studioUrl = options.studioUrl;
+  if (typeof studioUrl !== 'string' || studioUrl.length === 0) {
+    throw new Error(
+      'options.studioUrl is required: self-hosted Studio origin must be given explicitly',
+    );
+  }
 
   // iframe 생성
   const iframe = document.createElement('iframe');
