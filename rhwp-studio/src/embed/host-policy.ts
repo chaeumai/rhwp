@@ -46,3 +46,34 @@ export function shouldPromptLocalFonts(): boolean {
 export function shouldPromptValidationWarnings(): boolean {
   return !isEmbedded();
 }
+
+/**
+ * 임베드 상태에서 실행을 허용하는 명령.
+ *
+ * 호스트 제품의 제한 편집(T1)은 "기존 칸의 값을 고치는 것"까지다. 문서 구조와
+ * 서식을 바꾸는 명령은 편집기 화면(메뉴·툴바)을 숨기는 것만으로는 막히지
+ * 않는다 — 단축키와 명령 팔레트가 dispatcher 로 직행하기 때문이다. 그래서
+ * 차단 목록이 아니라 **허용 목록**으로 잠근다. 새 명령이 upstream 에 추가되면
+ * 기본값이 "차단"이어야 봉인이 유지된다.
+ *
+ * 직접 타이핑·삭제·복사·붙여넣기는 dispatcher 를 거치지 않는 텍스트 편집
+ * 경로라 이 목록과 무관하게 동작한다. 문단 추가·셀 안 줄바꿈 같은 잔여 구조
+ * 변화는 호스트의 저장 검증(페이지 수·표 구조 불변)이 최종 방어선이다.
+ */
+const EMBED_ALLOWED_COMMANDS = new Set([
+  'edit:undo',
+  'edit:redo',
+  'edit:select-all',
+  'edit:delete',
+  'edit:find',
+  'edit:find-again',
+  'edit:find-replace',
+  'edit:goto',
+  'view:zoom-in',
+  'view:zoom-out',
+]);
+
+export function isCommandAllowedInEmbed(commandId: string): boolean {
+  if (!isEmbedded()) return true;
+  return EMBED_ALLOWED_COMMANDS.has(commandId);
+}

@@ -1,4 +1,5 @@
 import type { EventBus } from '@/core/event-bus';
+import { isCommandAllowedInEmbed } from '@/embed/host-policy';
 import type { CommandRegistry } from './registry';
 import type { CommandServices, EditorContext } from './types';
 
@@ -43,6 +44,10 @@ export class CommandDispatcher {
     }
 
     const ctx = this.services.getContext();
+    // 한채움 fork: 임베드 상태에서는 허용 목록의 명령만 실행한다.
+    if (!isCommandAllowedInEmbed(commandId)) {
+      return false;
+    }
     if (isBlockedInFormMode(commandId, ctx)) {
       return false;
     }

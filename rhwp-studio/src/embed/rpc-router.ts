@@ -8,6 +8,8 @@ export interface EmbedRpcHandlers {
     skipUnsavedGuard: boolean,
   ): Promise<{ pageCount: number }>;
   pageCount(): Promise<number>;
+  /** 한채움 fork: 마지막 로드·저장 이후 편집이 있었는지. 호스트가 폴링한다. */
+  isDirty(): Promise<boolean>;
   getRendererDiagnostics(page: number): Promise<EmbedRendererDiagnosticsV1>;
   getPageSvg(page: number): Promise<string>;
   exportHwp(): Promise<Uint8Array>;
@@ -54,6 +56,8 @@ export async function routeEmbedRequest(
         params.skipUnsavedGuard === true,
       );
     case 'pageCount': return handlers.pageCount();
+    // 한채움 fork: 호스트가 저장 필요 여부를 폴링한다.
+    case 'isDirty': return handlers.isDirty();
     case 'getRendererDiagnostics': {
       const page = params.page ?? 0;
       if (!Number.isSafeInteger(page) || (page as number) < 0) {
