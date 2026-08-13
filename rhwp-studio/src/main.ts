@@ -1264,8 +1264,12 @@ if (isEmbedded()) {
   for (const id of ['menu-bar', 'icon-toolbar', 'style-bar']) {
     const element = document.getElementById(id);
     if (element) {
+      // hidden 속성만으로는 부족하다 — 이 요소들은 CSS 가 display 를 명시
+      // 지정하고 있어 UA 의 hidden 스타일이 밀린다. 실제로 hidden=true 인데
+      // 화면에는 그대로 보이는 것을 확인했다. inline important 로 못 박는다.
       element.hidden = true;
       element.setAttribute('aria-hidden', 'true');
+      element.style.setProperty('display', 'none', 'important');
     }
   }
   document.documentElement.dataset.rhwpEmbed = 'restricted';
