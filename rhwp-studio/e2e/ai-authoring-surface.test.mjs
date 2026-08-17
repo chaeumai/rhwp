@@ -7,14 +7,14 @@
  *
  * 실행:
  *   node e2e/ai-authoring-surface.test.mjs
- *   LAB_URL=https://editor.hdev.kr/authoring/lab.html node e2e/ai-authoring-surface.test.mjs
+ *   LAB_URL=https://rhwp-ai.hdev.kr/lab.html node e2e/ai-authoring-surface.test.mjs
  */
 import { existsSync, readdirSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import puppeteer from 'puppeteer-core';
 
-const LAB_URL = process.env.LAB_URL || 'https://editor.hdev.kr/authoring/lab.html';
+const LAB_URL = process.env.LAB_URL || 'https://rhwp-ai.hdev.kr/lab.html';
 const SAMPLE = process.env.SAMPLE_HWPX
   || '/home/ubuntu/storage/hanchaeum/demo/swuniv-mentor-templates/2-1.SW전공_멘토링_멘토용_회의비신청서(사용전).hwpx';
 
@@ -151,7 +151,7 @@ try {
   // 9) 입력 잠금 — 실제 키 입력이 문서에 닿지 않아야 한다
   const lockOn = await rpc('setInputLocked', { locked: true });
   check('입력 잠금 설정', lockOn.locked === true, lockOn);
-  const frame = page.frames().find((f) => f.url().includes('/authoring/') && !f.url().includes('lab.html'));
+  const frame = page.frames().find((f) => f !== page.mainFrame() && !f.url().includes('lab.html'));
   if (frame) {
     await frame.click('canvas').catch(() => {});
     await page.keyboard.type('침입시도');
