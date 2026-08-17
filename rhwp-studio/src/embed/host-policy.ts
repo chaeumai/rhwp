@@ -32,7 +32,8 @@ export function isEmbedded(): boolean {
  * 임의로 요청할 일이 아니다.
  */
 export function shouldPromptLocalFonts(): boolean {
-  return !isEmbedded();
+  // 단독 제한 표면도 embed 와 동일하게 묻지 않는다 (검증 표면 일관성).
+  return !isRestrictedSurface();
 }
 
 /**
@@ -44,7 +45,10 @@ export function shouldPromptLocalFonts(): boolean {
  * 로드 단계에서 조용히 문서를 바꾸는 쪽이 더 위험하다.
  */
 export function shouldPromptValidationWarnings(): boolean {
-  return !isEmbedded();
+  // 단독 제한 표면도 묻지 않는다 — 이 화면의 용도가 "저장본이 원본을 보존하는가"
+  // 검증인데, 자동 보정(reflowLinesegs)을 권장 버튼으로 내밀면 클릭 한 번에
+  // 문서 모델이 바뀌어 왕복 비교가 왜곡된다. 원본 그대로 연다.
+  return !isRestrictedSurface();
 }
 
 /**

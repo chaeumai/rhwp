@@ -25,11 +25,13 @@ function withParent(parent: unknown, run: () => void): void {
   }
 }
 
-test('단독 실행에서는 두 확인 창을 그대로 띄운다', () => {
+test('단독 실행도 제한 표면 — 확인 창을 띄우지 않는다', () => {
   withParent('self', () => {
     assert.equal(isEmbedded(), false);
-    assert.equal(shouldPromptLocalFonts(), true);
-    assert.equal(shouldPromptValidationWarnings(), true);
+    // RESTRICTED_STANDALONE: 검증 표면 일관성 — 자동 보정 권장 버튼이 왕복
+    // 비교를 왜곡하지 않도록 단독에서도 조용히 원본 그대로 연다.
+    assert.equal(shouldPromptLocalFonts(), false);
+    assert.equal(shouldPromptValidationWarnings(), false);
   });
 });
 
