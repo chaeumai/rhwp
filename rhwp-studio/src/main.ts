@@ -53,7 +53,7 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
-import { isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
+import { AUTOSAVE_ENABLED, isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 
 const wasm = new WasmBridge();
@@ -65,7 +65,10 @@ const autosaveManager = new AutosaveManager({
   schedule: autosaveScheduleFromUserSettings(),
   onStatus: handleAutosaveStatus,
 });
-autosaveManager.connect(eventBus);
+// 한채움: 자동 저장·복구 흐름 비활성 (host-policy.AUTOSAVE_ENABLED 참조).
+if (AUTOSAVE_ENABLED) {
+  autosaveManager.connect(eventBus);
+}
 initThemeSync((effective, mode) => {
   eventBus.emit('theme-changed', { mode, effective });
   eventBus.emit('command-state-changed');
@@ -1033,6 +1036,8 @@ function shouldSkipInitialAutosaveRecovery(): boolean {
 }
 
 async function offerAutosaveRecoveryIfIdle(): Promise<void> {
+  // 한채움: 복구 제안 비활성 — 정본은 호스트가 관리한다 (host-policy 주석 참조).
+  if (!AUTOSAVE_ENABLED) return;
   if (shouldSkipInitialAutosaveRecovery()) return;
 
   try {

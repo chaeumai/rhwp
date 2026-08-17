@@ -77,3 +77,13 @@ export function isCommandAllowedInEmbed(commandId: string): boolean {
   if (!isEmbedded()) return true;
   return EMBED_ALLOWED_COMMANDS.has(commandId);
 }
+
+/**
+ * 자동 저장(브라우저 IndexedDB 초안)과 시작 시 "문서 복구" 제안을 쓸 것인가.
+ *
+ * 한채움 배포에서는 embed·단독 공통으로 끈다. 문서의 정본은 호스트(hwpAgent
+ * 작업 디렉터리 + 저장=재파생 흐름)가 관리하므로, 브라우저 로컬 초안은 정본과
+ * 어긋난 상태를 복구라는 이름으로 되살릴 수 있는 표면이다 (2026-08-17 결정).
+ * upstream 기본 동작으로 되돌리려면 true 로.
+ */
+export const AUTOSAVE_ENABLED = false;
