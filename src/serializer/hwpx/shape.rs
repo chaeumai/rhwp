@@ -100,9 +100,12 @@ pub fn write_rect<W: Write>(
     // 꼭짓점 4점 (hc: 접두어)
     write_rect_pts(w, &rect.x_coords, &rect.y_coords)?;
 
-    write_sz(w, c)?;
-    write_pos(w, c)?;
-    write_out_margin(w, c)?;
+    // [한채움 fidelity] 그룹(container) 자식은 페이지 레벨 위치를 갖지 않는다.
+    if sa.group_level == 0 {
+        write_sz(w, c)?;
+        write_pos(w, c)?;
+        write_out_margin(w, c)?;
+    }
     // 캡션 (#1403) — OWPML AbstractShapeObjectType 순서: outMargin 과 shapeComment 사이
     if let Some(cap) = &rect.drawing.caption {
         write_caption(w, cap, ctx)?;
@@ -231,8 +234,10 @@ pub fn write_line<W: Write>(
             ],
         )?;
     } else {
-        empty_tag(w, "hp:startPt", &[("x", &sx), ("y", &sy)])?;
-        empty_tag(w, "hp:endPt", &[("x", &ex), ("y", &ey)])?;
+        // [한채움 fidelity] 일반 line 의 좌표는 hc: 네임스페이스다 (connectLine 만 hp:).
+        // 원본 문서 실측(swuniv 028)과 파서(local_name 매칭) 모두 hc:startPt/endPt.
+        empty_tag(w, "hc:startPt", &[("x", &sx), ("y", &sy)])?;
+        empty_tag(w, "hc:endPt", &[("x", &ex), ("y", &ey)])?;
     }
 
     // connectLine 제어점 (꺾인/곡선 커넥터의 경로).
@@ -247,9 +252,12 @@ pub fn write_line<W: Write>(
         }
     }
 
-    write_sz(w, c)?;
-    write_pos(w, c)?;
-    write_out_margin(w, c)?;
+    // [한채움 fidelity] 그룹(container) 자식은 페이지 레벨 위치를 갖지 않는다.
+    if sa.group_level == 0 {
+        write_sz(w, c)?;
+        write_pos(w, c)?;
+        write_out_margin(w, c)?;
+    }
     // 캡션 (#1403) — OWPML AbstractShapeObjectType 순서: outMargin 뒤
     if let Some(cap) = &line.drawing.caption {
         write_caption(w, cap, ctx)?;
@@ -514,12 +522,16 @@ pub(crate) fn write_shape_component_block<W: Write>(
     Ok(())
 }
 
-fn write_offset<W: Write>(
+// [한채움 fidelity] pic 도 공유한다 (종전 picture.rs 는 pos 좌표를 offset 에
+// 잘못 썼다 — 도형 자신의 변환 평행이동 성분이 맞다).
+// 한컴은 음수 offset 을 u32 wrap 표기(예: -711 → 4294966585)로 쓴다.
+// 부호 표기로 내보내면 값은 같아도 바이트 왕복이 깨진다.
+pub(crate) fn write_offset<W: Write>(
     w: &mut Writer<W>,
     sa: &ShapeComponentAttr,
 ) -> Result<(), SerializeError> {
-    let x = sa.offset_x.to_string();
-    let y = sa.offset_y.to_string();
+    let x = (sa.offset_x as u32).to_string();
+    let y = (sa.offset_y as u32).to_string();
     empty_tag(w, "hp:offset", &[("x", &x), ("y", &y)])
 }
 
@@ -811,6 +823,9 @@ pub(crate) fn write_fill_brush<W: Write>(
             let cx = grad.center_x.to_string();
             let cy = grad.center_y.to_string();
             let step = grad.blur.to_string();
+            // [한채움 fidelity] colorNum 은 색 목록 길이에서 유도 — 종전 미방출로
+            // 원본 속성이 유실됐다. 한컴 속성 순서상 step 과 stepCenter 사이.
+            let color_num = grad.colors.len().to_string();
             let step_center = grad.step_center.to_string();
             let alpha = fill_alpha_str(fill.alpha);
             start_tag(w, "hc:fillBrush")?;
@@ -823,6 +838,7 @@ pub(crate) fn write_fill_brush<W: Write>(
                     ("centerX", &cx),
                     ("centerY", &cy),
                     ("step", &step),
+                    ("colorNum", &color_num),
                     ("stepCenter", &step_center),
                     ("alpha", &alpha),
                 ],
@@ -1260,18 +1276,20 @@ mod tests {
 
     #[test]
     fn line_emits_start_end_attrs() {
-        // [Issue #1943] 좌표는 hp:startPt/hp:endPt 자식으로 방출한다 (파서가 읽는
+        // [Issue #1943] 좌표는 startPt/endPt 자식으로 방출한다 (파서가 읽는
         // 유일 경로). 종전 startX/Y attr 은 파서가 무시하는 dead 출력이었다.
+        // [한채움 fidelity] 일반 line 의 좌표 네임스페이스는 hc: 다 (원본 실측,
+        // connectLine 만 hp:). 파서는 local_name 매칭이라 양쪽 다 읽는다.
         let mut line = LineShape::default();
         line.start = Point { x: 100, y: 200 };
         line.end = Point { x: 300, y: 400 };
         let xml = serialize_line(&line);
         assert!(
-            xml.contains(r#"<hp:startPt x="100" y="200""#),
+            xml.contains(r#"<hc:startPt x="100" y="200""#),
             "startPt 자식 방출: {xml}"
         );
         assert!(
-            xml.contains(r#"<hp:endPt x="300" y="400""#),
+            xml.contains(r#"<hc:endPt x="300" y="400""#),
             "endPt 자식 방출: {xml}"
         );
         // 컴포넌트 블록·lineShape 보존 (#1943 (B)).

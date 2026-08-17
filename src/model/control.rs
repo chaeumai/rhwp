@@ -246,6 +246,17 @@ pub struct Field {
     /// 가지나 IR 은 Command/Number 만 추출하므로, 무손실 roundtrip 을 위해 원문을
     /// 그대로 보존한다 (HWP5 경로엔 무관 — HWPX 파서만 적재).
     pub raw_parameters_xml: Option<String>,
+    /// [한채움 fidelity] HWPX fieldBegin/fieldEnd 의 `fieldid` 원문 보존.
+    ///
+    /// 이 값은 인스턴스 id 가 아니라 필드 **종류** id 다 (실측: 문서 전체
+    /// 408건에 고유값 3개). `field_id`(=OWPML `id`, 필드별 고유·fieldEnd
+    /// beginIDRef 대응)와 축이 달라 별도 슬롯 없이는 왕복에서 유실된다.
+    pub hwpx_fieldid: Option<u32>,
+    /// [한채움 fidelity] HWPX fieldBegin `zorder` 원문 보존.
+    pub hwpx_zorder: Option<i32>,
+    /// [한채움 fidelity] HWPX fieldBegin `dirty` 원문 보존 (bit 15 매핑과 별개
+    /// 로 표기 자체를 왕복시킨다).
+    pub hwpx_dirty: Option<bool>,
 }
 
 impl Field {

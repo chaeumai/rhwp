@@ -765,6 +765,9 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape, DocInfoError> {
         // HWP5 는 breakLatinWord 를 attr1 비트로 갖지만 HWPX 원문 보존 필드는 미사용
         // (None → 직렬화 KEEP_WORD 기본, 기존 동작 유지). (#1986)
         break_latin_word: None,
+        line_wrap: None,
+        text_dir: None,
+        checked: None,
     })
 }
 
@@ -885,6 +888,7 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
         lang_id,
         para_shape_id,
         char_shape_id,
+        lock_form: None,
     })
 }
 

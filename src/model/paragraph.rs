@@ -123,7 +123,7 @@ pub enum ColumnBreakType {
 }
 
 /// 글자 모양 참조 (문단 내 위치별 글자 모양)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CharShapeRef {
     /// 글자 모양이 바뀌는 시작 위치
     pub start_pos: u32,

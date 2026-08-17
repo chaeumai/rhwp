@@ -268,6 +268,15 @@ pub struct ParaShape {
     /// KEEP_WORD. 값이 3가지라 attr1 비트 인코딩 대신 원문 보존으로 무손실 방출.
     /// 꼬리말·표셀 등 재계산 경로에서 줄나눔이 달라져 레이아웃이 갈리는 것을 막는다.
     pub break_latin_word: Option<String>,
+    /// [한채움 fidelity] breakSetting@lineWrap 원문 보존 (BREAK/SQUEEZE/KEEP).
+    /// break_latin_word 와 같은 이유 — 기본값 BREAK 고정 방출은 SQUEEZE(자간
+    /// 조정 한 줄 유지) 문단의 줄수를 한글에서 바꾼다.
+    pub line_wrap: Option<String>,
+    /// [한채움 fidelity] paraPr@textDir 원문 보존 (AUTO/LTR 등). 스펙 문서에
+    /// 없는 후속 확장 속성이라 의미 등가를 단정할 수 없어 원문 그대로 왕복.
+    pub text_dir: Option<String>,
+    /// [한채움 fidelity] paraPr@checked 원문 보존.
+    pub checked: Option<String>,
 }
 
 /// ParaShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
@@ -292,6 +301,9 @@ impl PartialEq for ParaShape {
             && self.head_type == other.head_type
             && self.para_level == other.para_level
             && self.break_latin_word == other.break_latin_word
+            && self.line_wrap == other.line_wrap
+            && self.text_dir == other.text_dir
+            && self.checked == other.checked
     }
 }
 
@@ -444,6 +456,9 @@ pub struct Style {
     pub para_shape_id: u16,
     /// 글자 모양 ID 참조
     pub char_shape_id: u16,
+    /// [한채움 fidelity] style@lockForm 원문 보존 — 종전 상수 "0" 방출이
+    /// 양식 잠금 표기를 유실했다.
+    pub lock_form: Option<String>,
 }
 
 /// 테두리/배경 (HWPTAG_BORDER_FILL)

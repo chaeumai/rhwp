@@ -27,6 +27,53 @@ fn is_internal_bin_data_href(href: &str) -> bool {
     href.starts_with("bindata/") || href.contains("/bindata/")
 }
 
+/// [한채움 fidelity] manifest item id("image6")의 숫자가 BinData 번호다.
+///
+/// 본문 참조(`binaryItemIDRef="image6"`)가 숫자 부분으로 대응하므로, 나열
+/// 순서 기반 번호(`i + 1`)는 manifest 가 번호 오름차순이 아닌 문서(실측
+/// swuniv 5종: 017 022 009 026 016)에서 그림 참조를 통째로 뒤섞는다 —
+/// 열기만 해도 본문 그림과 머리말 로고가 서로 엉뚱한 이미지로 그려지고,
+/// 저장본은 그 뒤섞임이 파일로 굳는다. 숫자를 얻지 못하면 추측 대체 없이
+/// 즉시 오류를 낸다 (어차피 숫자 대응이 안 되는 참조는 해석 불가능하다).
+fn hwpx_bin_data_numeric_ids(
+    items: &[content::PackageItem],
+) -> Result<Vec<u16>, HwpxError> {
+    // 1패스: 숫자 id 확정 + 중복 검사 (중복은 참조 해석이 불가능한 진짜 모호성)
+    let mut numeric: Vec<Option<u16>> = Vec::with_capacity(items.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut max_id: u16 = 0;
+    for item in items {
+        let digits: String = item.id.chars().filter(|c| c.is_ascii_digit()).collect();
+        match digits.parse::<u16>() {
+            Ok(id) => {
+                if !seen.insert(id) {
+                    return Err(HwpxError::ConversionError(format!(
+                        "BinData item 번호 {} 가 중복이다 (id '{}')",
+                        id, item.id
+                    )));
+                }
+                max_id = max_id.max(id);
+                numeric.push(Some(id));
+            }
+            // 숫자 없는 id(임베디드 폰트 등)는 숫자 참조가 닿을 수 없는 항목이다
+            // — 2패스에서 충돌 없는 잔여 번호를 받는다.
+            Err(_) => numeric.push(None),
+        }
+    }
+    // 2패스: 숫자 없는 항목에 최대 번호 이후 순번 할당 (문서 내 유일성만 필요)
+    let mut next = max_id;
+    let ids = numeric
+        .into_iter()
+        .map(|slot| {
+            slot.unwrap_or_else(|| {
+                next += 1;
+                next
+            })
+        })
+        .collect();
+    Ok(ids)
+}
+
 fn is_internal_ole_package_item(item: &content::PackageItem) -> bool {
     let href = item.href.to_ascii_lowercase();
     is_internal_bin_data_href(&href)
@@ -296,6 +343,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
     // [Task #873] isEmbeded="0" 인 외부 file 참조 (예: HWP3 → HWPX 변환본 의 절대 경로)
     // 는 BinDataType::Link + abs_path 로 등록. 이후 populate_link_image_paths (parser/mod.rs)
     // 가 Picture.external_path 설정 → Task #741 fallback 로 같은 dir 영역 image load.
+    let bin_data_numeric_ids = hwpx_bin_data_numeric_ids(&package_info.bin_data_items)?;
     for (i, item) in package_info.bin_data_items.iter().enumerate() {
         let ext = hwpx_bin_data_extension(item);
         let (data_type, abs_path) = if is_internal_ole_package_item(item) {
@@ -307,7 +355,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         };
         doc_info.bin_data_list.push(BinData {
             data_type,
-            storage_id: (i + 1) as u16,
+            storage_id: bin_data_numeric_ids[i],
             extension: Some(ext),
             abs_path,
             ..Default::default()
@@ -403,7 +451,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
             continue;
         }
         bin_data_content.push(BinDataContent {
-            id: (i + 1) as u16,
+            id: bin_data_numeric_ids[i],
             data: crate::model::bin_data::BinDataBytes::Lazy {
                 resolver: bin_resolver.clone(),
                 key: item.href.clone(),
@@ -510,6 +558,35 @@ mod tests {
     fn test_parse_hwpx_invalid_data() {
         let result = parse_hwpx(&[0u8; 10]);
         assert!(result.is_err());
+    }
+
+    /// [한채움 fidelity] BinData 번호는 manifest 나열 순서가 아니라 item id 의
+    /// 숫자에서 온다 — 순서가 뒤섞인 문서(swuniv 017 등)에서 그림 참조 보존.
+    #[test]
+    fn bin_data_numeric_ids_follow_item_id_not_manifest_order() {
+        let item = |id: &str| content::PackageItem {
+            href: format!("BinData/{id}.png"),
+            media_type: "image/png".to_string(),
+            id: id.to_string(),
+            is_embedded: true,
+        };
+        // swuniv 017 실측 순서: [image6, image7, image1..5]
+        let items: Vec<_> = ["image6", "image7", "image1", "image2", "image3"]
+            .iter()
+            .map(|s| item(s))
+            .collect();
+        assert_eq!(
+            hwpx_bin_data_numeric_ids(&items).unwrap(),
+            vec![6, 7, 1, 2, 3]
+        );
+
+        // 숫자 없는 id(임베디드 폰트 등)는 최대 번호 이후 순번 — 숫자 항목과 충돌 금지
+        assert_eq!(
+            hwpx_bin_data_numeric_ids(&[item("image2"), item("font-native-smoke")]).unwrap(),
+            vec![2, 3]
+        );
+        // 중복 번호 → 오류 (참조 해석 불가 모호성)
+        assert!(hwpx_bin_data_numeric_ids(&[item("image1"), item("img1")]).is_err());
     }
 
     #[test]

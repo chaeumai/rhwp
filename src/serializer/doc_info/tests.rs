@@ -248,6 +248,9 @@ fn test_serialize_para_shape_roundtrip() {
         head_type: crate::model::style::HeadType::None,
         para_level: 0,
         break_latin_word: None,
+        line_wrap: None,
+        text_dir: None,
+        checked: None,
     };
 
     let data = serialize_para_shape(&ps);
@@ -277,6 +280,7 @@ fn test_serialize_style_roundtrip() {
         lang_id: 1042,
         para_shape_id: 1,
         char_shape_id: 2,
+        lock_form: None,
     };
 
     let data = serialize_style(&style);
@@ -554,6 +558,9 @@ fn test_serialize_doc_info_roundtrip() {
         head_type: crate::model::style::HeadType::None,
         para_level: 0,
         break_latin_word: None,
+        line_wrap: None,
+        text_dir: None,
+        checked: None,
     });
     doc_info.styles.push(Style {
         raw_data: None,
@@ -564,6 +571,7 @@ fn test_serialize_doc_info_roundtrip() {
         lang_id: 1042,
         para_shape_id: 0,
         char_shape_id: 0,
+        lock_form: None,
     });
 
     // 직렬화 → 역직렬화

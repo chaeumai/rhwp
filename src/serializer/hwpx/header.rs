@@ -945,11 +945,14 @@ fn write_bullet<W: Write>(
     let id_s = (id + 1).to_string(); // 관찰: 1-based, ParaShape.numbering_id 참조와 정합
     let char_s = b.bullet_char.to_string();
     let use_image = if b.image_bullet > 0 { "1" } else { "0" };
-    start_tag_attrs(
-        w,
-        "hh:bullet",
-        &[("id", &id_s), ("char", &char_s), ("useImage", use_image)],
-    )?;
+    // [한채움 fidelity] 체크 글머리표 문자 보존 ('\0' = 원문에 없음 → 미방출)
+    let checked_char_s = b.check_bullet_char.to_string();
+    let mut attrs: Vec<(&str, &str)> =
+        vec![("id", &id_s), ("char", &char_s), ("useImage", use_image)];
+    if b.check_bullet_char != '\0' {
+        attrs.push(("checkedChar", &checked_char_s));
+    }
+    start_tag_attrs(w, "hh:bullet", &attrs)?;
     // paraHead 뼈대 (파서는 무시하나 OWPML 유효성/한컴 호환 위해 방출).
     empty_tag(
         w,
@@ -1009,19 +1012,23 @@ fn write_para_pr<W: Write>(
     let condense = ((ps.attr1 >> 9) & 0x7f).to_string();
     let font_line_height = ((ps.attr1 >> 22) & 1).to_string();
     let snap_to_grid = ((ps.attr1 >> 8) & 1).to_string();
-    start_tag_attrs(
-        w,
-        "hh:paraPr",
-        &[
-            ("id", &id.to_string()),
-            ("tabPrIDRef", &ps.tab_def_id.to_string()),
-            ("condense", &condense),
-            ("fontLineHeight", &font_line_height),
-            ("snapToGrid", &snap_to_grid),
-            ("suppressLineNumbers", "0"),
-            ("checked", "0"),
-        ],
-    )?;
+    let id_str = id.to_string();
+    let tab_ref = ps.tab_def_id.to_string();
+    // [한채움 fidelity] checked 는 원문 보존(없으면 종전 기본 "0"), textDir 는
+    // 원문에 있었을 때만 방출 (한컴 속성 순서상 checked 뒤).
+    let mut attrs: Vec<(&str, &str)> = vec![
+        ("id", &id_str),
+        ("tabPrIDRef", &tab_ref),
+        ("condense", &condense),
+        ("fontLineHeight", &font_line_height),
+        ("snapToGrid", &snap_to_grid),
+        ("suppressLineNumbers", "0"),
+        ("checked", ps.checked.as_deref().unwrap_or("0")),
+    ];
+    if let Some(text_dir) = ps.text_dir.as_deref() {
+        attrs.push(("textDir", text_dir));
+    }
+    start_tag_attrs(w, "hh:paraPr", &attrs)?;
 
     // 자식 순서 (한컴 원본 관찰):
     // align, heading, breakSetting, autoSpacing, switch(margin+lineSpacing), border
@@ -1071,7 +1078,8 @@ fn write_para_pr<W: Write>(
             ("keepWithNext", &keep_with_next),
             ("keepLines", &keep_lines),
             ("pageBreakBefore", &page_break_before),
-            ("lineWrap", "BREAK"),
+            // [한채움 fidelity] 원문 보존 — #1986(breakLatinWord) 동형.
+            ("lineWrap", ps.line_wrap.as_deref().unwrap_or("BREAK")),
         ],
     )?;
 
@@ -1277,7 +1285,8 @@ fn write_style<W: Write>(w: &mut Writer<W>, id: u16, st: &Style) -> Result<(), S
             ("charPrIDRef", &st.char_shape_id.to_string()),
             ("nextStyleIDRef", &st.next_style_id.to_string()),
             ("langID", "1042"),
-            ("lockForm", "0"),
+            // [한채움 fidelity] 원문 보존 (없으면 종전 기본 "0")
+            ("lockForm", st.lock_form.as_deref().unwrap_or("0")),
         ],
     )
 }

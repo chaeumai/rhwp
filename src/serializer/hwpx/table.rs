@@ -280,7 +280,9 @@ fn write_sub_list<W: Write>(
                     "HORIZONTAL"
                 },
             ),
-            ("lineWrap", "BREAK"),
+            // [한채움 fidelity] 원문 보존 — SQUEEZE(한 줄 유지)를 BREAK 로 되돌리면
+            // 한글에서 셀 줄수·표 높이가 바뀐다.
+            ("lineWrap", cell.line_wrap.as_deref().unwrap_or("BREAK")),
             ("vertAlign", cell_vert_align_str(cell.vertical_align)),
             ("linkListIDRef", "0"),
             ("linkListNextIDRef", "0"),
@@ -404,10 +406,14 @@ fn write_cell_sz<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), Seriali
 }
 
 fn write_cell_margin<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), SerializeError> {
-    let l = cell.padding.left.to_string();
-    let r = cell.padding.right.to_string();
-    let t = cell.padding.top.to_string();
-    let b = cell.padding.bottom.to_string();
+    // [한채움 fidelity] -1(상속) 은 한컴 표기대로 u32 wrap("4294967295")으로 내보낸다.
+    fn margin(v: i16) -> String {
+        ((v as i32) as u32).to_string()
+    }
+    let l = margin(cell.padding.left);
+    let r = margin(cell.padding.right);
+    let t = margin(cell.padding.top);
+    let b = margin(cell.padding.bottom);
     empty_tag(
         w,
         "hp:cellMargin",

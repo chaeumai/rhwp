@@ -2063,12 +2063,15 @@ fn parse_table_cell(
                         }
                     }
                     b"cellMargin" => {
+                        // [한채움 fidelity] -1(상속) 센티널은 u32 wrap 표기
+                        // "4294967295" 로 온다. parse_i16 은 범위 초과로 0 이 되어
+                        // "상속" 이 "명시적 0 여백" 으로 굳는다 — wrapping 파서 사용.
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
-                                b"left" => cell.padding.left = parse_i16(&attr),
-                                b"right" => cell.padding.right = parse_i16(&attr),
-                                b"top" => cell.padding.top = parse_i16(&attr),
-                                b"bottom" => cell.padding.bottom = parse_i16(&attr),
+                                b"left" => cell.padding.left = parse_i32_wrapping(&attr) as i16,
+                                b"right" => cell.padding.right = parse_i32_wrapping(&attr) as i16,
+                                b"top" => cell.padding.top = parse_i32_wrapping(&attr) as i16,
+                                b"bottom" => cell.padding.bottom = parse_i32_wrapping(&attr) as i16,
                                 _ => {}
                             }
                         }
@@ -2094,14 +2097,18 @@ fn parse_table_cell(
                         }
                     }
                     b"subList" => {
-                        // subList: vertAlign 속성 파싱
+                        // subList: vertAlign + lineWrap([한채움 fidelity] 원문 보존) 파싱
                         for attr in ce.attributes().flatten() {
-                            if attr.key.as_ref() == b"vertAlign" {
-                                cell.vertical_align = match attr_str(&attr).as_str() {
-                                    "CENTER" => VerticalAlign::Center,
-                                    "BOTTOM" => VerticalAlign::Bottom,
-                                    _ => VerticalAlign::Top,
-                                };
+                            match attr.key.as_ref() {
+                                b"vertAlign" => {
+                                    cell.vertical_align = match attr_str(&attr).as_str() {
+                                        "CENTER" => VerticalAlign::Center,
+                                        "BOTTOM" => VerticalAlign::Bottom,
+                                        _ => VerticalAlign::Top,
+                                    };
+                                }
+                                b"lineWrap" => cell.line_wrap = Some(attr_str(&attr)),
+                                _ => {}
                             }
                         }
                     }
@@ -2166,12 +2173,15 @@ fn parse_table_cell(
                         }
                     }
                     b"cellMargin" => {
+                        // [한채움 fidelity] -1(상속) 센티널은 u32 wrap 표기
+                        // "4294967295" 로 온다. parse_i16 은 범위 초과로 0 이 되어
+                        // "상속" 이 "명시적 0 여백" 으로 굳는다 — wrapping 파서 사용.
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
-                                b"left" => cell.padding.left = parse_i16(&attr),
-                                b"right" => cell.padding.right = parse_i16(&attr),
-                                b"top" => cell.padding.top = parse_i16(&attr),
-                                b"bottom" => cell.padding.bottom = parse_i16(&attr),
+                                b"left" => cell.padding.left = parse_i32_wrapping(&attr) as i16,
+                                b"right" => cell.padding.right = parse_i32_wrapping(&attr) as i16,
+                                b"top" => cell.padding.top = parse_i32_wrapping(&attr) as i16,
+                                b"bottom" => cell.padding.bottom = parse_i32_wrapping(&attr) as i16,
                                 _ => {}
                             }
                         }
@@ -2244,6 +2254,17 @@ fn parse_picture(
                 };
             }
             b"instid" => picture_instance_id = parse_u32(&attr),
+            // [한채움 fidelity] 종전엔 pic 이 numberingType/groupLevel 을 파싱하지
+            // 않아 직렬화가 기본값(NONE/0)으로 덮었다 — rect(하단 shape ids 경로)와
+            // 동일하게 읽는다.
+            b"numberingType" => {
+                common.numbering_type = match attr_str(&attr).to_ascii_uppercase().as_str() {
+                    "PICTURE" => crate::model::shape::ObjectNumberingType::Picture,
+                    "TABLE" => crate::model::shape::ObjectNumberingType::Table,
+                    "EQUATION" => crate::model::shape::ObjectNumberingType::Equation,
+                    _ => crate::model::shape::ObjectNumberingType::None,
+                };
+            }
             b"href" => {
                 let value = attr_str(&attr);
                 if !value.is_empty() {
@@ -2522,9 +2543,9 @@ fn parse_picture(
         buf.clear();
     }
 
-    if common.instance_id == 0 && picture_instance_id != 0 {
-        common.instance_id = picture_instance_id;
-    }
+    // [한채움 fidelity] 종전엔 common.instance_id == 0 이면 picture_instance_id 로
+    // 추측 대체했다. 그런데 그룹 자식 pic 의 id="0" 은 정상 값이라, 이 폴백이
+    // 원본 id 를 instid 값으로 바꿔 써 라운드트립을 깨뜨렸다. id 는 파싱값 그대로.
 
     materialize_shape_hwp_storage_defaults(&mut common, &mut shape_attr, ShapeStorageKind::Picture);
 
@@ -2826,9 +2847,8 @@ fn parse_object_element_attrs(
         }
     }
 
-    if common.instance_id == 0 && ids.instid != 0 {
-        common.instance_id = ids.instid;
-    }
+    // [한채움 fidelity] 종전 폴백(instance_id == 0 이면 instid 채택)은 그룹 자식
+    // 도형의 정상 값 id="0" 을 instid 로 바꿔 써 라운드트립을 깨뜨렸다. 파싱값 그대로.
 
     ids
 }
@@ -4313,8 +4333,16 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
             }
             b"fieldid" => {
                 if let Ok(v) = attr_str(&attr).parse::<u32>() {
-                    // fieldid (instance ID) — 정답지의 CTRL_HEADER 끝에 저장
+                    // fieldid (필드 종류 id) — 정답지의 CTRL_HEADER 끝에 저장
                     fieldid_attr = Some(v);
+                    // [한채움 fidelity] 원문 왕복 보존 (id 우선 정책과 별개 슬롯)
+                    f.hwpx_fieldid = Some(v);
+                }
+            }
+            b"zorder" => {
+                // [한채움 fidelity] 원문 왕복 보존
+                if let Ok(v) = attr_str(&attr).parse::<i32>() {
+                    f.hwpx_zorder = Some(v);
                 }
             }
             b"editable" => {
@@ -4322,6 +4350,18 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
                 if attr_str(&attr) == "1" {
                     f.properties |= 1;
                 }
+            }
+            b"dirty" => {
+                // [한채움 fidelity] properties bit 15 = "사용자가 수정한 누름틀".
+                // HWP5 파서는 레코드에서 이 비트를 그대로 읽지만 HWPX 는 종전에
+                // 세우지 않아, 로드 정규화(clear_initial_field_texts)의 bit 15
+                // 가드가 HWPX 경로에서 죽어 있었다 — dirty="1" 이면 사용자 확정
+                // 값이므로 안내문과 문자열이 같아도 지우면 안 된다.
+                let dirty = attr_str(&attr) == "1";
+                if dirty {
+                    f.properties |= 1 << 15;
+                }
+                f.hwpx_dirty = Some(dirty);
             }
             _ => {}
         }

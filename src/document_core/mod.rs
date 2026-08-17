@@ -44,6 +44,34 @@ pub(crate) struct TableTransposeClipboard {
     pub(crate) data: TableTransposeData,
 }
 
+/// [한채움 fidelity] `clear_initial_field_texts` 가 안내문을 지운 문단의 위치.
+///
+/// 최상위 문단은 `cells` 가 비어 있고, 표 셀 내부 문단은 바깥에서 안쪽 순으로
+/// `(controls 내 표 컨트롤 idx, 셀 idx, 셀 내 문단 idx)` 가 쌓인다.
+#[derive(Debug, Clone)]
+pub(crate) struct ClearedGuideParaPath {
+    pub(crate) section_idx: usize,
+    pub(crate) para_idx: usize,
+    pub(crate) cells: Vec<(usize, usize, usize)>,
+}
+
+/// [한채움 fidelity] 누름틀 안내문 삭제 수술의 무손실 복원 스냅샷.
+///
+/// 로드 정규화(`clear_initial_field_texts`)는 렌더·편집 정합을 위해 유지하되,
+/// HWPX 내보내기에서 "그 문단이 로드 직후 상태 그대로면" 수술 전 문단으로
+/// 되돌려 직렬화한다 — 안내문이 원본 스타일·좌표(lineseg 포함)째 보존된다.
+/// 사용자가 그 문단을 편집했으면(텍스트·글자모양 경계 불일치) 복원하지 않는다.
+#[derive(Debug, Clone)]
+pub(crate) struct ClearedGuideParaSnapshot {
+    pub(crate) path: ClearedGuideParaPath,
+    /// 수술 전 문단 전체 (텍스트·char_offsets·char_shapes·lineseg 원형)
+    pub(crate) pristine: crate::model::paragraph::Paragraph,
+    /// 수술 직후 텍스트 — 이후 편집 여부 판정 기준
+    pub(crate) post_text: String,
+    /// 수술 직후 글자 모양 경계 — 편집 여부 판정 보조 기준
+    pub(crate) post_char_shapes: Vec<crate::model::paragraph::CharShapeRef>,
+}
+
 /// HWP 문서 핵심 도메인 모델
 ///
 /// 문서 데이터, 레이아웃 상태, 설정, 캐시를 포함한다.
@@ -138,6 +166,8 @@ pub struct DocumentCore {
     /// HWPX 비표준 감지 등 문서 검증 경고.
     /// `from_bytes` 에서 자동 생성되며, 사용자 고지·선택적 reflow 에 사용 (#177).
     pub(crate) validation_report: validation::ValidationReport,
+    /// [한채움 fidelity] 로드 시 지워진 누름틀 안내문의 복원 스냅샷 (HWPX 내보내기용)
+    pub(crate) cleared_guide_snapshots: Vec<ClearedGuideParaSnapshot>,
 }
 
 /// `DocumentCore` 는 스레드 경계 너머로 소유될 수 있어야 한다 — native 소비자(MCP 서버,
@@ -286,6 +316,7 @@ impl DocumentCore {
             source_format: crate::parser::FileFormat::Hwp,
             hml_metadata: None,
             validation_report: validation::ValidationReport::new(),
+            cleared_guide_snapshots: Vec::new(),
         }
     }
 

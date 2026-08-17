@@ -1012,6 +1012,9 @@ fn collect_fields_from_paragraph(
                                 memo_index: 0,
                                 memo_paragraphs: Vec::new(),
                                 raw_parameters_xml: None,
+                                hwpx_fieldid: None,
+                                hwpx_zorder: None,
+                                hwpx_dirty: None,
                             },
                             location: loc,
                             value,
@@ -1268,6 +1271,9 @@ fn insert_click_here_field_in_para(
         memo_index: 0,
         memo_paragraphs: Vec::new(),
         raw_parameters_xml: None,
+        hwpx_fieldid: None,
+        hwpx_zorder: None,
+        hwpx_dirty: None,
     };
 
     para.controls.insert(insert_idx, Control::Field(field));
@@ -1475,6 +1481,9 @@ mod tests {
             memo_index: 0,
             memo_paragraphs: Vec::new(),
             raw_parameters_xml: None,
+            hwpx_fieldid: None,
+            hwpx_zorder: None,
+            hwpx_dirty: None,
         })
     }
 

@@ -394,6 +394,15 @@ pub(crate) fn render_hp_t_content(
                 flush_buf(&mut t_xml, &mut buf);
                 t_xml.push_str("<hp:lineBreak/>");
             }
+            // [한채움 fidelity] 파서가 <hp:fwSpace/> 를 U+2007 로 평탄화한다
+            // (parser/hwpx/section.rs). 역변환 없이 리터럴 문자로 내보내면 한컴은
+            // 고정폭 빈칸 컨트롤 대신 일반 코드포인트로 취급해(폰트 tofu·양쪽정렬
+            // 미신장) 비가역 열화가 된다. 정준형인 요소로 항상 되돌린다 —
+            // 사용자가 U+2007 을 직접 입력한 극단 사례도 의미(고정폭 공백)는 같다.
+            '\u{2007}' => {
+                flush_buf(&mut t_xml, &mut buf);
+                t_xml.push_str("<hp:fwSpace/>");
+            }
             c if (c as u32) < 0x20 => { /* 기타 제어문자 무시 */ }
             c => buf.push(c),
         }
@@ -494,9 +503,13 @@ impl RunSplitter {
 }
 
 /// `<hp:ctrl><hp:fieldEnd beginIDRef=".."/></hp:ctrl>` 방출 공통 경로.
+///
+/// [한채움 fidelity] 원문 fieldEnd 는 `fieldid`(필드 종류 id) 도 갖는다 —
+/// begin 에서 보존한 값을 함께 방출한다 (없으면 beginIDRef 만, 종전과 동일).
 fn emit_field_end(out: &mut String, para: &Paragraph, control_idx: usize) {
     if let Some(Control::Field(f)) = para.controls.get(control_idx) {
-        if let Ok(xml) = writer_to_string(|w| write_field_end(w, f.field_id)) {
+        let fieldid = f.hwpx_fieldid.unwrap_or(0);
+        if let Ok(xml) = writer_to_string(|w| write_field_end_full(w, f.field_id, fieldid)) {
             out.push_str("<hp:ctrl>");
             out.push_str(&xml);
             out.push_str("</hp:ctrl>");

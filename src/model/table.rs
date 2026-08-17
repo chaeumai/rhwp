@@ -124,6 +124,10 @@ pub struct Cell {
     pub text_direction: u8,
     /// 세로 정렬 (0: top, 1: center, 2: bottom)
     pub vertical_align: VerticalAlign,
+    /// [한채움 fidelity] subList@lineWrap 원문 보존 (BREAK/SQUEEZE/KEEP).
+    /// SQUEEZE(자간을 조정해 한 줄 유지)를 BREAK 로 되돌리면 한글에서 셀이
+    /// 두 줄로 흘러 표 높이가 변한다. rhwp 렌더러는 아직 미소비 — 보존만.
+    pub line_wrap: Option<String>,
     /// 안 여백 지정 여부 (list_attr bit 16)
     /// true: 셀 고유 padding 사용, false: 표 기본 padding 사용
     pub apply_inner_margin: bool,
@@ -337,6 +341,7 @@ impl Cell {
             is_header: template.is_header,
             raw_list_extra: template.raw_list_extra.clone(),
             field_name: None,
+            line_wrap: template.line_wrap.clone(),
             paragraphs: vec![para],
         }
     }

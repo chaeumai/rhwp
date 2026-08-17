@@ -114,7 +114,8 @@ impl DocumentCore {
 
         // 초기 상태(properties bit 15 == 0) 누름틀의 안내문 텍스트를 삭제하여 빈 필드로 정규화
         // (한컴에서 메모 추가 시 안내문 텍스트가 필드 값으로 삽입됨 — compose 전에 제거해야 정합성 유지)
-        Self::clear_initial_field_texts(&mut document);
+        // [한채움 fidelity] 지운 문단의 원형은 스냅샷으로 보관 — HWPX 내보내기에서 복원한다.
+        let cleared_guide_snapshots = Self::clear_initial_field_texts(&mut document);
 
         let composed = document
             .sections
@@ -160,6 +161,7 @@ impl DocumentCore {
             source_format,
             hml_metadata,
             validation_report,
+            cleared_guide_snapshots,
         };
 
         doc.paginate();
@@ -1173,6 +1175,12 @@ impl DocumentCore {
                 ));
             }
             Self::materialize_hwp5_missing_linesegs_for_hwpx_export(&mut doc);
+            self.restore_cleared_guide_texts_for_export(&mut doc);
+            crate::serializer::serialize_hwpx(&doc)
+        } else if !self.cleared_guide_snapshots.is_empty() {
+            // [한채움 fidelity] 로드 정규화가 지운 누름틀 안내문을 직렬화 복제본에서 복원.
+            let mut doc = self.document.clone();
+            self.restore_cleared_guide_texts_for_export(&mut doc);
             crate::serializer::serialize_hwpx(&doc)
         } else {
             crate::serializer::serialize_hwpx(&self.document)
@@ -1667,11 +1675,16 @@ impl DocumentCore {
     /// 한컴에서 메모 추가 등의 동작 시 안내문 텍스트가 필드 값으로 삽입되어,
     /// start_char_idx != end_char_idx 상태가 된다.
     /// compose 전에 이 텍스트를 제거하여 빈 필드(start==end)로 정규화한다.
-    fn clear_initial_field_texts(document: &mut Document) {
+    fn clear_initial_field_texts(
+        document: &mut Document,
+    ) -> Vec<crate::document_core::ClearedGuideParaSnapshot> {
+        use crate::document_core::{ClearedGuideParaPath, ClearedGuideParaSnapshot};
         use crate::model::control::{Control, FieldType};
-        use crate::model::paragraph::Paragraph;
+        use crate::model::paragraph::{CharShapeRef, Paragraph};
 
-        fn process_para(para: &mut Paragraph) {
+        /// 수술 실행. 지워진 게 있으면 (수술 전 문단 원형, 수술 직후 텍스트,
+        /// 수술 직후 글자모양 경계) 를 반환한다 — HWPX 내보내기 복원용.
+        fn process_para(para: &mut Paragraph) -> Option<(Paragraph, String, Vec<CharShapeRef>)> {
             // 삭제 대상 field_range 인덱스와 삭제할 문자 범위 수집
             let mut removals: Vec<(usize, usize, usize)> = Vec::new(); // (fr_idx, start, end)
             for (fri, fr) in para.field_ranges.iter().enumerate() {
@@ -1699,6 +1712,11 @@ impl DocumentCore {
                     }
                 }
             }
+            if removals.is_empty() {
+                return None;
+            }
+            // [한채움 fidelity] 수술 전 문단 원형 — 내보내기에서 무손실 복원한다.
+            let pristine = para.clone();
             // [Task #1893] 삭제 수술의 IR 불변성 완성용 스냅샷 — 삭제 전 char_offsets 는
             // 원본 문자 인덱스→utf16 위치 매핑의 유일한 근거다. removal 좌표는 전부
             // 수집-시점(원본) 인덱스이므로, 원본 스냅샷으로 utf16 범위를 구해
@@ -1779,33 +1797,114 @@ impl DocumentCore {
                     }
                 }
             }
-            let _ = any_removed;
+            if any_removed {
+                Some((pristine, para.text.clone(), para.char_shapes.clone()))
+            } else {
+                None
+            }
         }
 
-        fn process_table(table: &mut crate::model::table::Table) {
-            for cell in &mut table.cells {
-                for cp in &mut cell.paragraphs {
-                    process_para(cp);
+        fn process_table(
+            table: &mut crate::model::table::Table,
+            section_idx: usize,
+            para_idx: usize,
+            cells_prefix: &[(usize, usize, usize)],
+            ctrl_idx: usize,
+            out: &mut Vec<ClearedGuideParaSnapshot>,
+        ) {
+            for (cell_idx, cell) in table.cells.iter_mut().enumerate() {
+                for (cp_idx, cp) in cell.paragraphs.iter_mut().enumerate() {
+                    let mut cells = cells_prefix.to_vec();
+                    cells.push((ctrl_idx, cell_idx, cp_idx));
+                    if let Some((pristine, post_text, post_char_shapes)) = process_para(cp) {
+                        out.push(ClearedGuideParaSnapshot {
+                            path: ClearedGuideParaPath {
+                                section_idx,
+                                para_idx,
+                                cells: cells.clone(),
+                            },
+                            pristine,
+                            post_text,
+                            post_char_shapes,
+                        });
+                    }
                     // 중첩 표 재귀 탐색
-                    for ctrl in &mut cp.controls {
+                    for (nested_idx, ctrl) in cp.controls.iter_mut().enumerate() {
                         if let Control::Table(nested) = ctrl {
-                            process_table(nested);
+                            process_table(nested, section_idx, para_idx, &cells, nested_idx, out);
                         }
                     }
                 }
             }
         }
 
-        for section in &mut document.sections {
-            for para in &mut section.paragraphs {
-                process_para(para);
-                for ctrl in &mut para.controls {
+        let mut snapshots = Vec::new();
+        for (section_idx, section) in document.sections.iter_mut().enumerate() {
+            for (para_idx, para) in section.paragraphs.iter_mut().enumerate() {
+                if let Some((pristine, post_text, post_char_shapes)) = process_para(para) {
+                    snapshots.push(ClearedGuideParaSnapshot {
+                        path: ClearedGuideParaPath {
+                            section_idx,
+                            para_idx,
+                            cells: Vec::new(),
+                        },
+                        pristine,
+                        post_text,
+                        post_char_shapes,
+                    });
+                }
+                for (ctrl_idx, ctrl) in para.controls.iter_mut().enumerate() {
                     if let Control::Table(table) = ctrl {
-                        process_table(table);
+                        process_table(table, section_idx, para_idx, &[], ctrl_idx, &mut snapshots);
                     }
                 }
             }
         }
+        snapshots
+    }
+
+    /// [한채움 fidelity] 스냅샷 경로로 문단을 다시 찾는다. 경로가 더 이상
+    /// 유효하지 않으면(문단/표 삭제 등) None — 복원은 조용히 건너뛴다.
+    fn resolve_cleared_guide_para_mut<'a>(
+        doc: &'a mut Document,
+        path: &crate::document_core::ClearedGuideParaPath,
+    ) -> Option<&'a mut crate::model::paragraph::Paragraph> {
+        use crate::model::control::Control;
+        let mut para = doc
+            .sections
+            .get_mut(path.section_idx)?
+            .paragraphs
+            .get_mut(path.para_idx)?;
+        for &(ctrl_idx, cell_idx, cp_idx) in &path.cells {
+            match para.controls.get_mut(ctrl_idx)? {
+                Control::Table(table) => {
+                    para = table.cells.get_mut(cell_idx)?.paragraphs.get_mut(cp_idx)?;
+                }
+                _ => return None,
+            }
+        }
+        Some(para)
+    }
+
+    /// [한채움 fidelity] 로드 정규화가 지운 누름틀 안내문을 내보내기 직전 복원한다.
+    ///
+    /// 렌더·편집은 "빈 필드 + 합성 안내문" 정규화 위에서 동작하므로 런타임
+    /// 모델은 건드리지 않고, 직렬화용 복제본에서만 문단을 수술 전 원형으로
+    /// 교체한다. 문단이 로드 직후 상태 그대로일 때만(텍스트·글자모양 경계
+    /// 일치) 교체한다 — 사용자가 편집한 문단은 현재 상태가 진실이다.
+    /// 반환: 복원된 문단 수.
+    pub(crate) fn restore_cleared_guide_texts_for_export(&self, doc: &mut Document) -> usize {
+        let mut restored = 0;
+        for snap in &self.cleared_guide_snapshots {
+            let Some(para) = Self::resolve_cleared_guide_para_mut(doc, &snap.path) else {
+                continue;
+            };
+            if para.text == snap.post_text && para.char_shapes == snap.post_char_shapes {
+                *para = snap.pristine.clone();
+                restored += 1;
+            }
+        }
+        restored
     }
 }
 
@@ -1875,6 +1974,79 @@ mod validate_linesegs_tests {
             doc.sections[0].paragraphs[0].text.is_empty(),
             "안내문이 제거돼 빈 텍스트여야 함"
         );
+    }
+
+    /// [한채움 fidelity] 안내문 삭제 수술의 내보내기 복원 — 무편집이면 원형 복원,
+    /// 편집됐으면 현재 상태 유지.
+    #[test]
+    fn cleared_guide_text_restores_on_export_unless_edited() {
+        use crate::model::control::{Control, Field, FieldType};
+        use crate::model::paragraph::{CharShapeRef, FieldRange};
+
+        fn make_doc() -> Document {
+            let field = Field {
+                field_type: FieldType::ClickHere,
+                command: "Clickhere:set:48:Direction:wstring:6:여기에 입력 HelpState:wstring:0:  "
+                    .to_string(),
+                properties: 0,
+                ..Default::default()
+            };
+            let para = Paragraph {
+                text: "여기에 입력".to_string(),
+                char_offsets: (0..6).collect(),
+                char_shapes: vec![CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 42,
+                }],
+                controls: vec![Control::Field(field)],
+                field_ranges: vec![FieldRange {
+                    start_char_idx: 0,
+                    end_char_idx: 6,
+                    control_idx: 0,
+                }],
+                ..Default::default()
+            };
+            let mut doc = Document::default();
+            let mut section = Section::default();
+            section.paragraphs.push(para);
+            doc.sections.push(section);
+            doc
+        }
+
+        // 1) 무편집: 수술 → 복원하면 원형 그대로
+        let mut doc = make_doc();
+        let pristine_text = doc.sections[0].paragraphs[0].text.clone();
+        let snaps = DocumentCore::clear_initial_field_texts(&mut doc);
+        assert_eq!(snaps.len(), 1, "삭제된 문단마다 스냅샷이 있어야 함");
+        assert!(doc.sections[0].paragraphs[0].text.is_empty());
+
+        let mut core = DocumentCore::new_empty();
+        core.cleared_guide_snapshots = snaps.clone();
+        let mut export_doc = doc.clone();
+        assert_eq!(core.restore_cleared_guide_texts_for_export(&mut export_doc), 1);
+        assert_eq!(export_doc.sections[0].paragraphs[0].text, pristine_text);
+        assert_eq!(
+            export_doc.sections[0].paragraphs[0].field_ranges[0].end_char_idx,
+            6,
+            "field range 도 원형으로 복원돼야 함"
+        );
+        // 런타임 모델은 그대로 (직렬화 복제본만 복원)
+        assert!(doc.sections[0].paragraphs[0].text.is_empty());
+
+        // 2) 편집됨: 텍스트가 로드 직후 상태와 다르면 복원하지 않는다
+        let mut edited = doc.clone();
+        edited.sections[0].paragraphs[0].text = "사용자값".to_string();
+        assert_eq!(core.restore_cleared_guide_texts_for_export(&mut edited), 0);
+        assert_eq!(edited.sections[0].paragraphs[0].text, "사용자값");
+
+        // 3) dirty="1" (bit 15) 이면 애초에 지우지 않는다
+        let mut doc2 = make_doc();
+        if let Control::Field(f) = &mut doc2.sections[0].paragraphs[0].controls[0] {
+            f.properties |= 1 << 15;
+        }
+        let snaps2 = DocumentCore::clear_initial_field_texts(&mut doc2);
+        assert!(snaps2.is_empty());
+        assert_eq!(doc2.sections[0].paragraphs[0].text, "여기에 입력");
     }
 
     /// 텍스트는 있는데 line_segs 가 비어있는 문단 — LinesegArrayEmpty 감지

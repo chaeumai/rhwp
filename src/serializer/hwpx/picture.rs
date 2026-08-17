@@ -59,6 +59,9 @@ pub fn write_picture<W: Write>(
     let tf = text_flow_str(pic.common.text_flow);
     let instid = pic.instance_id.to_string();
     let href = pic.href.as_deref().unwrap_or("");
+    // [한채움 fidelity] 종전 하드코딩("PICTURE"/"0")은 그룹 자식 pic 의 원본
+    // 값(NONE/1)을 덮어썼다 — rect/line(shape.rs)과 같은 소스에서 읽는다.
+    let group_level = pic.shape_attr.group_level.to_string();
 
     start_tag_attrs(
         w,
@@ -66,13 +69,16 @@ pub fn write_picture<W: Write>(
         &[
             ("id", &id_str),
             ("zOrder", &z_order),
-            ("numberingType", "PICTURE"),
+            (
+                "numberingType",
+                super::shape::numbering_type_str(pic.common.numbering_type),
+            ),
             ("textWrap", tw),
             ("textFlow", tf),
             ("lock", "0"),
             ("dropcapstyle", "None"),
             ("href", href),
-            ("groupLevel", "0"),
+            ("groupLevel", &group_level),
             ("instid", &instid),
             ("reverse", "0"),
         ],
@@ -81,7 +87,9 @@ pub fn write_picture<W: Write>(
     // --- 자식 순서 (한컴 관찰 샘플 기준) ---
     // offset, orgSz, curSz, flip, rotationInfo, renderingInfo, imgRect, imgClip,
     // inMargin, imgDim, img, effects, sz, pos, outMargin
-    write_offset(w, &pic.common)?;
+    // [한채움 fidelity] offset 은 도형 자신의 변환 평행이동 성분(shape_attr) —
+    // 종전엔 페이지 좌표(pos)를 잘못 써서 저장본이 transMatrix 와 자기모순이었다.
+    super::shape::write_offset(w, &pic.shape_attr)?;
     write_org_sz(w, &pic.shape_attr)?;
     write_cur_sz(w, pic)?;
     write_flip(w, &pic.shape_attr)?;
@@ -95,9 +103,13 @@ pub fn write_picture<W: Write>(
     write_img_dim(w, pic)?;
     write_img(w, pic, ctx)?; // 3-way 단언 지점
     write_effects(w, pic)?;
-    write_sz(w, &pic.common)?;
-    write_pos(w, &pic.common)?;
-    write_out_margin(w, &pic.common)?;
+    // [한채움 fidelity] 그룹(container) 자식은 페이지 레벨 위치(sz/pos/outMargin)를
+    // 갖지 않는다 — 원본에 없는 요소를 만들어 넣지 않는다.
+    if pic.shape_attr.group_level == 0 {
+        write_sz(w, &pic.common)?;
+        write_pos(w, &pic.common)?;
+        write_out_margin(w, &pic.common)?;
+    }
     // 캡션 (#1403) — 한컴 실물(aift.hwpx) 자식 순서: outMargin 뒤
     if let Some(cap) = &pic.caption {
         write_caption(w, cap, ctx)?;
@@ -110,12 +122,6 @@ pub fn write_picture<W: Write>(
 }
 
 // ---------- 자식 요소 ----------
-
-fn write_offset<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), SerializeError> {
-    let x = c.horizontal_offset.to_string();
-    let y = c.vertical_offset.to_string();
-    empty_tag(w, "hp:offset", &[("x", &x), ("y", &y)])
-}
 
 fn write_org_sz<W: Write>(
     w: &mut Writer<W>,

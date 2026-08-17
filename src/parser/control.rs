@@ -134,6 +134,10 @@ fn parse_field_control(ctrl_id: u32, ctrl_data: &[u8]) -> Control {
         memo_index,
         memo_paragraphs: Vec::new(),
         raw_parameters_xml: None,
+        // HWP5 경로 — HWPX 원문 보존 슬롯은 해당 없음
+        hwpx_fieldid: None,
+        hwpx_zorder: None,
+        hwpx_dirty: None,
     })
 }
 

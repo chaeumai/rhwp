@@ -833,6 +833,10 @@ fn parse_para_shape(
                     ps.attr1 &= !(1 << 8);
                 }
             }
+            // [한채움 fidelity] 원문 왕복 보존 — 종전엔 안 읽고 방출도 안 해
+            // (textDir) / 상수 "0" 으로 덮어 (checked) 원문이 유실됐다.
+            b"textDir" => ps.text_dir = Some(attr_str(&attr)),
+            b"checked" => ps.checked = Some(attr_str(&attr)),
             _ => {}
         }
     }
@@ -990,6 +994,10 @@ fn parse_para_shape_child(
                         // 미보존 시 직렬화가 KEEP_WORD 로 고정해 꼬리말·표셀 재계산
                         // 줄나눔이 바뀌고 레이아웃(페이지 수)이 갈린다.
                         ps.break_latin_word = Some(attr_str(&attr));
+                    }
+                    b"lineWrap" => {
+                        // [한채움 fidelity] BREAK/SQUEEZE/KEEP 원문 보존 — #1986 동형.
+                        ps.line_wrap = Some(attr_str(&attr));
                     }
                     b"breakNonLatinWord" => {
                         // HWP5 ParaShape attr1 bit 7: non-Latin line-break unit.
@@ -1292,6 +1300,8 @@ fn parse_style(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
             b"paraPrIDRef" => style.para_shape_id = parse_u16(&attr),
             b"charPrIDRef" => style.char_shape_id = parse_u16(&attr),
             b"nextStyleIDRef" => style.next_style_id = parse_u8(&attr),
+            // [한채움 fidelity] 양식 잠금 표기 원문 보존
+            b"lockForm" => style.lock_form = Some(attr_str(&attr)),
             // [Task #1058 후속] HWPX `langID` → Style.lang_id (spec 표 47).
             // HWPX 의 `langID="1042"` 가 한컴 정답지의 Style record 의 INT16 lang_id.
             b"langID" => {
@@ -1741,6 +1751,15 @@ fn parse_bullet_hwpx(
                 if let Ok(s) = std::str::from_utf8(&attr.value) {
                     if s == "1" {
                         bullet.image_bullet = 1;
+                    }
+                }
+            }
+            // [한채움 fidelity] 체크 글머리표 문자 보존 — 종전엔 HWPX 경로만
+            // 미수집이라 char="☐"/checkedChar="☑" 쌍의 체크 글리프가 유실됐다.
+            b"checkedChar" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if let Some(c) = s.chars().next() {
+                        bullet.check_bullet_char = c;
                     }
                 }
             }

@@ -38,13 +38,32 @@ pub fn field_begin_open_tag(field: &Field) -> String {
     let id_str = field.field_id.to_string();
     let ft = field_type_str(field.field_type);
     let name = xml_escape_attr(field.ctrl_data_name.as_deref().unwrap_or(""));
-    format!(
+    let mut tag = format!(
         r#"<hp:fieldBegin id="{}" type="{}" name="{}" editable="{}""#,
         id_str,
         ft,
         name,
         bool01(field.is_editable_in_form()),
-    )
+    );
+    tag.push_str(&field_begin_preserved_attrs(field));
+    tag
+}
+
+/// [한채움 fidelity] HWPX 원문에서 읽어 보존한 dirty/zorder/fieldid 를 한컴
+/// 속성 순서(dirty, zorder, fieldid)대로 덧붙인다. 원문에 없던 속성은 만들지
+/// 않는다 (Option None → 미방출).
+fn field_begin_preserved_attrs(field: &Field) -> String {
+    let mut out = String::new();
+    if let Some(dirty) = field.hwpx_dirty {
+        out.push_str(&format!(r#" dirty="{}""#, if dirty { "1" } else { "0" }));
+    }
+    if let Some(zorder) = field.hwpx_zorder {
+        out.push_str(&format!(r#" zorder="{zorder}""#));
+    }
+    if let Some(fieldid) = field.hwpx_fieldid {
+        out.push_str(&format!(r#" fieldid="{fieldid}""#));
+    }
+    out
 }
 
 fn xml_escape_attr(s: &str) -> String {
@@ -60,16 +79,26 @@ fn xml_escape_attr(s: &str) -> String {
 pub fn write_field_begin<W: Write>(w: &mut Writer<W>, field: &Field) -> Result<(), SerializeError> {
     let id_str = field.field_id.to_string();
     let ft = field_type_str(field.field_type);
-    empty_tag(
-        w,
-        "hp:fieldBegin",
-        &[
-            ("id", &id_str),
-            ("type", ft),
-            ("name", field.ctrl_data_name.as_deref().unwrap_or("")),
-            ("editable", bool01(field.is_editable_in_form())),
-        ],
-    )
+    let dirty_s = field.hwpx_dirty.map(|d| if d { "1" } else { "0" });
+    let zorder_s = field.hwpx_zorder.map(|z| z.to_string());
+    let fieldid_s = field.hwpx_fieldid.map(|v| v.to_string());
+    let mut attrs: Vec<(&str, &str)> = vec![
+        ("id", &id_str),
+        ("type", ft),
+        ("name", field.ctrl_data_name.as_deref().unwrap_or("")),
+        ("editable", bool01(field.is_editable_in_form())),
+    ];
+    // [한채움 fidelity] 원문 보존 속성 — 한컴 순서(dirty, zorder, fieldid).
+    if let Some(d) = dirty_s {
+        attrs.push(("dirty", d));
+    }
+    if let Some(z) = zorder_s.as_deref() {
+        attrs.push(("zorder", z));
+    }
+    if let Some(fi) = fieldid_s.as_deref() {
+        attrs.push(("fieldid", fi));
+    }
+    empty_tag(w, "hp:fieldBegin", &attrs)
 }
 
 /// `<hp:fieldEnd>` — 필드 끝 마커.
