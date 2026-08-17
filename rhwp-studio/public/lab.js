@@ -66,7 +66,14 @@ const el = {
   pdfB: document.getElementById('pdf-b'),
   pdfAMeta: document.getElementById('pdf-a-meta'),
   pdfBMeta: document.getElementById('pdf-b-meta'),
+  plan: document.getElementById('btn-plan'),
+  planView: document.getElementById('btn-plan-view'),
+  planStatus: document.getElementById('plan-status'),
+  planList: document.getElementById('plan-list'),
 };
+
+/** 현재 서식의 채움서식(계획). 사용자 작성 단계가 이걸 기준으로 돈다. */
+let currentPlan = null;
 
 /** 지금 열려 있는 문서의 출처. PDF 비교에서 "원본"을 무엇으로 잡을지 결정한다. */
 let loadedSampleId = null;
@@ -120,10 +127,13 @@ async function call(method, params) {
 
 function setReady(ready, message) {
   el.status.textContent = message;
-  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch, el.ai, el.compare]) {
+  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch, el.compare, el.plan]) {
     button.disabled = !ready;
   }
   for (const button of el.samples.querySelectorAll('button')) button.disabled = !ready;
+  // 사용자 작성은 채움서식이 있어야 시작할 수 있다.
+  el.ai.disabled = !ready || !currentPlan?.items?.length;
+  el.planView.disabled = !currentPlan?.items?.length;
 }
 
 function connect() {
@@ -187,6 +197,7 @@ async function loadBytesIntoEditor(bytes, fileName, sampleId) {
     // 문서가 바뀌면 이전 비교 결과는 더 이상 이 문서의 것이 아니다.
     resetCompare(sampleId ? '문서를 열었습니다. [PDF 비교 생성]을 누르세요.' : '직접 연 파일은 원본 PDF 기준선이 없습니다.');
     clearProposal('문서를 열었습니다.');
+    void loadPlan(sampleId);
     log('✓ loadFile', result, 'ok');
     const pages = result && typeof result.pageCount === 'number' ? ` · ${result.pageCount}쪽` : '';
     // 상태를 여기서 확정한다. 호출부가 "여는 중…" 을 그대로 되돌려 놓으면
@@ -437,9 +448,177 @@ el.lock.addEventListener('click', async () => {
 });
 
 /*
- * AI 채움·수정.
+ * 채움서식(계획) — 서식 등록 시점에 1회 만든다.
  *
- * 흐름: getOutline → 프록시(LLM) → 제안 diff → 사용자 승인 → applyEdits.
+ * "어느 칸에 무엇이 들어가는가"를 미리 판정해 저장한다. 사용자 작성 단계는
+ * 이 계획을 기준으로 값만 만든다. 판정과 채움을 분리하는 이유:
+ *   - 판정을 사람이 검토·수정할 수 있다
+ *   - 같은 서식을 여러 번 써도 판정은 한 번이면 된다
+ *   - 사진·서명 영역이 애초에 목록에서 빠진다
+ */
+function renderPlan(items, bindings) {
+  el.planList.replaceChildren();
+  for (const item of items) {
+    const bind = bindings?.get(item.path);
+    const row = document.createElement('div');
+    row.className = bind && !bind.ok ? 'plan-row unbound' : 'plan-row';
+
+    const content = document.createElement('span');
+    content.className = 'content';
+    content.textContent = item.content || item.label || item.path;
+    const src = document.createElement('span');
+    src.className = 'src';
+    src.dataset.s = item.source || '';
+    src.textContent = item.source || '';
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = bind && !bind.ok
+      ? `${item.path} — ${bind.why}`
+      : `${item.path}${item.label ? ` · ${item.label}` : ''}${bind?.current ? ` · 현재 "${bind.current.slice(0, 20)}"` : ''}`;
+
+    row.append(content, src, meta);
+    el.planList.appendChild(row);
+  }
+}
+
+/**
+ * 계획이 현재 문서에 여전히 맞는지 확인한다.
+ *
+ * 사용자가 표 행을 늘리거나 줄이면 셀 인덱스가 밀려 계획의 path 가 다른 칸을
+ * 가리킨다. 값이 둘 다 비어 있으면 expectedText 검증으로도 안 잡히므로,
+ * 여기서 문서 구조와 대조해 어긋난 항목을 unbound 로 표면화한다.
+ * 추측해서 다시 맞추지 않는다 — 틀린 자리에 값이 들어가는 것보다 낫다.
+ */
+async function resolvePlanBindings(items) {
+  const outline = await call('getOutline');
+  const cells = outline.sections.flatMap((s) => s.tables).flatMap((t) => t.cells);
+  const byPath = new Map(cells.map((c) => [c.path, c]));
+  const tableOf = (p) => p.replace(/\/cell\d+\/p\d+$/, '');
+
+  const bindings = new Map();
+  for (const item of items) {
+    const cell = byPath.get(item.path);
+    if (!cell) {
+      bindings.set(item.path, { ok: false, why: '문서에 없는 주소 (구조가 바뀌었을 수 있습니다)' });
+      continue;
+    }
+    /*
+     * 계획이 기억한 라벨이 아직 그 자리를 설명하는지 본다.
+     *
+     * 라벨은 두 곳 중 하나에 있다:
+     *   - 같은 행 (「성명 | ___」 형태)
+     *   - 같은 열의 헤더 행 (「구분 | 학과(전공) | 학번」 아래 데이터 행)
+     * 둘 다 봐야 한다. 같은 행만 보면 명단 표가 통째로 어긋난 것으로 나온다.
+     */
+    if (item.label) {
+      const table = tableOf(item.path);
+      const same = cells.filter((c) => tableOf(c.path) === table);
+      const rowLabels = same.filter((c) => c.row === cell.row && c.preview).map((c) => c.preview);
+      const colHeaders = same.filter((c) => c.col === cell.col && c.row < cell.row && c.preview).map((c) => c.preview);
+      const nearby = [...rowLabels, ...colHeaders].map((t) => t.replace(/\s+/g, ''));
+      const want = item.label.replace(/\s+/g, '');
+      if (nearby.length > 0 && !nearby.some((l) => l.includes(want) || want.includes(l))) {
+        bindings.set(item.path, {
+          ok: false,
+          why: `라벨 불일치 — 계획 "${item.label}", 주변 [${nearby.slice(0, 4).join(', ')}]`,
+          current: cell.preview,
+        });
+        continue;
+      }
+    }
+    bindings.set(item.path, { ok: true, current: cell.preview });
+  }
+  return bindings;
+}
+
+async function loadPlan(sampleId) {
+  currentPlan = null;
+  el.planList.replaceChildren();
+  if (!sampleId) {
+    el.planStatus.textContent = '직접 연 파일은 채움서식을 만들 수 없습니다(샘플만 지원).';
+    setReady(true, el.status.textContent);
+    return;
+  }
+  try {
+    const response = await fetch(`/api/plan/${encodeURIComponent(sampleId)}`);
+    const payload = await response.json();
+    if (payload.ok && payload.exists) {
+      currentPlan = payload.plan;
+      const n = payload.plan.items.length;
+      el.planStatus.textContent = `채움서식 있음 — ${n}개 항목 (${payload.plan.promptKey} v${payload.plan.promptVersion}, ${payload.plan.createdAt.slice(0, 16).replace('T', ' ')})`;
+    } else {
+      el.planStatus.textContent = '채움서식이 없습니다. [채움서식 만들기]를 먼저 누르세요.';
+    }
+  } catch (error) {
+    el.planStatus.textContent = `채움서식 조회 실패: ${error instanceof Error ? error.message : error}`;
+  }
+  setReady(true, el.status.textContent);
+}
+
+el.plan.addEventListener('click', async () => {
+  if (!loadedSampleId) {
+    el.planStatus.textContent = '샘플로 연 서식만 채움서식을 만들 수 있습니다.';
+    return;
+  }
+  setReady(false, '채움서식 판정 중…');
+  el.planStatus.textContent = '문서 구조를 읽고 각 칸의 의미를 판정하는 중… (서식당 1회, 오래 걸립니다)';
+  try {
+    const outline = await call('getOutline');
+    const nodes = [];
+    for (const section of outline.sections) {
+      for (const node of section.paragraphs) nodes.push({ path: node.path, text: node.preview });
+      for (const table of section.tables) {
+        for (const cell of table.cells) {
+          nodes.push({ path: cell.path, row: cell.row, col: cell.col, text: cell.preview });
+        }
+      }
+    }
+    const response = await fetch(`/api/plan/${encodeURIComponent(loadedSampleId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodes }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.message ?? `HTTP ${response.status}`);
+    currentPlan = payload.plan;
+    const bySource = payload.plan.items.reduce((m, i) => {
+      m[i.source] = (m[i.source] || 0) + 1;
+      return m;
+    }, {});
+    el.planStatus.textContent = `채움서식 생성 — ${payload.plan.items.length}개 항목 `
+      + `(${Object.entries(bySource).map(([k, v]) => `${k} ${v}`).join(' · ')}) · ${(payload.elapsedMs / 1000).toFixed(1)}s`;
+    log('✓ 채움서식', {
+      items: payload.plan.items.length, bySource, ms: payload.elapsedMs, usage: payload.usage,
+    }, 'ok');
+    renderPlan(payload.plan.items);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    el.planStatus.textContent = `판정 실패: ${message}`;
+    log('✗ 채움서식', message, 'fail');
+  } finally {
+    setReady(true, el.status.textContent);
+  }
+});
+
+el.planView.addEventListener('click', async () => {
+  if (!currentPlan?.items?.length) return;
+  el.planStatus.textContent = '문서와 대조하는 중…';
+  try {
+    const bindings = await resolvePlanBindings(currentPlan.items);
+    const broken = [...bindings.values()].filter((b) => !b.ok).length;
+    renderPlan(currentPlan.items, bindings);
+    el.planStatus.textContent = broken === 0
+      ? `${currentPlan.items.length}개 항목 · 문서와 모두 일치`
+      : `${currentPlan.items.length}개 항목 · ${broken}개가 문서와 어긋남 (구조가 바뀌었습니다)`;
+  } catch (error) {
+    el.planStatus.textContent = `대조 실패: ${error instanceof Error ? error.message : error}`;
+  }
+});
+
+/*
+ * 사용자 작성 — 채움서식을 기준으로 값만 만든다.
+ *
+ * 흐름: 계획 → 문서와 대조 → 프록시(LLM) → 제안 diff → 승인 → applyEdits.
  * 승인 단계를 두는 이유는 문서가 사용자의 제출물이기 때문이다. 무엇이
  * 바뀌는지 보이지 않는 채로 반영하지 않는다.
  */
@@ -487,31 +666,42 @@ function renderProposal(rows) {
 }
 
 el.ai.addEventListener('click', async () => {
-  clearProposal('개요를 읽는 중…');
-  setAiBusy(true, '개요를 읽는 중…');
+  if (!currentPlan?.items?.length) {
+    clearProposal('채움서식이 없습니다. 2단계에서 먼저 만드세요.');
+    return;
+  }
+  clearProposal('채움서식을 문서와 대조하는 중…');
+  setAiBusy(true, '채움서식을 문서와 대조하는 중…');
   try {
-    const outline = await call('getOutline');
-    const nodes = [];
-    for (const section of outline.sections) {
-      for (const node of section.paragraphs) nodes.push({ path: node.path, text: node.preview });
-      for (const table of section.tables) {
-        for (const cell of table.cells) {
-          nodes.push({ path: cell.path, row: cell.row, col: cell.col, text: cell.preview });
-        }
-      }
+    // 계획이 현재 문서에 맞는지 먼저 확인한다. 어긋난 항목은 채우지 않는다.
+    const bindings = await resolvePlanBindings(currentPlan.items);
+    const boundItems = currentPlan.items.filter((i) => bindings.get(i.path)?.ok);
+    const broken = currentPlan.items.length - boundItems.length;
+    if (broken > 0) {
+      renderPlan(currentPlan.items, bindings);
+      log('채움서식 대조', { 일치: boundItems.length, 어긋남: broken }, 'fail');
     }
-    if (nodes.length === 0) {
-      clearProposal('문서에 읽을 노드가 없습니다. 문서를 먼저 여세요.');
+    if (boundItems.length === 0) {
+      clearProposal(`채움서식이 문서와 전부 어긋났습니다. 서식을 다시 열거나 채움서식을 새로 만드세요.`);
       return;
     }
 
-    setAiBusy(true, `AI 호출 중… (노드 ${nodes.length}개)`);
-    log('→ AI fill', { nodes: nodes.length, instruction: el.aiInstruction.value || '(전체 채움)' });
+    // 현재 값을 붙여 보낸다 — 이미 채워진 칸을 덮어쓰지 않기 위한 근거다.
+    const items = boundItems.map((i) => ({
+      path: i.path,
+      label: i.label,
+      content: i.content,
+      source: i.source,
+      current: bindings.get(i.path)?.current ?? '',
+    }));
+
+    setAiBusy(true, `AI 호출 중… (계획 ${items.length}개${broken ? `, 어긋남 ${broken}개 제외` : ''})`);
+    log('→ AI fill', { items: items.length, broken, instruction: el.aiInstruction.value || '(계획 전체)' });
     const response = await fetch('/api/fill', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        nodes,
+        items,
         context: el.aiContext.value,
         instruction: el.aiInstruction.value,
       }),

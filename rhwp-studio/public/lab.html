@@ -81,6 +81,27 @@
   .sample.active { border-color: var(--accent); border-width: 2px; padding: 5px 8px; }
   .sample.active > span:first-child { color: var(--accent); font-weight: 600; }
   .sample .note { font-size: 10px; color: var(--muted); }
+
+  #plan-list:empty { display: none; }
+  #plan-list {
+    margin-top: 8px; max-height: 260px; overflow: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  .plan-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: baseline;
+    padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 11px;
+  }
+  .plan-row:last-child { border-bottom: 0; }
+  .plan-row .content { color: var(--text); }
+  .plan-row .src {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .plan-row .src[data-s="user"] { color: var(--accent); border-color: var(--accent); }
+  .plan-row .src[data-s="writing"] { color: var(--ok); border-color: var(--ok); }
+  .plan-row .meta { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }
+  .plan-row.unbound { background: color-mix(in srgb, var(--fail) 10%, transparent); }
+  .plan-row.unbound .meta { color: var(--fail); }
   #tools { display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
   .section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
   .section h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
@@ -173,7 +194,7 @@
     </div>
 
     <div class="section">
-      <h2>2. 도구</h2>
+      <h2>도구</h2>
       <div class="row">
         <button id="btn-outline" class="primary" disabled>getOutline</button>
         <button id="btn-revert" disabled>revertLastBatch</button>
@@ -183,7 +204,17 @@
     </div>
 
     <div class="section">
-      <h2>3. AI 채움 · 수정</h2>
+      <h2>2. 채움서식 (서식 등록 시점 · 1회)</h2>
+      <div class="row">
+        <button id="btn-plan" disabled>채움서식 만들기</button>
+        <button id="btn-plan-view" disabled>항목 보기</button>
+      </div>
+      <p class="hint" id="plan-status">서식을 열면 확인합니다.</p>
+      <div id="plan-list"></div>
+    </div>
+
+    <div class="section">
+      <h2>3. 사용자 작성 (서식 사용 시점 · 매번)</h2>
       <label for="ai-context">사용자 정보 — 제품에서는 세션·DB에서 옵니다</label>
       <textarea id="ai-context" rows="4">멘토 정보: 성명 박현찬, 학번 202312345, 학과 컴퓨터인공지능학부, 연락처 010-1234-5678
 회의 정보: 2026년 3월 20일(금) 11:00~12:00, 공과대학 7호관 302호 강의실, 참여 5명
