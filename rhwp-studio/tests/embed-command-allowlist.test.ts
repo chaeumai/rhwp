@@ -56,14 +56,19 @@ test('허용 목록 방식이다 — 단축키 맵의 미열거 명령은 기본
   });
 });
 
-test('단독 실행에서는 아무 명령도 막지 않는다', () => {
+test('단독 실행도 제한 표면 — 파일 반입·반출만 추가 허용된다', () => {
   const previous = (globalThis as { window?: unknown }).window;
   const self: Record<string, unknown> = {};
   self.parent = self;
   Object.defineProperty(globalThis, 'window', { configurable: true, value: self });
   try {
-    for (const id of ['format:bold', 'file:save', 'table:insert-row']) {
-      assert.equal(isCommandAllowedInEmbed(id), true, `단독 실행에서 ${id} 는 허용`);
+    // 호스트가 없으므로 왕복 실험에 필요한 파일 명령은 열린다.
+    for (const id of ['file:open', 'file:save', 'file:save-as-hwpx', 'edit:undo', 'view:zoom-in']) {
+      assert.equal(isCommandAllowedInEmbed(id), true, `단독 제한 표면에서 ${id} 는 허용`);
+    }
+    // 구조·서식 명령은 embed 와 동일하게 봉인된다 (RESTRICTED_STANDALONE).
+    for (const id of ['format:bold', 'table:insert-row', 'insert:table', 'file:new-doc', 'file:print']) {
+      assert.equal(isCommandAllowedInEmbed(id), false, `단독 제한 표면에서 ${id} 는 차단`);
     }
   } finally {
     Object.defineProperty(globalThis, 'window', { configurable: true, value: previous });

@@ -53,7 +53,7 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
-import { AUTOSAVE_ENABLED, isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
+import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 
 const wasm = new WasmBridge();
@@ -1262,13 +1262,14 @@ function showLoadError(error: unknown): void {
 
 const initPromise = initialize();
 
-// 한채움 fork: 임베드 상태에서는 편집기 chrome 을 감춘다.
+// 한채움 fork: 제한 편집 표면(embed + 단독 진입 공통)에서는 편집기 chrome 을 감춘다.
 //
 // 호스트 제품의 제한 편집 표면은 "문서와 텍스트 편집"만 노출한다. 메뉴·툴바·
 // 서식 바는 구조·서식 명령의 진입점이라 dispatcher 허용 목록과 함께 이중으로
 // 잠근다. DOM 에서 제거하지 않고 hidden 으로 두는 이유는 메뉴 항목을 참조하는
 // 초기화 코드(단축키 라벨, 활성 상태 갱신)가 요소 부재에 대비돼 있지 않아서다.
-if (isEmbedded()) {
+// 단독 진입은 호스트가 없으므로 최소 툴바에 파일 열기/저장 그룹만 추가한다.
+if (isRestrictedSurface()) {
   for (const id of ['menu-bar', 'icon-toolbar', 'style-bar']) {
     const element = document.getElementById(id);
     if (element) {
@@ -1286,9 +1287,13 @@ if (isEmbedded()) {
   // 문서가 열리기 전에는 전 버튼 disabled — 버튼 자체는 항상 렌더한다.
   const iconToolbarEl = document.getElementById('icon-toolbar');
   if (iconToolbarEl) {
-    embedToolbar = createEmbedToolbar(document, (commandId) => {
-      void dispatcher.dispatch(commandId);
-    });
+    embedToolbar = createEmbedToolbar(
+      document,
+      (commandId) => {
+        void dispatcher.dispatch(commandId);
+      },
+      { includeFileCommands: !isEmbedded() },
+    );
     iconToolbarEl.insertAdjacentElement('beforebegin', embedToolbar.element);
   }
 }

@@ -15,6 +15,8 @@ interface EmbedToolbarItem {
   glyph: string;
   label: string;
   title: string;
+  /** 문서가 열리기 전에도 활성 (파일 열기 등 반입 명령) */
+  alwaysEnabled?: boolean;
 }
 
 type EmbedToolbarEntry = EmbedToolbarItem | 'separator';
@@ -34,6 +36,16 @@ const EMBED_TOOLBAR_ENTRIES: EmbedToolbarEntry[] = [
   { command: 'view:zoom-in', glyph: '+', label: '확대', title: '확대 (Ctrl++)' },
 ];
 
+/**
+ * 단독 제한 표면 전용 파일 그룹 (host-policy.STANDALONE_ALLOWED_COMMANDS 대응).
+ * embed 에는 넣지 않는다 — 반입·반출은 호스트 RPC 의 몫.
+ */
+const STANDALONE_FILE_ENTRIES: EmbedToolbarEntry[] = [
+  { command: 'file:open', glyph: '📂', label: '열기', title: '열기 (Ctrl+O)', alwaysEnabled: true },
+  { command: 'file:save', glyph: '💾', label: '저장', title: '저장 (Ctrl+S)' },
+  'separator',
+];
+
 export interface EmbedToolbar {
   element: HTMLElement;
   /** 문서가 열리기 전에는 비활성으로 둔다 — 버튼은 항상 렌더하고 disabled 만 바꾼다. */
@@ -43,6 +55,7 @@ export interface EmbedToolbar {
 export function createEmbedToolbar(
   doc: Document,
   dispatch: (commandId: string) => void,
+  options?: { includeFileCommands?: boolean },
 ): EmbedToolbar {
   const bar = doc.createElement('div');
   bar.id = 'embed-toolbar';
@@ -51,8 +64,13 @@ export function createEmbedToolbar(
   group.className = 'tb-group';
   bar.appendChild(group);
 
+  const entries: EmbedToolbarEntry[] = options?.includeFileCommands
+    ? [...STANDALONE_FILE_ENTRIES, ...EMBED_TOOLBAR_ENTRIES]
+    : EMBED_TOOLBAR_ENTRIES;
+
   const buttons: HTMLButtonElement[] = [];
-  for (const entry of EMBED_TOOLBAR_ENTRIES) {
+  const alwaysEnabledFlags: boolean[] = [];
+  for (const entry of entries) {
     if (entry === 'separator') {
       const sep = doc.createElement('span');
       sep.className = 'tb-sep';
@@ -64,7 +82,7 @@ export function createEmbedToolbar(
     btn.type = 'button';
     btn.title = entry.title;
     btn.dataset.cmd = entry.command;
-    btn.disabled = true;
+    btn.disabled = !entry.alwaysEnabled;
 
     const glyph = doc.createElement('span');
     glyph.className = 'tb-icon-text';
@@ -80,12 +98,15 @@ export function createEmbedToolbar(
     });
     group.appendChild(btn);
     buttons.push(btn);
+    alwaysEnabledFlags.push(Boolean(entry.alwaysEnabled));
   }
 
   return {
     element: bar,
     setEnabled(enabled: boolean) {
-      for (const btn of buttons) btn.disabled = !enabled;
+      buttons.forEach((btn, i) => {
+        btn.disabled = alwaysEnabledFlags[i] ? false : !enabled;
+      });
     },
   };
 }

@@ -73,9 +73,34 @@ const EMBED_ALLOWED_COMMANDS = new Set([
   'view:zoom-out',
 ]);
 
+/**
+ * 한채움 배포는 단독 진입(editor.hdev.kr 직접 접속)도 제한 편집 표면이다
+ * (2026-08-17 결정). full 편집기 화면은 제품 표면이 아니고, 단독 진입은
+ * 배포 검증·왕복 실험용이므로 embed 와 같은 minimal set 만 노출한다.
+ * upstream full 화면으로 되돌리려면 false 로.
+ */
+export const RESTRICTED_STANDALONE = true;
+
+/** 제한 편집 표면인가 — embed 이거나, 단독 제한 정책이 켜져 있으면 참. */
+export function isRestrictedSurface(): boolean {
+  return isEmbedded() || RESTRICTED_STANDALONE;
+}
+
+/**
+ * 단독 제한 표면에서 추가로 허용하는 파일 명령.
+ *
+ * embed 에서는 문서 반입·반출을 호스트가 postMessage RPC 로 수행하므로 파일
+ * 명령이 허용 목록에 없다. 단독 진입에는 호스트가 없어 왕복 실험 자체가
+ * 불가능해지므로 열기/저장만 연다. embed 에서는 이 목록이 적용되지 않는다.
+ */
+const STANDALONE_ALLOWED_COMMANDS = new Set(['file:open', 'file:save', 'file:save-as-hwpx']);
+
 export function isCommandAllowedInEmbed(commandId: string): boolean {
-  if (!isEmbedded()) return true;
-  return EMBED_ALLOWED_COMMANDS.has(commandId);
+  if (isEmbedded()) return EMBED_ALLOWED_COMMANDS.has(commandId);
+  if (RESTRICTED_STANDALONE) {
+    return EMBED_ALLOWED_COMMANDS.has(commandId) || STANDALONE_ALLOWED_COMMANDS.has(commandId);
+  }
+  return true;
 }
 
 /**

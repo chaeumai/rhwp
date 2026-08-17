@@ -95,6 +95,24 @@ test('문서가 열리기 전에는 전 버튼 비활성이고 클릭해도 발�
   assert.deepEqual(dispatched, []);
 });
 
+test('단독 제한 표면에서는 파일 그룹이 추가되고 열기는 문서 이전에도 활성', () => {
+  const toolbar = createEmbedToolbar(fakeDocument, () => {}, { includeFileCommands: true });
+  const buttons = collectButtons(toolbar.element as unknown as FakeElement);
+  const cmds = buttons.map((btn) => btn.dataset.cmd);
+  assert.ok(cmds.includes('file:open'), '열기 버튼이 있어야 한다');
+  assert.ok(cmds.includes('file:save'), '저장 버튼이 있어야 한다');
+
+  const open = buttons.find((btn) => btn.dataset.cmd === 'file:open')!;
+  const save = buttons.find((btn) => btn.dataset.cmd === 'file:save')!;
+  assert.equal(open.disabled, false, '열기는 문서가 없어도 활성');
+  assert.equal(save.disabled, true, '저장은 문서가 열려야 활성');
+
+  toolbar.setEnabled(true);
+  assert.equal(save.disabled, false);
+  toolbar.setEnabled(false);
+  assert.equal(open.disabled, false, '비활성 전환에도 열기는 활성 유지');
+});
+
 test('setEnabled(true) 후에는 클릭이 해당 명령을 발사한다', () => {
   const dispatched: string[] = [];
   const toolbar = createEmbedToolbar(fakeDocument, (cmd) => dispatched.push(cmd));
