@@ -799,11 +799,6 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
     embedToolbar?.setEnabled(true);
-    // 단독 검증 표면: 투명 테두리 가이드(빨간 점선, 화면 전용) 기본 ON.
-    // dispatch 로 토글해야 버튼 active 표시·이벤트 동기화가 함께 된다.
-    if (isRestrictedSurface() && !isEmbedded() && !wasm.getShowTransparentBorders()) {
-      dispatcher.dispatch('view:border-transparent');
-    }
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
