@@ -2218,21 +2218,55 @@ impl DocumentCore {
         //   3. textbox_hit (글상자 안 빈 영역 — 셀 없는 영역)
         //   4. hit_body (본문 fall-through)
         //
-        // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
-        // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
-        if let Some((idx, offset)) = hit_cell {
-            return Ok(format_hit(&runs[idx], offset, page_num));
-        }
-
-        // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
-        let click_column = self.find_column_at_x(page_num, x);
-
-        // 2. 셀 bbox 기반으로 클릭한 셀 판별 (글상자 안 표 셀 포함)
+        // 2. 셀 bbox 기반으로 클릭한 셀 판별 (글상자 안 표 셀 포함).
+        // [한채움 중첩 표] run 선점 판정보다 먼저 계산한다 — 아래 override 참조.
         let clicked_cell: Option<&CellBboxInfo> = cell_bboxes
             .iter()
             .filter(|cb| cb.has_meta)
             .filter(|cb| x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h)
             .min_by_key(|cb| ((cb.w.max(0.0) * cb.h.max(0.0)) * 1000.0) as i64);
+
+        // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
+        // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
+        if let Some((idx, offset)) = hit_cell {
+            // [한채움 중첩 표] 외곽 셀 문단이 중첩 표를 인라인으로 안는 placeholder
+            // TextRun 은 bbox 가 중첩 표 전체 줄이라, 점이 중첩 셀 bbox 안이어도
+            // 중첩 텍스트 줄 밖이면 이 run 이 선점해 외곽으로 판정됐다 (캐럿이
+            // 중첩 표 좌상단으로 점프). 점을 포함하는 최소 면적 셀이 hit run 의
+            // 셀보다 더 깊은(경로가 긴) 다른 셀이면 run 선점을 취소하고 아래
+            // clicked_cell 분기(셀 내 최근접 줄/빈 셀 진입)로 넘긴다.
+            let run = &runs[idx];
+            let deeper_cell_pending = clicked_cell
+                .map(|cb| {
+                    let same_cell = run.table_id == cb.table_id
+                        && run
+                            .cell_context
+                            .as_ref()
+                            .map(|ctx| {
+                                ctx.parent_para_index == cb.parent_para_index
+                                    && ctx.innermost().cell_index == cb.cell_index
+                            })
+                            .unwrap_or(false);
+                    let cb_depth = cb
+                        .cell_context
+                        .as_ref()
+                        .map(|c| c.path.len())
+                        .unwrap_or(1);
+                    let run_depth = run
+                        .cell_context
+                        .as_ref()
+                        .map(|c| c.path.len())
+                        .unwrap_or(0);
+                    !same_cell && cb_depth > run_depth
+                })
+                .unwrap_or(false);
+            if !deeper_cell_pending {
+                return Ok(format_hit(&runs[idx], offset, page_num));
+            }
+        }
+
+        // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
+        let click_column = self.find_column_at_x(page_num, x);
 
         // 셀 내부 클릭이면: 해당 셀의 run만 검색하여 가장 가까운 위치 반환
         if let Some(cb) = clicked_cell {

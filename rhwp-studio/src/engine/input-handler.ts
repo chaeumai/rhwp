@@ -2674,6 +2674,18 @@ export class InputHandler {
       if (hit.parentParaIndex !== ctx.ppi || hit.controlIndex !== ctx.ci) return null;
       if (hit.cellIndex === undefined) return null;
       if (ctx.cellPath && ctx.cellPath.length > 1 && hit.cellPath) {
+        // [한채움 중첩 표] 같은 중첩 표인지 경로 접두어로 확인 — 종전엔 바깥
+        // (ppi, ci)만 비교해, 같은 외곽 셀 밖 다른 중첩 표(형제 표)로 드래그해도
+        // "같은 표"로 통과돼 다른 표의 row/col 이 섞여 선택이 엉켰다.
+        if (hit.cellPath.length !== ctx.cellPath.length) return null;
+        for (let i = 0; i < ctx.cellPath.length; i++) {
+          const a = ctx.cellPath[i];
+          const b = hit.cellPath[i];
+          if (a.controlIndex !== b.controlIndex) return null;
+          // 마지막 항목의 cellIndex 는 "지금 가리키는 셀"이라 달라도 된다.
+          if (i < ctx.cellPath.length - 1
+            && (a.cellIndex !== b.cellIndex || a.cellParaIndex !== b.cellParaIndex)) return null;
+        }
         // 중첩 표: 경로 기반으로 셀 정보 조회
         const pathJson = JSON.stringify(hit.cellPath);
         const info = this.wasm.getCellInfoByPath(ctx.sec, ctx.ppi, pathJson);
