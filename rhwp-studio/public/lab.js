@@ -31,6 +31,13 @@ const el = {
   newText: document.getElementById('edit-new'),
   outlineView: document.getElementById('outline'),
   log: document.getElementById('log'),
+  aiContext: document.getElementById('ai-context'),
+  aiInstruction: document.getElementById('ai-instruction'),
+  ai: document.getElementById('btn-ai'),
+  aiApply: document.getElementById('btn-ai-apply'),
+  aiDiscard: document.getElementById('btn-ai-discard'),
+  aiStatus: document.getElementById('ai-status'),
+  aiDiff: document.getElementById('ai-diff'),
 };
 
 let port = null;
@@ -82,7 +89,7 @@ async function call(method, params) {
 
 function setReady(ready, message) {
   el.status.textContent = message;
-  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch]) {
+  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch, el.ai]) {
     button.disabled = !ready;
   }
 }
@@ -252,6 +259,144 @@ el.lock.addEventListener('click', async () => {
   el.lock.textContent = `입력 잠금: ${locked ? '잠김' : '해제됨'}`;
   el.lock.classList.toggle('primary', locked);
 });
+
+/*
+ * AI 채움·수정.
+ *
+ * 흐름: getOutline → 프록시(LLM) → 제안 diff → 사용자 승인 → applyEdits.
+ * 승인 단계를 두는 이유는 문서가 사용자의 제출물이기 때문이다. 무엇이
+ * 바뀌는지 보이지 않는 채로 반영하지 않는다.
+ */
+let pendingEdits = null;
+
+function setAiBusy(busy, message) {
+  el.ai.disabled = busy || !port;
+  el.aiStatus.textContent = message;
+  el.aiApply.disabled = busy || !pendingEdits?.length;
+  el.aiDiscard.disabled = busy || !pendingEdits?.length;
+}
+
+function clearProposal(message) {
+  pendingEdits = null;
+  el.aiDiff.replaceChildren();
+  setAiBusy(false, message);
+}
+
+function renderProposal(rows) {
+  el.aiDiff.replaceChildren();
+  for (const row of rows) {
+    const item = document.createElement('div');
+    item.className = row.ok ? 'diff-row' : 'diff-row bad';
+    const path = document.createElement('code');
+    path.textContent = row.path;
+    const to = document.createElement('div');
+    if (row.ok) {
+      if (row.from) {
+        const from = document.createElement('div');
+        from.className = 'from';
+        from.textContent = row.from;
+        item.append(path, from);
+      } else {
+        item.append(path);
+      }
+      to.className = 'to';
+      to.textContent = row.to;
+    } else {
+      to.textContent = row.error;
+      item.append(path);
+    }
+    item.append(to);
+    el.aiDiff.appendChild(item);
+  }
+}
+
+el.ai.addEventListener('click', async () => {
+  clearProposal('개요를 읽는 중…');
+  setAiBusy(true, '개요를 읽는 중…');
+  try {
+    const outline = await call('getOutline');
+    const nodes = [];
+    for (const section of outline.sections) {
+      for (const node of section.paragraphs) nodes.push({ path: node.path, text: node.preview });
+      for (const table of section.tables) {
+        for (const cell of table.cells) {
+          nodes.push({ path: cell.path, row: cell.row, col: cell.col, text: cell.preview });
+        }
+      }
+    }
+    if (nodes.length === 0) {
+      clearProposal('문서에 읽을 노드가 없습니다. 문서를 먼저 여세요.');
+      return;
+    }
+
+    setAiBusy(true, `AI 호출 중… (노드 ${nodes.length}개)`);
+    log('→ AI fill', { nodes: nodes.length, instruction: el.aiInstruction.value || '(전체 채움)' });
+    const response = await fetch('/api/fill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nodes,
+        context: el.aiContext.value,
+        instruction: el.aiInstruction.value,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      log('✗ AI fill', payload.message ?? `HTTP ${response.status}`, 'fail');
+      clearProposal(`AI 호출 실패: ${payload.message ?? response.status}`);
+      return;
+    }
+    log('✓ AI fill', {
+      model: payload.model,
+      edits: payload.edits.length,
+      ms: payload.elapsedMs,
+      usage: payload.usage,
+      message: payload.message,
+    }, 'ok');
+
+    if (payload.edits.length === 0) {
+      clearProposal(`AI가 제안한 변경이 없습니다. ${payload.message || ''}`.trim());
+      return;
+    }
+
+    // expectedText 는 모델이 아니라 문서에서 읽은 실제 값으로 채운다. 모델이
+    // 본 것은 preview(공백 정규화·절단)라 원문을 그대로 되뇔 수 없다.
+    const rows = await call('getTextByPaths', { paths: payload.edits.map((e) => e.path) });
+    const byPath = new Map(rows.map((r) => [r.path, r.text]));
+
+    const preview = [];
+    const usable = [];
+    for (const edit of payload.edits) {
+      const current = byPath.get(edit.path);
+      if (current === null || current === undefined) {
+        preview.push({ path: edit.path, ok: false, error: '문서에 없는 경로 — 건너뜁니다' });
+        continue;
+      }
+      usable.push({ path: edit.path, expectedText: current, newText: edit.newText });
+      preview.push({ path: edit.path, ok: true, from: current, to: edit.newText });
+    }
+
+    pendingEdits = usable;
+    renderProposal(preview);
+    setAiBusy(false, `제안 ${usable.length}건. 확인 후 반영하세요.${payload.message ? ` — ${payload.message}` : ''}`);
+  } catch (error) {
+    clearProposal(`실패: ${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+el.aiApply.addEventListener('click', async () => {
+  if (!pendingEdits?.length) return;
+  setAiBusy(true, '반영 중…');
+  const result = await call('applyEdits', { edits: pendingEdits }).catch(() => null);
+  if (result?.ok) {
+    clearProposal(`반영 완료 — ${result.applied}건. 되돌리려면 revertLastBatch.`);
+  } else {
+    const failed = result?.outcomes?.find((o) => !o.ok);
+    clearProposal(`반영 실패${failed ? ` — ${failed.errorCode} (${failed.path})` : ''}`);
+  }
+});
+
+el.aiDiscard.addEventListener('click', () => clearProposal('제안을 버렸습니다.'));
 
 el.export.addEventListener('click', async () => {
   const result = await request('exportHwpx').catch((error) => {

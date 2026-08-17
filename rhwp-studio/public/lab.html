@@ -86,6 +86,14 @@
   .log-entry .fail { color: var(--fail); }
   .log-entry .meta { color: var(--muted); }
   .hint { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+  #ai-diff:empty { display: none; }
+  #ai-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .diff-row { display: grid; grid-template-columns: 1fr; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .diff-row:last-child { border-bottom: 0; }
+  .diff-row code { font-size: 10px; color: var(--accent); }
+  .diff-row .from { color: var(--muted); text-decoration: line-through; }
+  .diff-row .to { color: var(--ok); font-weight: 600; }
+  .diff-row.bad .to { color: var(--fail); text-decoration: none; font-weight: 400; }
 </style>
 </head>
 <body>
@@ -115,7 +123,25 @@
     </div>
 
     <div class="section">
-      <h2>3. 편집 (applyEdits)</h2>
+      <h2>3. AI 채움 · 수정</h2>
+      <label for="ai-context">사용자 정보 — 제품에서는 세션·DB에서 옵니다</label>
+      <textarea id="ai-context" rows="4">멘토 정보: 성명 박현찬, 학번 202312345, 학과 컴퓨터인공지능학부, 연락처 010-1234-5678
+회의 정보: 2026년 3월 20일(금) 11:00~12:00, 공과대학 7호관 302호 강의실, 참여 5명
+회의 주제: SW전공 멘토링 3주차 - 웹 프론트엔드 실습 코드리뷰
+신청 금액: 금50,000원(오만원), 신청 비목: 주식비</textarea>
+      <label for="ai-instruction">수정 지시 — 비우면 빈 칸 전체를 채웁니다</label>
+      <input type="text" id="ai-instruction" placeholder="예: 회의 장소를 공대 3호관 101호로 바꿔줘">
+      <div class="row" style="margin-top:8px">
+        <button id="btn-ai" class="primary" disabled>AI 실행</button>
+        <button id="btn-ai-apply" disabled>제안 반영</button>
+        <button id="btn-ai-discard" disabled>제안 버리기</button>
+      </div>
+      <p class="hint" id="ai-status">편집기와 프록시가 준비되면 활성화됩니다.</p>
+      <div id="ai-diff"></div>
+    </div>
+
+    <div class="section">
+      <h2>4. 수동 편집 (applyEdits)</h2>
       <label for="edit-path">path — 개요에서 노드를 누르면 채워집니다</label>
       <input type="text" id="edit-path" placeholder="s0/p1/c0/cell3/p0">
       <label for="edit-expected">expectedText — 현재 값. 다르면 적용하지 않습니다</label>
