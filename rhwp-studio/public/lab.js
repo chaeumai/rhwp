@@ -38,7 +38,21 @@ const el = {
   aiDiscard: document.getElementById('btn-ai-discard'),
   aiStatus: document.getElementById('ai-status'),
   aiDiff: document.getElementById('ai-diff'),
+  samples: document.getElementById('samples'),
+  tabEditor: document.getElementById('tab-editor'),
+  tabCompare: document.getElementById('tab-compare'),
+  viewEditor: document.getElementById('view-editor'),
+  viewCompare: document.getElementById('view-compare'),
+  compare: document.getElementById('btn-compare'),
+  compareStatus: document.getElementById('compare-status'),
+  pdfA: document.getElementById('pdf-a'),
+  pdfB: document.getElementById('pdf-b'),
+  pdfAMeta: document.getElementById('pdf-a-meta'),
+  pdfBMeta: document.getElementById('pdf-b-meta'),
 };
+
+/** 지금 열려 있는 문서의 출처. PDF 비교에서 "원본"을 무엇으로 잡을지 결정한다. */
+let loadedSampleId = null;
 
 let port = null;
 let nextId = 0;
@@ -89,9 +103,10 @@ async function call(method, params) {
 
 function setReady(ready, message) {
   el.status.textContent = message;
-  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch, el.ai]) {
+  for (const button of [el.load, el.outline, el.revert, el.lock, el.export, el.apply, el.read, el.mismatch, el.ai, el.compare]) {
     button.disabled = !ready;
   }
+  for (const button of el.samples.querySelectorAll('button')) button.disabled = !ready;
 }
 
 function connect() {
@@ -147,19 +162,153 @@ el.frame.addEventListener('load', () => {
   connect();
 });
 
+async function loadBytesIntoEditor(bytes, fileName, sampleId) {
+  log('→ loadFile', { fileName, byteLength: bytes.byteLength });
+  try {
+    const result = await request('loadFile', { data: bytes, fileName, skipUnsavedGuard: true });
+    loadedSampleId = sampleId ?? null;
+    // 문서가 바뀌면 이전 비교 결과는 더 이상 이 문서의 것이 아니다.
+    resetCompare(sampleId ? '문서를 열었습니다. [PDF 비교 생성]을 누르세요.' : '직접 연 파일은 원본 PDF 기준선이 없습니다.');
+    clearProposal('문서를 열었습니다.');
+    log('✓ loadFile', result, 'ok');
+    return true;
+  } catch (error) {
+    log('✗ loadFile', error instanceof Error ? error.message : String(error), 'fail');
+    return false;
+  }
+}
+
 el.load.addEventListener('click', async () => {
   const file = el.file.files?.[0];
   if (!file) {
     log('파일이 선택되지 않았습니다.', undefined, 'fail');
     return;
   }
-  const bytes = await file.arrayBuffer();
-  log('→ loadFile', { fileName: file.name, byteLength: bytes.byteLength });
+  await loadBytesIntoEditor(await file.arrayBuffer(), file.name, null);
+});
+
+/** 샘플 목록. 서버가 파일을 들고 있으므로 목록만 받아 버튼으로 만든다. */
+async function loadSampleList() {
   try {
-    const result = await request('loadFile', { data: bytes, fileName: file.name, skipUnsavedGuard: true });
-    log('✓ loadFile', result, 'ok');
+    const response = await fetch('/api/samples');
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.message ?? '목록을 받지 못했습니다');
+    el.samples.replaceChildren();
+    for (const sample of payload.samples) {
+      const button = document.createElement('button');
+      button.className = 'sample';
+      button.disabled = !port;
+      const title = document.createElement('span');
+      title.textContent = sample.title;
+      const note = document.createElement('span');
+      note.className = 'note';
+      note.textContent = sample.note;
+      button.append(title, note);
+      button.addEventListener('click', async () => {
+        setReady(false, `${sample.title} 여는 중…`);
+        try {
+          const res = await fetch(`/api/samples/${encodeURIComponent(sample.id)}`);
+          if (!res.ok) throw new Error(`샘플 수신 실패 (${res.status})`);
+          const bytes = await res.arrayBuffer();
+          await loadBytesIntoEditor(bytes, sample.fileName, sample.id);
+        } catch (error) {
+          log('✗ 샘플 열기', error instanceof Error ? error.message : String(error), 'fail');
+        } finally {
+          setReady(true, el.status.textContent);
+        }
+      });
+      el.samples.appendChild(button);
+    }
   } catch (error) {
-    log('✗ loadFile', error instanceof Error ? error.message : String(error), 'fail');
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.textContent = `샘플 목록을 불러오지 못했습니다: ${error instanceof Error ? error.message : error}`;
+    el.samples.replaceChildren(note);
+  }
+}
+void loadSampleList();
+
+/*
+ * 탭 — 두 보기를 항상 렌더해 두고 활성만 표시한다.
+ * 편집기 iframe 을 떼었다 붙이면 세션이 끊겨 문서가 날아간다.
+ */
+function selectPane(which) {
+  const editor = which === 'editor';
+  el.viewEditor.dataset.active = String(editor);
+  el.viewCompare.dataset.active = String(!editor);
+  el.tabEditor.classList.toggle('active', editor);
+  el.tabCompare.classList.toggle('active', !editor);
+  el.tabEditor.setAttribute('aria-selected', String(editor));
+  el.tabCompare.setAttribute('aria-selected', String(!editor));
+}
+el.tabEditor.addEventListener('click', () => selectPane('editor'));
+el.tabCompare.addEventListener('click', () => selectPane('compare'));
+selectPane('editor');
+
+let pdfUrls = [];
+function resetCompare(message) {
+  for (const url of pdfUrls) URL.revokeObjectURL(url);
+  pdfUrls = [];
+  el.pdfA.removeAttribute('src');
+  el.pdfB.removeAttribute('src');
+  el.pdfAMeta.textContent = '';
+  el.pdfBMeta.textContent = '';
+  el.compareStatus.textContent = message;
+}
+
+/**
+ * 원본 PDF vs 현재 문서 PDF.
+ *
+ * 양쪽 모두 hwpAgent 로 변환한다. 한쪽만 다른 변환기를 쓰면 차이가 편집
+ * 때문인지 변환기 때문인지 구분할 수 없다.
+ */
+el.compare.addEventListener('click', async () => {
+  if (!loadedSampleId) {
+    el.compareStatus.textContent = '샘플로 연 문서만 원본과 비교할 수 있습니다.';
+    return;
+  }
+  el.compare.disabled = true;
+  resetCompare('현재 문서를 내보내는 중…');
+  try {
+    const exported = await request('exportHwpx');
+    const bytes = exported instanceof ArrayBuffer ? new Uint8Array(exported)
+      : ArrayBuffer.isView(exported) ? new Uint8Array(exported.buffer, exported.byteOffset, exported.byteLength)
+      : Uint8Array.from(exported);
+
+    el.compareStatus.textContent = 'PDF 변환 중… (양쪽 모두 hwpAgent)';
+    const started = Date.now();
+    const [originalRes, editedRes] = await Promise.all([
+      fetch(`/api/pdf/sample/${encodeURIComponent(loadedSampleId)}`),
+      fetch('/api/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes,
+      }),
+    ]);
+    if (!originalRes.ok) throw new Error(`원본 PDF 실패 (${originalRes.status})`);
+    if (!editedRes.ok) {
+      const detail = await editedRes.json().catch(() => null);
+      throw new Error(detail?.message ?? `편집본 PDF 실패 (${editedRes.status})`);
+    }
+
+    const [originalPdf, editedPdf] = await Promise.all([originalRes.blob(), editedRes.blob()]);
+    const urlA = URL.createObjectURL(originalPdf);
+    const urlB = URL.createObjectURL(editedPdf);
+    pdfUrls = [urlA, urlB];
+    el.pdfA.src = urlA;
+    el.pdfB.src = urlB;
+    el.pdfAMeta.textContent = `${Math.round(originalPdf.size / 1024)}KB`;
+    el.pdfBMeta.textContent = `${Math.round(editedPdf.size / 1024)}KB · HWPX ${Math.round(bytes.byteLength / 1024)}KB`;
+    el.compareStatus.textContent = `변환 완료 (${((Date.now() - started) / 1000).toFixed(1)}s)`;
+    log('✓ PDF 비교', {
+      original: originalPdf.size, edited: editedPdf.size, ms: Date.now() - started,
+    }, 'ok');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    resetCompare(`실패: ${message}`);
+    log('✗ PDF 비교', message, 'fail');
+  } finally {
+    el.compare.disabled = !port;
   }
 });
 
