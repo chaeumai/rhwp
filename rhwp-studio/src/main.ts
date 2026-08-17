@@ -372,8 +372,12 @@ async function initialize(): Promise<void> {
       },
     });
 
-    // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
-    document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
+    // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치.
+    // [한채움] #icon-toolbar 범위로 한정 — 전역 .tb-btn 선택은 같은 클래스를
+    // 쓰는 제한 표면 최소 툴바(자체 click 리스너 보유)에도 붙어, 실클릭 한
+    // 번에 mousedown+click 이중 dispatch 로 토글이 무효화되고 확대가 2단계
+    // 뛰는 결함이 있었다.
+    document.querySelectorAll('#icon-toolbar .tb-btn[data-cmd]').forEach(btn => {
       btn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         const cmd = (btn as HTMLElement).dataset.cmd;
