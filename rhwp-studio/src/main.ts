@@ -53,6 +53,8 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
+import { applyEdits, buildOutline, readPaths, type AuthoringDocument } from '@/embed/authoring';
+import { setEmbedInputLocked } from '@/embed/input-lock';
 import { isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 
@@ -1288,6 +1290,21 @@ if (isEmbedded()) {
   }
 }
 
+/**
+ * AI 작성 배치의 되돌리기 지점. 한 칸만 유지한다.
+ *
+ * 편집기 자체 undo 와 따로 두는 이유: AI 배치 하나가 undo 여러 단계로
+ * 흩어져 기록되므로, "방금 AI 가 한 것만" 정확히 취소할 수 없다.
+ */
+let lastAuthoringSnapshotId: number | null = null;
+
+/** 문서 모델을 직접 고친 뒤 화면·dirty 상태를 편집 경로와 같게 맞춘다. */
+function notifyAuthoringMutation(): void {
+  eventBus.emit('document-mutated', 'ai-authoring');
+  // canvas-view 가 document-changed 에서 refreshPages() 를 돌린다.
+  eventBus.emit('document-changed', 'ai-authoring');
+}
+
 installEmbedRuntime({
   hostWindow: window,
   parentWindow: window.parent,
@@ -1350,6 +1367,52 @@ installEmbedRuntime({
     async exportHwpVerify() {
       await initPromise;
       return JSON.parse(wasm.exportHwpVerify());
+    },
+    async getOutline() {
+      await initPromise;
+      return buildOutline(wasm as unknown as AuthoringDocument);
+    },
+    async getTextByPaths(paths) {
+      await initPromise;
+      return readPaths(wasm as unknown as AuthoringDocument, paths);
+    },
+    async applyEdits(edits) {
+      await initPromise;
+      const result = applyEdits(wasm as unknown as AuthoringDocument, edits);
+      if (result.ok && result.applied > 0) {
+        // 직전 배치만 되돌릴 수 있게 한 칸짜리 이력을 둔다. 편집기 자체
+        // undo 와 별개인 이유는, AI 배치 하나가 undo 여러 단계에 걸쳐
+        // 흩어져 있어 "방금 AI가 한 것"만 정확히 취소할 수 없기 때문이다.
+        if (lastAuthoringSnapshotId !== null) {
+          try {
+            wasm.discardSnapshot(lastAuthoringSnapshotId);
+          } catch {
+            // 이미 소비된 스냅샷이면 무시한다.
+          }
+        }
+        lastAuthoringSnapshotId = result.snapshotId;
+        notifyAuthoringMutation();
+      }
+      return result;
+    },
+    async revertLastBatch() {
+      await initPromise;
+      if (lastAuthoringSnapshotId === null) {
+        return { ok: true, reverted: false };
+      }
+      try {
+        wasm.restoreSnapshot(lastAuthoringSnapshotId);
+        wasm.discardSnapshot(lastAuthoringSnapshotId);
+        lastAuthoringSnapshotId = null;
+        notifyAuthoringMutation();
+        return { ok: true, reverted: true };
+      } catch {
+        return { ok: false, reverted: false };
+      }
+    },
+    async setInputLocked(locked) {
+      await initPromise;
+      return { locked: setEmbedInputLocked(locked) };
     },
   },
 });

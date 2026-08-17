@@ -1,4 +1,5 @@
 import type { HmlSaveState } from '../core/hml-save-capability.ts';
+import type { ApplyEditsResult, EditRequest, Outline } from './authoring.ts';
 
 export interface EmbedRpcHandlers {
   ready(): Promise<boolean>;
@@ -17,6 +18,17 @@ export interface EmbedRpcHandlers {
   exportHml(): Promise<Uint8Array>;
   getHmlSaveState(): Promise<HmlSaveState>;
   exportHwpVerify(): Promise<unknown>;
+  /** 한채움 fork: AI 작성 표면 (ai-authoring-v1). */
+  getOutline(): Promise<Outline>;
+  getTextByPaths(paths: readonly string[]): Promise<Array<{ path: string; text: string | null }>>;
+  applyEdits(edits: readonly EditRequest[]): Promise<ApplyEditsResult>;
+  revertLastBatch(): Promise<{ ok: boolean; reverted: boolean }>;
+  /**
+   * 사용자 직접 입력을 잠근다. AI 가 문서를 읽고 쓰는 동안 사용자가 타이핑하면
+   * AI 가 잡아 둔 좌표가 밀려 배치 전체가 실패한다. 명령 허용 목록으로는
+   * 막히지 않는 경로(직접 타이핑·붙여넣기·IME)라 별도 잠금이 필요하다.
+   */
+  setInputLocked(locked: boolean): Promise<{ locked: boolean }>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -31,6 +43,32 @@ export interface EmbedRendererDiagnosticsV1 {
 
 function asParams(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+}
+
+/**
+ * 인자 검증은 여기서 끝낸다. 잘못된 모양을 통과시켜 WASM 까지 내려보내면
+ * 실패 지점이 편집 코어 안쪽이 되어 호출자가 무엇이 틀렸는지 알 수 없다.
+ */
+function asPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error('paths must be an array');
+  if (value.length > 200) throw new Error('paths accepts at most 200 entries');
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry.length === 0) throw new Error('path must be a non-empty string');
+    return entry;
+  });
+}
+
+function asEdits(value: unknown): EditRequest[] {
+  if (!Array.isArray(value)) throw new Error('edits must be an array');
+  if (value.length > 100) throw new Error('edits accepts at most 100 entries');
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) throw new Error('edit must be an object');
+    const edit = entry as Record<string, unknown>;
+    if (typeof edit.path !== 'string' || edit.path.length === 0) throw new Error('edit.path must be a non-empty string');
+    if (typeof edit.expectedText !== 'string') throw new Error('edit.expectedText must be a string');
+    if (typeof edit.newText !== 'string') throw new Error('edit.newText must be a string');
+    return { path: edit.path, expectedText: edit.expectedText, newText: edit.newText };
+  });
 }
 
 function asBytes(value: unknown, allowLegacyArray: boolean): Uint8Array {
@@ -73,6 +111,11 @@ export async function routeEmbedRequest(
     case 'exportHml': return handlers.exportHml();
     case 'getHmlSaveState': return handlers.getHmlSaveState();
     case 'exportHwpVerify': return handlers.exportHwpVerify();
+    case 'getOutline': return handlers.getOutline();
+    case 'getTextByPaths': return handlers.getTextByPaths(asPaths(params.paths));
+    case 'applyEdits': return handlers.applyEdits(asEdits(params.edits));
+    case 'revertLastBatch': return handlers.revertLastBatch();
+    case 'setInputLocked': return handlers.setInputLocked(params.locked === true);
     default: throw new Error(`Unknown method: ${method}`);
   }
 }

@@ -1,5 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import { EventBus } from '@/core/event-bus';
+import { isEmbedInputLocked } from '@/embed/input-lock';
 import { CursorState } from './cursor';
 import { CaretRenderer } from './caret-renderer';
 import { FieldMarkerRenderer } from './field-marker-renderer';
@@ -1760,6 +1761,11 @@ export class InputHandler {
 
   /** 특수 키 처리 (Backspace, Enter, 화살표, Ctrl+Z/Y) */
   private onKeyDown(e: KeyboardEvent): void {
+    // 한채움 fork: AI 작성 중에는 사용자 입력이 문서 좌표를 밀지 못하게 막는다.
+    if (isEmbedInputLocked()) {
+      e.preventDefault();
+      return;
+    }
     _keyboard.onKeyDown.call(this, e);
   }
 
@@ -1782,11 +1788,19 @@ export class InputHandler {
 
   /** 잘라내기 이벤트 처리 */
   private onCut(e: ClipboardEvent): void {
+    if (isEmbedInputLocked()) {
+      e.preventDefault();
+      return;
+    }
     _keyboard.onCut.call(this, e);
   }
 
   /** 붙여넣기 이벤트 처리 */
   private onPaste(e: ClipboardEvent): void {
+    if (isEmbedInputLocked()) {
+      e.preventDefault();
+      return;
+    }
     _keyboard.onPaste.call(this, e);
   }
 
@@ -2237,11 +2251,16 @@ export class InputHandler {
 
   /** IME 조합 시작 */
   private onCompositionStart(): void {
+    if (isEmbedInputLocked()) return;
     _text.onCompositionStart.call(this);
   }
 
   /** IME 조합 완료 — 조합 텍스트를 Command로 기록 */
   private onCompositionEnd(): void {
+    if (isEmbedInputLocked()) {
+      this.textarea.value = '';
+      return;
+    }
     _text.onCompositionEnd.call(this);
   }
 
@@ -2252,6 +2271,13 @@ export class InputHandler {
 
   /** 텍스트 입력 처리 (textarea input 이벤트) */
   private onInput(e?: Event): void {
+    // keydown 을 막아도 IME·자동완성 등으로 textarea 에 값이 들어올 수 있다.
+    // 문서에 반영하지 않고 버퍼를 비워, 잠금 해제 뒤 밀린 입력이 쏟아지는
+    // 것도 함께 막는다.
+    if (isEmbedInputLocked()) {
+      this.textarea.value = '';
+      return;
+    }
     _text.onInput.call(this, e as InputEvent);
   }
 
