@@ -78,6 +78,8 @@
     background: var(--bg); color: var(--text); cursor: pointer; font-size: 12px;
   }
   .sample:hover:not(:disabled) { border-color: var(--accent); }
+  .sample.active { border-color: var(--accent); border-width: 2px; padding: 5px 8px; }
+  .sample.active > span:first-child { color: var(--accent); font-weight: 600; }
   .sample .note { font-size: 10px; color: var(--muted); }
   #tools { display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
   .section { padding: 10px 12px; border-bottom: 1px solid var(--border); }

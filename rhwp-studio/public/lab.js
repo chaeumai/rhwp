@@ -14,6 +14,23 @@ const PROTOCOL_VERSION = 1;
 const SESSION_ID = `lab-${Math.random().toString(36).slice(2, 10)}`;
 const REQUIRED_CAPABILITY = 'ai-authoring-v1';
 
+/*
+ * Lab 은 편집기의 PWA Service Worker 스코프 안에 있고, 빌드가 lab.html/lab.js
+ * 를 precache 에 넣는다. 그래서 Lab 을 고쳐 배포해도 이전에 방문한 브라우저는
+ * 옛 파일을 계속 받는다 — 실제로 "샘플이 눌리지 않는다"로 나타났다.
+ *
+ * Lab 은 검증용 하네스라 오프라인 동작이 필요 없다. 등록된 SW 와 캐시를
+ * 걷어내 항상 최신 배포본이 뜨게 한다.
+ */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations()
+    .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+    .catch(() => {});
+}
+if (typeof caches !== 'undefined') {
+  caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+}
+
 const el = {
   status: document.getElementById('editor-status'),
   frame: document.getElementById('editor'),
@@ -171,9 +188,15 @@ async function loadBytesIntoEditor(bytes, fileName, sampleId) {
     resetCompare(sampleId ? '문서를 열었습니다. [PDF 비교 생성]을 누르세요.' : '직접 연 파일은 원본 PDF 기준선이 없습니다.');
     clearProposal('문서를 열었습니다.');
     log('✓ loadFile', result, 'ok');
+    const pages = result && typeof result.pageCount === 'number' ? ` · ${result.pageCount}쪽` : '';
+    // 상태를 여기서 확정한다. 호출부가 "여는 중…" 을 그대로 되돌려 놓으면
+    // 문서가 실제로 열렸는데도 실패한 것처럼 보인다.
+    setReady(true, `열림: ${fileName}${pages}`);
     return true;
   } catch (error) {
-    log('✗ loadFile', error instanceof Error ? error.message : String(error), 'fail');
+    const message = error instanceof Error ? error.message : String(error);
+    log('✗ loadFile', message, 'fail');
+    setReady(true, `열기 실패: ${message}`);
     return false;
   }
 }
@@ -205,16 +228,20 @@ async function loadSampleList() {
       note.textContent = sample.note;
       button.append(title, note);
       button.addEventListener('click', async () => {
+        for (const other of el.samples.querySelectorAll('.sample')) other.classList.remove('active');
+        button.classList.add('active');
         setReady(false, `${sample.title} 여는 중…`);
         try {
           const res = await fetch(`/api/samples/${encodeURIComponent(sample.id)}`);
           if (!res.ok) throw new Error(`샘플 수신 실패 (${res.status})`);
           const bytes = await res.arrayBuffer();
+          // 성공·실패 모두 loadBytesIntoEditor 가 상태를 확정한다.
           await loadBytesIntoEditor(bytes, sample.fileName, sample.id);
         } catch (error) {
-          log('✗ 샘플 열기', error instanceof Error ? error.message : String(error), 'fail');
-        } finally {
-          setReady(true, el.status.textContent);
+          const message = error instanceof Error ? error.message : String(error);
+          log('✗ 샘플 열기', message, 'fail');
+          button.classList.remove('active');
+          setReady(true, `샘플 열기 실패: ${message}`);
         }
       });
       el.samples.appendChild(button);
