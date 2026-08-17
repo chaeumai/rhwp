@@ -46,12 +46,20 @@ const STANDALONE_FILE_ENTRIES: EmbedToolbarEntry[] = [
   'separator',
 ];
 
-/** 단독 표면 후미 그룹 — 화면 전용 보기 토글. */
+/** 단독 표면 후미 그룹 — 표 편집과 화면 전용 보기 토글. */
 const STANDALONE_VIEW_ENTRIES: EmbedToolbarEntry[] = [
+  'separator',
+  // 표 편집 — 캐럿이 표 안에 있을 때만 dispatcher canExecute 가 실행을 허용한다.
+  { command: 'table:insert-row-below', glyph: '⊕', label: '행 추가', title: '아래에 행 추가' },
+  { command: 'table:delete-row', glyph: '⊖', label: '행 삭제', title: '행 삭제' },
+  { command: 'table:insert-col-right', glyph: '⊞', label: '열 추가', title: '오른쪽에 열 추가' },
+  { command: 'table:delete-col', glyph: '⊟', label: '열 삭제', title: '열 삭제' },
+  { command: 'table:cell-merge', glyph: '⧉', label: '셀 병합', title: '셀 합치기 (셀 블록 선택 후)' },
+  { command: 'table:cell-split', glyph: '⿲', label: '셀 나누기', title: '셀 나누기' },
   'separator',
   {
     command: 'view:border-transparent',
-    glyph: '⊞',
+    glyph: '⊡',
     label: '투명선',
     title: '투명 테두리 가이드 (빨간 점선, 화면 전용) 토글',
   },
