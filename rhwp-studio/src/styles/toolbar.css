@@ -253,3 +253,31 @@
   font-size: 28px;
   line-height: 18px;
 }
+
+/* ================================================================
+   임베드 최소 툴바 — 감춘 chrome 대신 허용 명령만 노출 (embed-toolbar.ts)
+   ================================================================ */
+#embed-toolbar {
+  display: flex;
+  align-items: stretch;
+  padding: 2px 8px;
+  background: linear-gradient(to bottom, var(--ui-toolbar-bg-start), var(--ui-toolbar-bg-end));
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  height: 48px;
+}
+
+#embed-toolbar .tb-icon-text {
+  font-size: 16px;
+  line-height: 18px;
+}
+
+#embed-toolbar .tb-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#embed-toolbar .tb-btn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+}

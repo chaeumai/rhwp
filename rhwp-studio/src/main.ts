@@ -54,6 +54,7 @@ import {
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
 import { isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
+import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -82,6 +83,7 @@ if (import.meta.env.DEV) {
 let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
 let toolbar: Toolbar | null = null;
+let embedToolbar: EmbedToolbar | null = null;
 let ruler: Ruler | null = null;
 let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
 let editMode: EditorEditMode = 'normal';
@@ -793,6 +795,7 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     console.log('[initDoc] 5. toolbar setEnabled');
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
+    embedToolbar?.setEnabled(true);
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
@@ -1273,6 +1276,16 @@ if (isEmbedded()) {
     }
   }
   document.documentElement.dataset.rhwpEmbed = 'restricted';
+
+  // 감춘 chrome 대신 허용 명령만 담은 최소 툴바를 같은 자리에 노출한다.
+  // 문서가 열리기 전에는 전 버튼 disabled — 버튼 자체는 항상 렌더한다.
+  const iconToolbarEl = document.getElementById('icon-toolbar');
+  if (iconToolbarEl) {
+    embedToolbar = createEmbedToolbar(document, (commandId) => {
+      void dispatcher.dispatch(commandId);
+    });
+    iconToolbarEl.insertAdjacentElement('beforebegin', embedToolbar.element);
+  }
 }
 
 installEmbedRuntime({
