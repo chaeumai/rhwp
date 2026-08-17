@@ -53,7 +53,7 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
-import { applyEdits, buildOutline, readPaths, type AuthoringDocument } from '@/embed/authoring';
+import { applyEdits, buildOutline, readPaths } from '@/embed/authoring';
 import { setEmbedInputLocked } from '@/embed/input-lock';
 import { isEmbedded, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
@@ -1370,15 +1370,15 @@ installEmbedRuntime({
     },
     async getOutline() {
       await initPromise;
-      return buildOutline(wasm as unknown as AuthoringDocument);
+      return buildOutline(wasm);
     },
     async getTextByPaths(paths) {
       await initPromise;
-      return readPaths(wasm as unknown as AuthoringDocument, paths);
+      return readPaths(wasm, paths);
     },
     async applyEdits(edits) {
       await initPromise;
-      const result = applyEdits(wasm as unknown as AuthoringDocument, edits);
+      const result = applyEdits(wasm, edits);
       if (result.ok && result.applied > 0) {
         // 직전 배치만 되돌릴 수 있게 한 칸짜리 이력을 둔다. 편집기 자체
         // undo 와 별개인 이유는, AI 배치 하나가 undo 여러 단계에 걸쳐

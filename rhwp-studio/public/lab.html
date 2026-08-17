@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rhwp AI 작성 표면 Lab</title>
+<link rel="icon" href="./favicon.ico">
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f6f7f9;
+    --border: #d7dbe0;
+    --text: #1b1f24;
+    --muted: #5c6570;
+    --accent: #2d6cdf;
+    --ok: #1a7f45;
+    --fail: #c0392b;
+    --code-bg: #f0f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16191d;
+      --panel: #1f2429;
+      --border: #333b44;
+      --text: #e6e9ed;
+      --muted: #9aa5b1;
+      --accent: #6ea3ff;
+      --ok: #4ade80;
+      --fail: #f87171;
+      --code-bg: #12161a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 440px;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  #editor-pane { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+  #editor-status {
+    padding: 6px 12px; font-size: 12px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #editor { flex: 1; width: 100%; border: 0; min-height: 0; }
+  #tools { display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+  .section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .section h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  button {
+    font: inherit; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+  input[type=text], textarea, select {
+    font: inherit; width: 100%; padding: 5px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  textarea { resize: vertical; min-height: 46px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
+  #outline { flex: 1; overflow: auto; padding: 8px 12px; min-height: 120px; }
+  #outline .empty { color: var(--muted); font-size: 12px; }
+  .node {
+    display: flex; gap: 6px; align-items: baseline; width: 100%; text-align: left;
+    padding: 3px 6px; border: 0; background: none; border-radius: 4px; cursor: pointer;
+    font-size: 12px; color: var(--text);
+  }
+  .node:hover { background: var(--code-bg); }
+  .node code { color: var(--accent); font-size: 11px; white-space: nowrap; }
+  .node .preview { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .preview.blank { font-style: italic; opacity: .7; }
+  .group { margin: 8px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600; }
+  #log {
+    height: 190px; overflow: auto; margin: 0; padding: 8px 12px;
+    background: var(--code-bg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; white-space: pre-wrap; word-break: break-all; border-top: 1px solid var(--border);
+  }
+  .log-entry { margin-bottom: 6px; }
+  .log-entry .ok { color: var(--ok); }
+  .log-entry .fail { color: var(--fail); }
+  .log-entry .meta { color: var(--muted); }
+  .hint { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+</style>
+</head>
+<body>
+  <div id="editor-pane">
+    <div id="editor-status">편집기에 연결하는 중…</div>
+    <iframe id="editor" src="./" title="rhwp 편집기"></iframe>
+  </div>
+
+  <div id="tools">
+    <div class="section">
+      <h2>1. 문서 열기</h2>
+      <div class="row">
+        <input type="file" id="file" accept=".hwpx,.hwp" style="flex:1">
+        <button id="btn-load" disabled>열기</button>
+      </div>
+      <p class="hint">편집기가 준비되면 활성화됩니다. HWPX 파일을 고르세요.</p>
+    </div>
+
+    <div class="section">
+      <h2>2. 도구</h2>
+      <div class="row">
+        <button id="btn-outline" class="primary" disabled>getOutline</button>
+        <button id="btn-revert" disabled>revertLastBatch</button>
+        <button id="btn-lock" disabled>입력 잠금: 해제됨</button>
+        <button id="btn-export" disabled>exportHwpx</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>3. 편집 (applyEdits)</h2>
+      <label for="edit-path">path — 개요에서 노드를 누르면 채워집니다</label>
+      <input type="text" id="edit-path" placeholder="s0/p1/c0/cell3/p0">
+      <label for="edit-expected">expectedText — 현재 값. 다르면 적용하지 않습니다</label>
+      <textarea id="edit-expected" placeholder="(빈 칸이면 비워 두세요)"></textarea>
+      <label for="edit-new">newText</label>
+      <textarea id="edit-new" placeholder="넣을 내용"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="btn-apply" class="primary" disabled>적용</button>
+        <button id="btn-read" disabled>이 경로 읽기</button>
+        <button id="btn-mismatch" disabled>불일치 시험</button>
+      </div>
+      <p class="hint">불일치 시험은 expectedText를 일부러 틀리게 보내 거부되는지 확인합니다.</p>
+    </div>
+
+    <div id="outline"><p class="empty">개요를 아직 읽지 않았습니다.</p></div>
+    <pre id="log"></pre>
+  </div>
+
+  <script type="module" src="./lab.js"></script>
+</body>
+</html>

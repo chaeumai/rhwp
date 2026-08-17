@@ -26,6 +26,8 @@ class FakeDocument implements AuthoringDocument {
   nextSnapshotId = 1;
   log: string[] = [];
   failWriteOnCellIndex: number | null = null;
+  /** 표가 붙어 있는 컨트롤 인덱스. 실문서에서 0이 아닌 경우가 실제로 있다. */
+  tableControlIndex = 0;
 
   constructor(
     paragraphs: string[][],
@@ -59,10 +61,23 @@ class FakeDocument implements AuthoringDocument {
     return text.slice(charOffset, charOffset + count);
   }
 
-  getTableDimensions(sec: number, parentPara: number, controlIdx: number): { rows: number; cols: number } {
+  // 실제 WASM 은 rowCount/colCount/cellCount 로 돌려준다. 대역이 실물과
+  // 다른 이름을 쓰면 단위 테스트는 통과하고 배포본만 조용히 비어 버린다.
+  getTableDimensions(sec: number, parentPara: number, controlIdx: number): {
+    rowCount: number; colCount: number; cellCount: number;
+  } {
     const table = this.tables.get(this.tableKey(sec, parentPara));
-    if (!table || controlIdx !== 0) throw new Error('no table here');
-    return { rows: table.rows, cols: table.cols };
+    if (!table || controlIdx !== this.tableControlIndex) throw new Error('no table here');
+    return { rowCount: table.rows, colCount: table.cols, cellCount: table.cells.length };
+  }
+
+  getCellInfo(sec: number, parentPara: number, controlIdx: number, cellIdx: number): {
+    row: number; col: number; rowSpan: number; colSpan: number;
+  } {
+    const table = this.tables.get(this.tableKey(sec, parentPara));
+    if (!table || controlIdx !== this.tableControlIndex) throw new Error('no table here');
+    if (cellIdx >= table.cells.length) throw new Error('no such cell');
+    return { row: Math.floor(cellIdx / table.cols), col: cellIdx % table.cols, rowSpan: 1, colSpan: 1 };
   }
 
   private cellIndexFromPath(pathJson: string): number {
@@ -187,6 +202,32 @@ test('outline은 빈 본문 문단은 빼되 빈 표 셀은 남긴다', () => {
   assert.deepEqual(table.cells[2], {
     path: 's0/p1/c0/cell2/p0', kind: 'cell', length: 5, preview: '회의 목적', row: 1, col: 0,
   });
+});
+
+test('표가 컨트롤 0이 아닌 곳에 있어도 찾는다', () => {
+  // 실측 회귀: swuniv 회의비신청서의 표는 컨트롤 2에 있었다. 컨트롤 0만
+  // 보던 초기 구현은 개요를 조용히 비워 반환했고, 단위 테스트는 대역이
+  // 컨트롤 0을 쓰는 바람에 통과했다.
+  const doc = sampleDocument();
+  doc.tableControlIndex = 2;
+
+  const outline = buildOutline(doc);
+  const table = outline.sections[0].tables[0];
+  assert.ok(table, '컨트롤 0이 아니어도 표를 찾아야 한다');
+  assert.equal(table.path, 's0/p1/c2');
+  assert.deepEqual(table.cells.map((cell) => cell.path), [
+    's0/p1/c2/cell0/p0', 's0/p1/c2/cell1/p0', 's0/p1/c2/cell2/p0', 's0/p1/c2/cell3/p0',
+  ]);
+  // 그 주소로 읽기·쓰기까지 이어져야 의미가 있다.
+  assert.equal(readPath(doc, 's0/p1/c2/cell2/p0'), '회의 목적');
+});
+
+test('구역은 전체 문단 수를 함께 알려 빈 개요의 원인을 구분한다', () => {
+  const outline = buildOutline(sampleDocument());
+  // 문단 3개 중 내용 있는 것은 2개. 개요가 비었을 때 "문단이 없어서"인지
+  // "전부 비어서"인지 호출자가 알 수 있어야 한다.
+  assert.equal(outline.sections[0].paragraphCount, 3);
+  assert.equal(outline.sections[0].paragraphs.length, 2);
 });
 
 test('outline preview는 길이를 잘라도 원본 길이를 함께 알린다', () => {

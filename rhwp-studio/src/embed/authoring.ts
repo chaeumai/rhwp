@@ -20,13 +20,31 @@
  * 불일치하면 고치지 않고 실패시킨다 (추측 보정 금지).
  */
 
+/**
+ * WASM 반환 형태. 필드 이름을 여기서 정확히 못 맞추면 조용히 빈 개요가 나온다
+ * (실제로 겪었다 — rows/cols 로 잘못 적어 표를 하나도 못 찾았다).
+ */
+export interface TableDimensions {
+  rowCount: number;
+  colCount: number;
+  cellCount: number;
+}
+
+export interface CellInfo {
+  row: number;
+  col: number;
+  rowSpan: number;
+  colSpan: number;
+}
+
 /** authoring 이 쓰는 WASM 표면만 좁게 받는다. 테스트에서 대역을 넣기 쉽다. */
 export interface AuthoringDocument {
   getSectionCount(): number;
   getParagraphCount(sec: number): number;
   getParagraphLength(sec: number, para: number): number;
   getTextRange(sec: number, para: number, charOffset: number, count: number): string;
-  getTableDimensions(sec: number, parentPara: number, controlIdx: number): { rows: number; cols: number };
+  getTableDimensions(sec: number, parentPara: number, controlIdx: number): TableDimensions;
+  getCellInfo(sec: number, parentPara: number, controlIdx: number, cellIdx: number): CellInfo;
   getTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string;
   getCellParagraphLengthByPath(sec: number, parentPara: number, pathJson: string): number;
   insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string): string;
@@ -63,6 +81,12 @@ export interface OutlineTable {
 
 export interface OutlineSection {
   section: number;
+  /**
+   * 구역의 전체 문단 수. paragraphs 는 내용이 있는 것만 담으므로 이 값과
+   * 다르다. "문서를 열었는데 개요가 비었다"가 문단이 없어서인지 전부
+   * 비어서인지 구별하려면 원래 개수를 알아야 한다.
+   */
+  paragraphCount: number;
   paragraphs: OutlineNode[];
   tables: OutlineTable[];
 }
@@ -101,6 +125,8 @@ export interface ApplyEditsResult {
 const PREVIEW_LIMIT = 40;
 /** outline 이 무한정 커지지 않게 하는 상한. 초과하면 truncated 로 알린다. */
 const MAX_OUTLINE_NODES = 2000;
+/** 문단 하나에서 표를 찾을 때 훑어볼 컨트롤 인덱스 범위. */
+const MAX_CONTROL_PROBE = 4;
 
 interface ParsedPath {
   sec: number;
@@ -155,12 +181,30 @@ function tryTableDimensions(
   sec: number,
   para: number,
   ctrl: number,
-): { rows: number; cols: number } | null {
+): TableDimensions | null {
   try {
     const dimensions = doc.getTableDimensions(sec, para, ctrl);
-    if (!dimensions || !Number.isFinite(dimensions.rows) || !Number.isFinite(dimensions.cols)) return null;
-    if (dimensions.rows <= 0 || dimensions.cols <= 0) return null;
+    if (!dimensions || !Number.isFinite(dimensions.cellCount) || dimensions.cellCount <= 0) return null;
     return dimensions;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 셀의 행·열 좌표. 병합이 있으면 cellCount 가 rowCount×colCount 와 다르므로
+ * 인덱스에서 좌표를 계산하지 않고 문서에 물어본다.
+ */
+function tryCellInfo(
+  doc: AuthoringDocument,
+  sec: number,
+  para: number,
+  ctrl: number,
+  cellIndex: number,
+): CellInfo | null {
+  try {
+    const info = doc.getCellInfo(sec, para, ctrl, cellIndex);
+    return info && Number.isFinite(info.row) && Number.isFinite(info.col) ? info : null;
   } catch {
     return null;
   }
@@ -199,25 +243,41 @@ export function buildOutline(doc: AuthoringDocument): Outline {
         break;
       }
 
-      const dimensions = tryTableDimensions(doc, sec, para, 0);
+      // 표가 항상 컨트롤 0 인 것은 아니다(문단에 다른 컨트롤이 먼저 올 수 있다).
+      let tableCtrl = -1;
+      let dimensions: TableDimensions | null = null;
+      for (let ctrl = 0; ctrl < MAX_CONTROL_PROBE; ctrl += 1) {
+        const found = tryTableDimensions(doc, sec, para, ctrl);
+        if (found) { tableCtrl = ctrl; dimensions = found; break; }
+      }
       if (dimensions) {
         const cells: OutlineNode[] = [];
-        for (let row = 0; row < dimensions.rows; row += 1) {
-          for (let col = 0; col < dimensions.cols; col += 1) {
-            if (nodeCount >= MAX_OUTLINE_NODES) {
-              truncated = true;
-              break;
-            }
-            const cellIndex = row * dimensions.cols + col;
-            const path = cellPath(sec, para, 0, cellIndex, 0);
-            const parsed = parsePath(path);
-            const text = parsed ? readCellText(doc, sec, para, cellPathJson(parsed)) : '';
-            cells.push({ path, kind: 'cell', length: text.length, preview: preview(text), row, col });
-            nodeCount += 1;
+        // 병합 셀 때문에 cellCount 는 rowCount×colCount 와 다를 수 있다.
+        // 인덱스 공간을 그대로 훑고 좌표는 문서에 물어본다.
+        for (let cellIndex = 0; cellIndex < dimensions.cellCount; cellIndex += 1) {
+          if (nodeCount >= MAX_OUTLINE_NODES) {
+            truncated = true;
+            break;
           }
-          if (truncated) break;
+          const path = cellPath(sec, para, tableCtrl, cellIndex, 0);
+          const parsed = parsePath(path);
+          const text = parsed ? readCellText(doc, sec, para, cellPathJson(parsed)) : '';
+          const info = tryCellInfo(doc, sec, para, tableCtrl, cellIndex);
+          cells.push({
+            path,
+            kind: 'cell',
+            length: text.length,
+            preview: preview(text),
+            ...(info ? { row: info.row, col: info.col } : {}),
+          });
+          nodeCount += 1;
         }
-        tables.push({ path: `s${sec}/p${para}/c0`, rows: dimensions.rows, cols: dimensions.cols, cells });
+        tables.push({
+          path: `s${sec}/p${para}/c${tableCtrl}`,
+          rows: dimensions.rowCount,
+          cols: dimensions.colCount,
+          cells,
+        });
         continue;
       }
 
@@ -244,7 +304,7 @@ export function buildOutline(doc: AuthoringDocument): Outline {
       nodeCount += 1;
     }
 
-    sections.push({ section: sec, paragraphs, tables });
+    sections.push({ section: sec, paragraphCount, paragraphs, tables });
   }
 
   return { schemaVersion: 1, sections, nodeCount, truncated };
