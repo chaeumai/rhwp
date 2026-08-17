@@ -109,6 +109,10 @@ export default defineConfig({
         // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
         // CacheFirst at runtime still gives offline access after the first load.
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2,ttf,otf}'],
+        // 한채움 fork: Lab(검증 하네스)은 precache 대상이 아니다. 캐시되면
+        // Lab 을 고쳐 배포해도 이전 방문자가 옛 파일을 계속 받는다 — 실제로
+        // "샘플 버튼이 눌리지 않는다" 로 나타났다. 오프라인 동작도 필요 없다.
+        globIgnores: ['lab.html', 'lab.js'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
         runtimeCaching: [
           {

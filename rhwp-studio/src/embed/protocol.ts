@@ -3,6 +3,11 @@ export const EMBED_CAPABILITIES = [
   'transferable-array-buffer',
   'hml-export',
   'renderer-diagnostics-v1',
+  // 한채움 fork: AI 작성 표면(getOutline/getTextByPaths/applyEdits/
+  // revertLastBatch/setInputLocked). 호스트는 이 값이 없으면 기능을 조용히
+  // 감추지 말고 명시적 오류를 내야 한다 — 구버전 배포본과의 조합을 침묵
+  // 속에 굴리면 "왜 아무 일도 안 일어나는가"를 추적할 수 없다.
+  'ai-authoring-v1',
 ] as const;
 
 export interface EmbedConnectAttempt {
