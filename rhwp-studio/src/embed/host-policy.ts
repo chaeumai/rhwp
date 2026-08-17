@@ -97,12 +97,34 @@ export function isRestrictedSurface(): boolean {
  * 명령이 허용 목록에 없다. 단독 진입에는 호스트가 없어 왕복 실험 자체가
  * 불가능해지므로 열기/저장만 연다. embed 에서는 이 목록이 적용되지 않는다.
  */
-const STANDALONE_ALLOWED_COMMANDS = new Set(['file:open', 'file:save', 'file:save-as-hwpx']);
+const STANDALONE_ALLOWED_COMMANDS = new Set([
+  'file:open',
+  'file:save',
+  'file:save-as-hwpx',
+  // 투명 테두리 가이드 토글 (기본 ON, 화면 전용 렌더)
+  'view:border-transparent',
+]);
+
+/**
+ * 단독 제한 표면에서 접두어 단위로 허용하는 명령 계열 (2026-08-17 사용자 결정).
+ *
+ * - `format:` — 서식 바(스타일·글꼴·크기·굵게 등)를 단독에서 재노출하므로
+ *   그 바가 발사하는 서식 명령을 연다
+ * - `table:` — 표 행/열 추가·삭제·셀 병합 등. 컨텍스트 메뉴·단축키로 동작
+ *
+ * embed(제품 제한 편집)에는 적용되지 않는다 — 거기서는 구조·서식이 저장
+ * 게이트(페이지 수·셀 수 불변)와 함께 봉인 유지.
+ */
+const STANDALONE_ALLOWED_PREFIXES = ['format:', 'table:'];
 
 export function isCommandAllowedInEmbed(commandId: string): boolean {
   if (isEmbedded()) return EMBED_ALLOWED_COMMANDS.has(commandId);
   if (RESTRICTED_STANDALONE) {
-    return EMBED_ALLOWED_COMMANDS.has(commandId) || STANDALONE_ALLOWED_COMMANDS.has(commandId);
+    return (
+      EMBED_ALLOWED_COMMANDS.has(commandId)
+      || STANDALONE_ALLOWED_COMMANDS.has(commandId)
+      || STANDALONE_ALLOWED_PREFIXES.some((prefix) => commandId.startsWith(prefix))
+    );
   }
   return true;
 }

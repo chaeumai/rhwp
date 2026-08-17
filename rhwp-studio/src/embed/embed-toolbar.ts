@@ -46,6 +46,17 @@ const STANDALONE_FILE_ENTRIES: EmbedToolbarEntry[] = [
   'separator',
 ];
 
+/** 단독 표면 후미 그룹 — 화면 전용 보기 토글. */
+const STANDALONE_VIEW_ENTRIES: EmbedToolbarEntry[] = [
+  'separator',
+  {
+    command: 'view:border-transparent',
+    glyph: '⊞',
+    label: '투명선',
+    title: '투명 테두리 가이드 (빨간 점선, 화면 전용) 토글',
+  },
+];
+
 export interface EmbedToolbar {
   element: HTMLElement;
   /** 문서가 열리기 전에는 비활성으로 둔다 — 버튼은 항상 렌더하고 disabled 만 바꾼다. */
@@ -65,7 +76,7 @@ export function createEmbedToolbar(
   bar.appendChild(group);
 
   const entries: EmbedToolbarEntry[] = options?.includeFileCommands
-    ? [...STANDALONE_FILE_ENTRIES, ...EMBED_TOOLBAR_ENTRIES]
+    ? [...STANDALONE_FILE_ENTRIES, ...EMBED_TOOLBAR_ENTRIES, ...STANDALONE_VIEW_ENTRIES]
     : EMBED_TOOLBAR_ENTRIES;
 
   const buttons: HTMLButtonElement[] = [];

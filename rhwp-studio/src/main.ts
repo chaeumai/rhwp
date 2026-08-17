@@ -799,6 +799,11 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
     embedToolbar?.setEnabled(true);
+    // 단독 검증 표면: 투명 테두리 가이드(빨간 점선, 화면 전용) 기본 ON.
+    // dispatch 로 토글해야 버튼 active 표시·이벤트 동기화가 함께 된다.
+    if (isRestrictedSurface() && !isEmbedded() && !wasm.getShowTransparentBorders()) {
+      dispatcher.dispatch('view:border-transparent');
+    }
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
@@ -1270,7 +1275,12 @@ const initPromise = initialize();
 // 초기화 코드(단축키 라벨, 활성 상태 갱신)가 요소 부재에 대비돼 있지 않아서다.
 // 단독 진입은 호스트가 없으므로 최소 툴바에 파일 열기/저장 그룹만 추가한다.
 if (isRestrictedSurface()) {
-  for (const id of ['menu-bar', 'icon-toolbar', 'style-bar']) {
+  // 단독 표면은 서식 바(스타일·글꼴·크기)를 남긴다 (2026-08-17 사용자 결정)
+  // — embed 는 종전대로 전부 봉인.
+  const hiddenChromeIds = isEmbedded()
+    ? ['menu-bar', 'icon-toolbar', 'style-bar']
+    : ['menu-bar', 'icon-toolbar'];
+  for (const id of hiddenChromeIds) {
     const element = document.getElementById(id);
     if (element) {
       // hidden 속성만으로는 부족하다 — 이 요소들은 CSS 가 display 를 명시

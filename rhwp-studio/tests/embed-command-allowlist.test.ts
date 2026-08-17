@@ -62,12 +62,24 @@ test('단독 실행도 제한 표면 — 파일 반입·반출만 추가 허용�
   self.parent = self;
   Object.defineProperty(globalThis, 'window', { configurable: true, value: self });
   try {
-    // 호스트가 없으므로 왕복 실험에 필요한 파일 명령은 열린다.
-    for (const id of ['file:open', 'file:save', 'file:save-as-hwpx', 'edit:undo', 'view:zoom-in']) {
+    // 호스트가 없으므로 파일 명령과, 사용자 결정(2026-08-17)에 따른 서식·표
+    // 계열, 투명선 토글이 열린다.
+    for (const id of [
+      'file:open',
+      'file:save',
+      'file:save-as-hwpx',
+      'edit:undo',
+      'view:zoom-in',
+      'view:border-transparent',
+      'format:bold',
+      'format:apply-style',
+      'table:insert-row-above',
+      'table:cell-merge',
+    ]) {
       assert.equal(isCommandAllowedInEmbed(id), true, `단독 제한 표면에서 ${id} 는 허용`);
     }
-    // 구조·서식 명령은 embed 와 동일하게 봉인된다 (RESTRICTED_STANDALONE).
-    for (const id of ['format:bold', 'table:insert-row', 'insert:table', 'file:new-doc', 'file:print']) {
+    // 개체 삽입·쪽 설정·기타 파일 명령은 계속 봉인된다.
+    for (const id of ['insert:image', 'insert:shape', 'page:setup', 'file:new-doc', 'file:print']) {
       assert.equal(isCommandAllowedInEmbed(id), false, `단독 제한 표면에서 ${id} 는 차단`);
     }
   } finally {
