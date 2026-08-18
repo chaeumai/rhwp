@@ -1319,6 +1319,12 @@ if (!isEmbedded()) {
   installPdfPreviewTab({
     exportHwpx: () => wasm.exportHwpx(),
     getDocName: () => wasm.fileName || 'document',
+    // 편집(키 입력·표 조작·AI 배치 등)마다 리비전을 올려, 패널을 열 때
+    // 마지막 변환보다 문서가 새로우면 자동 재변환한다.
+    onDocumentChanged: (cb) => {
+      eventBus.on('document-changed', cb);
+      eventBus.on('document-mutated', cb);
+    },
   });
 }
 

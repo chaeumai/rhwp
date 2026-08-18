@@ -5,6 +5,9 @@
  * 결과 PDF 를 슬라이드 패널의 iframe 으로 보여준다. 편집기 저장 경로와
  * 무관한 눈 검증용 도구라 문서 상태를 건드리지 않는다.
  *
+ * 변환 결과는 캐시되지만 문서 리비전을 추적해 편집 후 패널을 열면 자동
+ * 재변환한다 — "편집했는데 PDF 가 옛것" 상태를 만들지 않는다.
+ *
  * 서빙 전제: same-origin `/hwpx-agent/*` 가 hwpAgent-api(:3001) 로 중계된다
  * (dev 는 vite proxy, 라이브는 nginx location — CSP connect-src 'self' 유지).
  */
@@ -18,6 +21,8 @@ export interface PdfPreviewTabOptions {
   exportHwpx: () => Uint8Array;
   /** 다운로드 파일명에 쓸 문서 이름 (확장자 제외). */
   getDocName?: () => string;
+  /** 문서가 편집될 때마다 cb 를 불러 달라 (재변환 필요 감지용). */
+  onDocumentChanged?: (cb: () => void) => void;
 }
 
 export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
@@ -37,7 +42,9 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
       <span class="pdfp-status" role="status"></span>
       <span class="pdfp-spacer"></span>
       <button type="button" class="pdfp-btn pdfp-refresh" title="현재 문서로 다시 변환">다시 변환</button>
-      <button type="button" class="pdfp-btn pdfp-download" title="PDF 다운로드" disabled>다운로드</button>
+      <button type="button" class="pdfp-btn pdfp-save-hwpx" title="현재 문서를 HWPX 파일로 저장 (저장 위치 선택)">HWPX 저장</button>
+      <button type="button" class="pdfp-btn pdfp-dl-hwpx" title="현재 문서를 HWPX 로 즉시 다운로드">HWPX ↓</button>
+      <button type="button" class="pdfp-btn pdfp-dl-pdf" title="변환된 PDF 다운로드" disabled>PDF ↓</button>
       <button type="button" class="pdfp-btn pdfp-close" title="닫기">×</button>
     </div>
     <div class="pdfp-body">
@@ -52,23 +59,48 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   const emptyEl = panel.querySelector('.pdfp-empty') as HTMLElement;
   const frameEl = panel.querySelector('.pdfp-frame') as HTMLIFrameElement;
   const refreshBtn = panel.querySelector('.pdfp-refresh') as HTMLButtonElement;
-  const downloadBtn = panel.querySelector('.pdfp-download') as HTMLButtonElement;
+  const saveHwpxBtn = panel.querySelector('.pdfp-save-hwpx') as HTMLButtonElement;
+  const dlHwpxBtn = panel.querySelector('.pdfp-dl-hwpx') as HTMLButtonElement;
+  const dlPdfBtn = panel.querySelector('.pdfp-dl-pdf') as HTMLButtonElement;
   const closeBtn = panel.querySelector('.pdfp-close') as HTMLButtonElement;
 
   let converting = false;
   let blobUrl: string | null = null;
   let hasResult = false;
 
+  // 문서 리비전 추적 — 편집마다 증가, 변환 성공 시점의 값을 기억한다.
+  let docRevision = 0;
+  let convertedRevision = -1;
+  opts.onDocumentChanged?.(() => {
+    docRevision++;
+    // 패널이 열려 있는데 문서가 바뀌면 결과가 낡았음을 알린다.
+    if (!panel.hidden && !converting && hasResult && convertedRevision !== docRevision) {
+      setStatus('문서가 바뀌었습니다 — 다시 변환하세요');
+    }
+  });
+
   const setStatus = (text: string, isError = false): void => {
     statusEl.textContent = text;
     statusEl.classList.toggle('pdfp-error', isError);
   };
 
+  const docName = (): string =>
+    (opts.getDocName?.() || 'document').replace(/\.(hwpx?|hml)$/i, '');
+
   const showPdf = (url: string): void => {
     emptyEl.hidden = true;
     frameEl.hidden = false;
     frameEl.src = url;
-    downloadBtn.disabled = false;
+    dlPdfBtn.disabled = false;
+  };
+
+  const downloadBlob = (blob: Blob, filename: string): void => {
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
   };
 
   const convert = async (): Promise<void> => {
@@ -76,14 +108,14 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
     converting = true;
     refreshBtn.disabled = true;
     const startedAt = performance.now();
+    const revisionAtExport = docRevision;
     try {
       setStatus('HWPX 내보내는 중…');
       const bytes = opts.exportHwpx();
-      const name = (opts.getDocName?.() || 'document').replace(/\.(hwpx?|hml)$/i, '');
 
       setStatus('변환 요청 중…');
       const form = new FormData();
-      form.append('file', new File([new Blob([bytes as BlobPart])], `${name}.hwpx`));
+      form.append('file', new File([new Blob([bytes as BlobPart])], `${docName()}.hwpx`));
       const submitRes = await fetch(`${AGENT_BASE}/api/jobs/pdf-only`, { method: 'POST', body: form });
       if (!submitRes.ok) {
         throw new Error(submitRes.status === 503
@@ -116,10 +148,11 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
       blobUrl = URL.createObjectURL(pdfBlob.type === 'application/pdf'
         ? pdfBlob
         : new Blob([pdfBlob], { type: 'application/pdf' }));
-      downloadBtn.dataset.filename = `${name}.pdf`;
       showPdf(blobUrl);
       hasResult = true;
-      setStatus(`완료 (${((performance.now() - startedAt) / 1000).toFixed(1)}초)`);
+      convertedRevision = revisionAtExport;
+      const suffix = docRevision !== revisionAtExport ? ' — 변환 중 편집됨, 필요시 다시 변환' : '';
+      setStatus(`완료 (${((performance.now() - startedAt) / 1000).toFixed(1)}초)${suffix}`);
     } catch (err) {
       const msg = err instanceof TypeError
         ? 'hwpx-agent 에 연결할 수 없습니다 (/hwpx-agent 중계 확인)'
@@ -134,7 +167,8 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   const openPanel = (): void => {
     panel.hidden = false;
     tab.classList.add('pdfp-open');
-    if (!hasResult && !converting) void convert();
+    // 결과가 없거나 마지막 변환 이후 문서가 편집됐으면 자동 재변환.
+    if (!converting && (!hasResult || convertedRevision !== docRevision)) void convert();
   };
   const closePanel = (): void => {
     panel.hidden = true;
@@ -144,11 +178,56 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   tab.addEventListener('click', () => (panel.hidden ? openPanel() : closePanel()));
   closeBtn.addEventListener('click', closePanel);
   refreshBtn.addEventListener('click', () => void convert());
-  downloadBtn.addEventListener('click', () => {
+
+  // HWPX 저장 — 저장 위치를 고르는 파일 저장 (미지원 브라우저는 다운로드로).
+  saveHwpxBtn.addEventListener('click', () => {
+    void (async () => {
+      let bytes: Uint8Array;
+      try { bytes = opts.exportHwpx(); } catch (err) {
+        setStatus(`HWPX 내보내기 실패: ${err instanceof Error ? err.message : err}`, true);
+        return;
+      }
+      const blob = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
+      const picker = (window as any).showSaveFilePicker as
+        | ((o: any) => Promise<any>) | undefined;
+      if (picker) {
+        try {
+          const handle = await picker({
+            suggestedName: `${docName()}.hwpx`,
+            types: [{ description: 'HWPX 문서', accept: { 'application/octet-stream': ['.hwpx'] } }],
+          });
+          const w = await handle.createWritable();
+          await w.write(blob);
+          await w.close();
+          setStatus(`HWPX 저장 완료: ${handle.name}`);
+          return;
+        } catch (err) {
+          if ((err as any)?.name === 'AbortError') return; // 사용자가 취소
+          // picker 실패 → 다운로드로 폴백
+        }
+      }
+      downloadBlob(blob, `${docName()}.hwpx`);
+      setStatus('HWPX 다운로드 시작');
+    })();
+  });
+
+  // HWPX 다운로드 — 즉시 받기.
+  dlHwpxBtn.addEventListener('click', () => {
+    try {
+      const bytes = opts.exportHwpx();
+      downloadBlob(new Blob([bytes as BlobPart], { type: 'application/octet-stream' }), `${docName()}.hwpx`);
+      setStatus('HWPX 다운로드 시작');
+    } catch (err) {
+      setStatus(`HWPX 내보내기 실패: ${err instanceof Error ? err.message : err}`, true);
+    }
+  });
+
+  // PDF 다운로드 — 마지막 변환 결과.
+  dlPdfBtn.addEventListener('click', () => {
     if (!blobUrl) return;
     const a = document.createElement('a');
     a.href = blobUrl;
-    a.download = downloadBtn.dataset.filename ?? 'document.pdf';
+    a.download = `${docName()}.pdf`;
     a.click();
   });
 }
