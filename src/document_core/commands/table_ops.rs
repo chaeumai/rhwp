@@ -22,6 +22,72 @@ impl DocumentCore {
     }
 
     /// DocumentPath를 사용하여 임의 깊이의 표에 대한 가변 참조를 얻는다.
+
+    /// 경로 기반 표 가변 참조 (중첩 표 지원). 경로 규약은
+    /// `resolve_table_by_path` 와 동일 — 마지막 항목의 control_idx 가 대상 표.
+    pub(crate) fn get_table_mut_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<&mut crate::model::table::Table, HwpError> {
+        use crate::model::control::Control;
+        if path.is_empty() {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        }
+        let mut para = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?
+            .paragraphs
+            .get_mut(parent_para_idx)
+            .ok_or_else(|| {
+                HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx))
+            })?;
+        for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
+            let is_last = i == path.len() - 1;
+            let ctrl = para.controls.get_mut(ctrl_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("경로[{}]: controls[{}] 범위 초과", i, ctrl_idx))
+            })?;
+            if is_last {
+                return match ctrl {
+                    Control::Table(t) => Ok(t),
+                    _ => Err(HwpError::RenderError(format!(
+                        "경로[{}]: controls[{}]가 표가 아닙니다",
+                        i, ctrl_idx
+                    ))),
+                };
+            }
+            para = match ctrl {
+                Control::Table(table) => table
+                    .cells
+                    .get_mut(cell_idx)
+                    .and_then(|c| c.paragraphs.get_mut(cell_para_idx))
+                    .ok_or_else(|| {
+                        HwpError::RenderError(format!(
+                            "경로[{}]: 셀 {}/문단 {} 범위 초과",
+                            i, cell_idx, cell_para_idx
+                        ))
+                    })?,
+                Control::Shape(shape) => super::super::helpers::get_textbox_from_shape_mut(shape)
+                    .and_then(|tb| tb.paragraphs.get_mut(cell_para_idx))
+                    .ok_or_else(|| {
+                        HwpError::RenderError(format!(
+                            "경로[{}]: 글상자 문단 {} 범위 초과",
+                            i, cell_para_idx
+                        ))
+                    })?,
+                _ => {
+                    return Err(HwpError::RenderError(format!(
+                        "경로[{}]: 표/글상자가 아닌 컨트롤",
+                        i
+                    )))
+                }
+            };
+        }
+        unreachable!()
+    }
     pub(crate) fn get_table_by_path(
         &mut self,
         section_idx: usize,
@@ -1354,6 +1420,44 @@ impl DocumentCore {
         control_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
+        self.resize_table_cells_inner(section_idx, parent_para_idx, control_idx, None, json)
+    }
+
+    /// 경로 기반 표 셀 리사이즈 (중첩 표 지원, 2026-08-18).
+    /// path 규약은 hitTest cellPath 그대로 — 마지막 항목의 control_idx 가 대상 표.
+    pub(crate) fn resize_table_cells_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path_json: &str,
+        json: &str,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path(path_json)?;
+        if path.is_empty() {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        }
+        if path.len() == 1 {
+            // 깊이1 은 기존 계약(명시 reflow 포함) 그대로
+            return self.resize_table_cells_inner(
+                section_idx,
+                parent_para_idx,
+                path[0].0,
+                None,
+                json,
+            );
+        }
+        let ci = path.last().map(|e| e.0).unwrap_or(0);
+        self.resize_table_cells_inner(section_idx, parent_para_idx, ci, Some(path), json)
+    }
+
+    fn resize_table_cells_inner(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_path: Option<Vec<(usize, usize, usize)>>,
+        json: &str,
+    ) -> Result<String, HwpError> {
         const MIN_CELL_SIZE: u32 = 200; // 최소 셀 크기 (HWPUNIT)
 
         // JSON 배열을 수동 파싱: [{"cellIdx":N,"widthDelta":D,"heightDelta":D}, ...]
@@ -1422,7 +1526,11 @@ impl DocumentCore {
         }
 
         // 셀 업데이트 적용
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        let table = if let Some(ref path) = cell_path {
+            self.get_table_mut_by_path(section_idx, parent_para_idx, path)?
+        } else {
+            self.get_table_mut(section_idx, parent_para_idx, control_idx)?
+        };
         let original_width = table.common.width;
         let original_height = table.common.height;
         let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
@@ -1498,9 +1606,17 @@ impl DocumentCore {
                 table.local_resize_cols.push(col);
             }
         }
+        // [2026-08-18] 상쇄(delta_sum==0) 마킹은 "일부 행/열만" 바뀐 로컬
+        // 리사이즈에만 건다. 균일 경계 드래그는 표의 **모든** 행(열)에 같은
+        // ±delta 가 실리는데, 이를 전부 local 로 마킹하면 렌더 열폭 계산이
+        // 모든 행을 제외해 표가 붕괴한다 (2행 중첩 표 실측: 24px 잔여 폭).
+        // Task 1443 의 원 의도(Shift 개별 셀 이력 유지)는 force_local_resize
+        // 와 일부-행 조건으로 보존된다.
+        let all_rows_resized = width_delta_by_row.len() >= table.row_count as usize;
+        let all_cols_resized = height_delta_by_col.len() >= table.col_count as usize;
         for (row, (count, delta_sum)) in width_delta_by_row {
             if count >= 2
-                && (delta_sum == 0 || force_local_resize)
+                && ((delta_sum == 0 && !all_rows_resized) || force_local_resize)
                 && !table.local_resize_rows.contains(&row)
             {
                 table.local_resize_rows.push(row);
@@ -1508,7 +1624,7 @@ impl DocumentCore {
         }
         for (col, (count, delta_sum)) in height_delta_by_col {
             if count >= 2
-                && (delta_sum == 0 || force_local_resize)
+                && ((delta_sum == 0 && !all_cols_resized) || force_local_resize)
                 && !table.local_resize_cols.contains(&col)
             {
                 table.local_resize_cols.push(col);
@@ -1557,7 +1673,21 @@ impl DocumentCore {
         table.dirty = true;
 
         // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우)
-        let reflow_cells: Vec<(usize, usize)> = {
+        let reflow_cells: Vec<(usize, usize)> = if let Some(ref path) = cell_path {
+            // [중첩 표] 깊이2+ 는 path 기반 문단 접근으로 lineseg 를 다시 흘린다
+            // (깊이1 reflow_cell_paragraph 는 (ppi,ci) 좌표계라 못 쓴다).
+            match self.resolve_table_by_path(section_idx, parent_para_idx, path) {
+                Ok(table) => updates
+                    .iter()
+                    .filter(|u| u.width_delta != 0)
+                    .filter_map(|u| {
+                        let pc = table.cells.get(u.cell_idx)?.paragraphs.len();
+                        Some((u.cell_idx, pc))
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        } else {
             let para = &self.document.sections[section_idx].paragraphs[parent_para_idx];
             if let Some(Control::Table(table)) = para.controls.get(control_idx) {
                 updates
@@ -1574,13 +1704,23 @@ impl DocumentCore {
         };
         for (cell_idx, para_count) in reflow_cells {
             for cell_para_idx in 0..para_count {
-                self.reflow_cell_paragraph(
-                    section_idx,
-                    parent_para_idx,
-                    control_idx,
-                    cell_idx,
-                    cell_para_idx,
-                );
+                if let Some(ref path) = cell_path {
+                    self.reflow_cell_paragraph_by_path(
+                        section_idx,
+                        parent_para_idx,
+                        path,
+                        cell_idx,
+                        cell_para_idx,
+                    );
+                } else {
+                    self.reflow_cell_paragraph(
+                        section_idx,
+                        parent_para_idx,
+                        control_idx,
+                        cell_idx,
+                        cell_para_idx,
+                    );
+                }
             }
         }
 
@@ -2947,6 +3087,96 @@ mod table_attr_save_roundtrip_tests {
         assert!(
             matches!(vrel, VertRelTo::Para),
             "vertRelTo 변경이 HWP5 저장에서 유실됨 (실제: {vrel:?})"
+        );
+    }
+
+    /// [2026-08-18] 중첩 표 리사이즈 — 경로 기반 적용과 균일 상쇄 비마킹.
+    ///
+    /// 깊이2 표의 두 행 전부에 (+d, -d) 를 실은 균일 경계 드래그 updates 는
+    /// ① innermost 표의 모델 셀 폭에 정확히 반영되고,
+    /// ② local_resize_rows 로 마킹되지 않아야 한다 — 종전엔 delta_sum==0
+    ///   조건만 보고 전 행을 마킹해, 렌더 열폭 계산이 모든 행을 제외하며
+    ///   표가 붕괴했다 (staff-handbook 실측: 273px 열이 24px 로).
+    #[test]
+    fn resize_nested_table_by_path_applies_and_skips_uniform_marking() {
+        let path_fixture = "samples/hwpx/nested-table-staff-handbook.hwpx";
+        if !std::path::Path::new(path_fixture).exists() {
+            eprintln!("테스트 파일 없음: {} — 건너뜀", path_fixture);
+            return;
+        }
+        let data = std::fs::read(path_fixture).expect("픽스처 읽기");
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).expect("로드");
+
+        // 첫 깊이2 표 경로 탐색 (2행 이상·2열 이상)
+        let mut found: Option<(usize, Vec<(usize, usize, usize)>)> = None;
+        'outer: for (ppi, para) in core.document.sections[0].paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                for (cei, cell) in t.cells.iter().enumerate() {
+                    for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+                        for (ci2, c2) in cp.controls.iter().enumerate() {
+                            let crate::model::control::Control::Table(t2) = c2 else {
+                                continue;
+                            };
+                            if t2.row_count >= 2 && t2.col_count >= 2 {
+                                found = Some((ppi, vec![(ci, cei, cpi), (ci2, 0, 0)]));
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (ppi, path) = found.expect("픽스처 전제: 2행 2열 이상 깊이2 표");
+        let path_json = format!(
+            "[{}]",
+            path.iter()
+                .map(|(a, b, c)| format!(
+                    "{{\"controlIndex\":{a},\"cellIndex\":{b},\"cellParaIndex\":{c}}}"
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        // 리사이즈 전 innermost 표 상태
+        let (w0_before, w1_before, row_count) = {
+            let t = core.resolve_table_by_path(0, ppi, &path).expect("표 해석");
+            (t.cells[0].width, t.cells[1].width, t.row_count as usize)
+        };
+
+        // 균일 경계 드래그 모사: 모든 행의 (c0 +d, c1 -d)
+        let d: i32 = 3000;
+        let mut updates = Vec::new();
+        {
+            let t = core.resolve_table_by_path(0, ppi, &path).expect("표 해석");
+            for (i, cell) in t.cells.iter().enumerate() {
+                if cell.col == 0 && cell.col_span == 1 {
+                    updates.push(format!("{{\"cellIdx\":{i},\"widthDelta\":{d}}}"));
+                } else if cell.col == 1 && cell.col_span == 1 {
+                    updates.push(format!("{{\"cellIdx\":{i},\"widthDelta\":{}}}", -d));
+                }
+            }
+        }
+        let json = format!("[{}]", updates.join(","));
+        core.resize_table_cells_by_path_native(0, ppi, &path_json, &json)
+            .expect("경로 리사이즈");
+
+        let t = core.resolve_table_by_path(0, ppi, &path).expect("표 재해석");
+        assert_eq!(
+            t.cells[0].width,
+            (w0_before as i32 + d) as u32,
+            "innermost c0 폭에 delta 반영"
+        );
+        assert_eq!(
+            t.cells[1].width,
+            (w1_before as i32 - d) as u32,
+            "innermost c1 폭에 -delta 반영"
+        );
+        assert!(
+            t.local_resize_rows.is_empty(),
+            "전 행 균일 상쇄는 local_resize_rows 마킹 금지 (실제: {:?}, 행 {}개)",
+            t.local_resize_rows,
+            row_count
         );
     }
 }

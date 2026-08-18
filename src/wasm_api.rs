@@ -2578,6 +2578,27 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 경로 기반 표 셀 리사이즈 (중첩 표 지원).
+    ///
+    /// `cell_path_json`: hitTest cellPath 그대로 — 마지막 항목의 control_idx 가
+    /// 대상 표. `json` 은 `resizeTableCells` 와 동일한 updates 배열.
+    #[wasm_bindgen(js_name = resizeTableCellsByPath)]
+    pub fn resize_table_cells_by_path(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        json: &str,
+    ) -> Result<String, JsValue> {
+        self.resize_table_cells_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            cell_path_json,
+            json,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표의 위치 오프셋(vertical_offset, horizontal_offset)을 이동한다.
     ///
     /// delta_h, delta_v: HWPUNIT 단위 이동량 (양수=오른쪽/아래, 음수=왼쪽/위)

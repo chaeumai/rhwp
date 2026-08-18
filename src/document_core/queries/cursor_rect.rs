@@ -3313,6 +3313,7 @@ impl DocumentCore {
             parent_para: usize,
             path: &[(usize, usize, usize)],
             page_idx: usize,
+            model_idx_by_rowcol: &std::collections::HashMap<(u16, u16), usize>,
             result: &mut Vec<String>,
         ) -> bool {
             // Table 노드를 발견하면 자식 TableCell 중 TextRun의 cell_context가 경로와 일치하는지 확인
@@ -3355,12 +3356,24 @@ impl DocumentCore {
                 }
 
                 if check_table_match(node, parent_para, path) {
-                    // 이 테이블의 직속 셀 bbox 수집
-                    for (cell_idx, child) in node.children.iter().enumerate() {
+                    // 이 테이블의 직속 셀 bbox 수집.
+                    // [2026-08-18] cellIdx 는 반드시 **모델 cells[] 인덱스**여야
+                    // 한다 — 종전의 children enumerate 인덱스는 셀 외 렌더
+                    // 노드가 섞이면 밀려서, 이 값으로 리사이즈를 적용하면
+                    // 엉뚱한 셀 폭이 바뀐다 (중첩 표 리사이즈 붕괴 실측).
+                    // (row,col) 은 모델과 렌더가 같은 규약이므로 역매핑한다.
+                    for child in node.children.iter() {
                         if let RenderNodeType::TableCell(ref cn) = child.node_type {
+                            let model_idx = model_idx_by_rowcol
+                                .get(&(cn.row, cn.col))
+                                .copied()
+                                .unwrap_or(usize::MAX);
+                            if model_idx == usize::MAX {
+                                continue;
+                            }
                             result.push(format!(
                                 "{{\"cellIdx\":{},\"row\":{},\"col\":{},\"rowSpan\":{},\"colSpan\":{},\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}}}",
-                                cell_idx, cn.row, cn.col, cn.row_span, cn.col_span,
+                                model_idx, cn.row, cn.col, cn.row_span, cn.col_span,
                                 page_idx,
                                 child.bbox.x, child.bbox.y, child.bbox.width, child.bbox.height
                             ));
@@ -3371,19 +3384,30 @@ impl DocumentCore {
             }
 
             for child in &node.children {
-                if find_nested_table_cells(child, parent_para, path, page_idx, result) {
+                if find_nested_table_cells(child, parent_para, path, page_idx, model_idx_by_rowcol, result) {
                     return true;
                 }
             }
             false
         }
 
+        // 모델 (row,col) → cells[] 인덱스 매핑 (역매핑용)
+        let model_idx_by_rowcol: std::collections::HashMap<(u16, u16), usize> = {
+            let table = self.resolve_table_by_path(section_idx, parent_para_idx, &path)?;
+            table
+                .cells
+                .iter()
+                .enumerate()
+                .map(|(i, c)| ((c.row, c.col), i))
+                .collect()
+        };
+
         let mut cells = Vec::new();
         let total_pages = self.page_count() as usize;
         let mut found = false;
         for page_num in 0..total_pages {
             let tree = self.build_page_tree(page_num as u32)?;
-            if find_nested_table_cells(&tree.root, parent_para_idx, &path, page_num, &mut cells) {
+            if find_nested_table_cells(&tree.root, parent_para_idx, &path, page_num, &model_idx_by_rowcol, &mut cells) {
                 found = true;
             } else if found {
                 // 이전 페이지에서 표를 찾았으나 이 페이지에는 없음 → 표가 끝남

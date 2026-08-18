@@ -1741,6 +1741,35 @@ export function onMouseMove(this: any, e: MouseEvent): void {
   }
 }
 
+/** hover 시 셀 bbox 캐시를 상한 안에서 즉석 생성한다 (중첩 표는 경로 기반). */
+const HOVER_CACHE_CELL_LIMIT = 600;
+function primeResizeCache(
+  handler: any,
+  tableRef: { sec: number; ppi: number; ci: number; pathJson?: string },
+  pageIdx: number,
+): boolean {
+  try {
+    const dims = tableRef.pathJson
+      ? handler.wasm.getTableDimensionsByPath(tableRef.sec, tableRef.ppi, tableRef.pathJson)
+      : handler.wasm.getTableDimensions(tableRef.sec, tableRef.ppi, tableRef.ci);
+    if (!dims || !Number.isFinite(dims.cellCount) || dims.cellCount <= 0
+      || dims.cellCount > HOVER_CACHE_CELL_LIMIT) {
+      return false;
+    }
+    const bboxes = tableRef.pathJson
+      ? handler.wasm.getTableCellBboxesByPath(tableRef.sec, tableRef.ppi, tableRef.pathJson)
+      : handler.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci, pageIdx);
+    if (!Array.isArray(bboxes) || bboxes.length === 0) {
+      return false;
+    }
+    handler.cachedTableRef = { ...tableRef, pageHint: pageIdx };
+    handler.cachedCellBboxes = bboxes;
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 export function handleResizeHover(this: any, e: MouseEvent): void {
   if (!this.tableResizeRenderer) return;
   hideProtectedCellHover(this);
@@ -1759,13 +1788,20 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
   const pageY = (contentY - pageOffset) / zoom;
 
   // hitTest로 표 셀 위인지 확인
-  let tableRef: { sec: number; ppi: number; ci: number } | null = null;
+  let tableRef: { sec: number; ppi: number; ci: number; pathJson?: string } | null = null;
   let tableHit: any = null;
   try {
     const hit = this.wasm.hitTest(pageIdx, pageX, pageY);
     if (hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && !hit.isTextBox) {
       tableHit = hit;
       tableRef = { sec: hit.sectionIndex, ppi: hit.parentParaIndex, ci: hit.controlIndex };
+      // [중첩 표] hitTest 의 (ppi, ci) 는 최외곽 표 좌표라, 중첩 셀 위에서는
+      // 외곽 표 경계로만 판정돼 내부 표 경계가 영원히 잡히지 않았다
+      // (2026-08-18 진단: edge=null, bboxes=외곽 셀). cellPath 가 있으면
+      // innermost 표를 경로로 지정한다.
+      if (Array.isArray(hit.cellPath) && hit.cellPath.length >= 2) {
+        tableRef.pathJson = JSON.stringify(hit.cellPath);
+      }
     }
   } catch { /* hitTest 실패 시 표 밖 */ }
 
@@ -1798,13 +1834,20 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
       this.cachedTableRef.sec !== tableRef.sec ||
       this.cachedTableRef.ppi !== tableRef.ppi ||
       this.cachedTableRef.ci !== tableRef.ci ||
+      (this.cachedTableRef.pathJson ?? '') !== (tableRef.pathJson ?? '') ||
       this.cachedTableRef.pageHint !== pageIdx) {
-    this.tableResizeRenderer.clear();
-    hideProtectedCellHover(this);
-    if (this.container.style.cursor) {
-      this.container.style.cursor = '';
+    // [2026-08-18] hover 에서 캐시를 그 자리에서 만든다 — 종전엔 셀 선택
+    // 모드(F5) 클릭 경로에서만 생성돼 리사이즈 진입이 사실상 불가능했다.
+    // 대형 표 정체 우려는 셀 수 상한으로 차단 (실측 48~209셀 1.0~3.4ms).
+    const primed = primeResizeCache(this, tableRef, pageIdx);
+    if (!primed) {
+      this.tableResizeRenderer.clear();
+      hideProtectedCellHover(this);
+      if (this.container.style.cursor) {
+        this.container.style.cursor = '';
+      }
+      return;
     }
-    return;
   }
 
   if (!this.cachedCellBboxes || this.cachedCellBboxes.length === 0) {

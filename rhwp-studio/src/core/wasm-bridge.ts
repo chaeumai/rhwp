@@ -1627,6 +1627,15 @@ export class WasmBridge {
     return JSON.parse(this.doc.getTableDimensionsByPath(sec, parentPara, pathJson));
   }
 
+  /** 경로 기반 표 셀 리사이즈 (중첩 표). updates 는 resizeTableCells 와 동일. */
+  resizeTableCellsByPath(
+    sec: number, parentPara: number, pathJson: string,
+    updates: Array<{ cellIdx: number; widthDelta?: number; heightDelta?: number; localResize?: boolean; renderWidth?: number; renderHeight?: number }>,
+  ): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).resizeTableCellsByPath(sec, parentPara, pathJson, JSON.stringify(updates)));
+  }
+
   getTableCellBboxesByPath(sec: number, parentPara: number, pathJson: string): CellBbox[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getTableCellBboxesByPath(sec, parentPara, pathJson));

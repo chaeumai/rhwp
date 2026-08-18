@@ -938,7 +938,10 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
         neighborBox: CellBbox | null;
       } => pair.targetBox !== undefined);
     const hasLocalHistory = hasLocalResizeHistory(this, state.tableRef);
-    const delta = hasLocalHistory
+    // [중첩 표] 모델 속성 clamp(getCellProperties)는 (sec,ppi,ci) 가 외곽 표
+    // 좌표라 중첩 셀에서 엉뚱한 셀 크기를 읽는다 — 경로 모드는 표시 bbox
+    // 기반 clamp 로 (getCellDisplaySize 가 px→HWPUNIT 변환 포함).
+    const delta = hasLocalHistory || state.tableRef.pathJson
       ? clampCompensatedDisplayDelta(state.edge, pairBoxes, deltaHwpUnit)
       : clampCompensatedResizeDelta(
         this.wasm,
@@ -1034,12 +1037,22 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
       kind: 'snapshot',
       operationType: 'resizeTableCells',
       operation: (wasm: any) => {
-        wasm.resizeTableCells(
-          state.tableRef.sec,
-          state.tableRef.ppi,
-          state.tableRef.ci,
-          updates,
-        );
+        // [중첩 표] hover 캐시가 innermost 표 경로를 들고 있으면 경로 기반으로
+        if (state.tableRef.pathJson) {
+          wasm.resizeTableCellsByPath(
+            state.tableRef.sec,
+            state.tableRef.ppi,
+            state.tableRef.pathJson,
+            updates,
+          );
+        } else {
+          wasm.resizeTableCells(
+            state.tableRef.sec,
+            state.tableRef.ppi,
+            state.tableRef.ci,
+            updates,
+          );
+        }
         return this.cursor.getPosition();
       },
     });

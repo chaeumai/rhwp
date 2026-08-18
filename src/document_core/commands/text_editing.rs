@@ -1253,6 +1253,77 @@ impl DocumentCore {
         }
     }
 
+    /// 경로 기반 셀 문단 리플로우 (중첩 표 지원, 2026-08-18).
+    ///
+    /// `table_path` 는 hitTest cellPath 규약 — 마지막 항목의 control_idx 가
+    /// 대상 표. 그 표의 `cell_idx` 셀 / `cell_para_idx` 문단을 리플로우한다.
+    /// 깊이1 `reflow_cell_paragraph` 와 동일한 폭 계산을 쓴다 (캡션 미지원).
+    pub(crate) fn reflow_cell_paragraph_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        table_path: &[(usize, usize, usize)],
+        cell_idx: usize,
+        cell_para_idx: usize,
+    ) {
+        use crate::renderer::hwpunit_to_px;
+
+        let (cell_width, pad_left, pad_right) = {
+            let table = match self.resolve_table_by_path(section_idx, parent_para_idx, table_path)
+            {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            match table.cells.get(cell_idx) {
+                Some(cell) => {
+                    let pad_l = if cell.apply_inner_margin {
+                        cell.padding.left
+                    } else {
+                        table.padding.left
+                    };
+                    let pad_r = if cell.apply_inner_margin {
+                        cell.padding.right
+                    } else {
+                        table.padding.right
+                    };
+                    (cell.width, pad_l, pad_r)
+                }
+                None => return,
+            }
+        };
+
+        let styles = resolve_styles(&self.document.doc_info, self.dpi);
+        let cell_width_px = hwpunit_to_px(cell_width as i32, self.dpi);
+        let pad_left_px = hwpunit_to_px(pad_left as i32, self.dpi);
+        let pad_right_px = hwpunit_to_px(pad_right as i32, self.dpi);
+        let available_width = (cell_width_px - pad_left_px - pad_right_px).max(0.0);
+
+        // 대상 문단의 full 경로: 마지막 항목의 (cell, para) 만 교체
+        let mut full_path = table_path.to_vec();
+        if let Some(last) = full_path.last_mut() {
+            last.1 = cell_idx;
+            last.2 = cell_para_idx;
+        }
+
+        let para_shape_id = match self
+            .resolve_paragraph_by_path(section_idx, parent_para_idx, &full_path)
+        {
+            Ok(p) => p.para_shape_id,
+            Err(_) => return,
+        };
+        let para_style = styles.para_styles.get(para_shape_id as usize);
+        let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
+        let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
+        let final_width = (available_width - margin_left - margin_right).max(0.0);
+
+        let dpi = self.dpi;
+        if let Ok(cell_para) =
+            self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, &full_path)
+        {
+            reflow_line_segs(cell_para, final_width, &styles, dpi);
+        }
+    }
+
     fn recalculate_cell_paragraph_vpos_native(
         &mut self,
         section_idx: usize,
