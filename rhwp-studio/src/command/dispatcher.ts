@@ -75,6 +75,9 @@ export class CommandDispatcher {
     const def = this.registry.get(commandId);
     if (!def) return false;
     const ctx = this.services.getContext();
+    // 한채움 fork: 허용 목록 밖 명령은 비활성으로 표시한다 — dispatch 만 막으면
+    // 컨텍스트 메뉴 항목이 활성처럼 보이는데 클릭해도 조용히 무시된다.
+    if (!isCommandAllowedInEmbed(commandId)) return false;
     if (isBlockedInFormMode(commandId, ctx)) return false;
     if (!def.canExecute) return true;
     return def.canExecute(ctx);
