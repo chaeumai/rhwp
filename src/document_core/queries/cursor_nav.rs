@@ -1675,7 +1675,10 @@ impl DocumentCore {
         start_char_offset: usize,
         end_para_idx: usize,
         end_char_offset: usize,
-        cell_ctx: Option<(usize, usize, usize)>,
+        // (외곽 문단 ppi, 셀 경로 [(ctrl, cell, cell_para)...]) — 마지막 entry 의
+        // cell_para 자리는 메인 루프의 para_idx 로 대체된다 (start..end 문단 순회).
+        // 깊이1 호출은 path 길이 1, 중첩 표는 hitTest 의 cellPath 전체를 받는다.
+        cell_ctx: Option<(usize, Vec<(usize, usize, usize)>)>,
     ) -> Result<String, HwpError> {
         use crate::renderer::layout::compute_char_positions;
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
@@ -1834,8 +1837,7 @@ impl DocumentCore {
         fn find_cell_cursor(
             node: &RenderNode,
             ppi: usize,
-            ci: usize,
-            cei: usize,
+            path: &[(usize, usize, usize)],
             cpi: usize,
             offset: usize,
             page: u32,
@@ -1844,8 +1846,7 @@ impl DocumentCore {
             fn visit(
                 node: &RenderNode,
                 ppi: usize,
-                ci: usize,
-                cei: usize,
+                path: &[(usize, usize, usize)],
                 cpi: usize,
                 offset: usize,
                 page: u32,
@@ -1853,13 +1854,25 @@ impl DocumentCore {
                 best: &mut Option<(u8, CursorHit)>,
             ) {
                 if let RenderNodeType::TextRun(ref tr) = node.node_type {
+                    // [중첩 표] 경로 전체를 비교한다 — 종전엔 path.first()(외곽)만
+                    // 비교해 깊이2+ 셀의 run 이 매칭되지 않아 선택 하이라이트가
+                    // 통째로 사라졌다 (2026-08-18, 009 안내문 박스 실측).
+                    // 마지막 entry 의 문단은 순회 인자 cpi 로 비교한다.
                     let matches_cell = tr.cell_context.as_ref().map_or(false, |ctx| {
-                        ctx.path.first().map_or(false, |entry| {
-                            ctx.parent_para_index == ppi
-                                && entry.control_index == ci
-                                && entry.cell_index == cei
-                                && entry.cell_para_index == cpi
-                        })
+                        ctx.parent_para_index == ppi
+                            && ctx.path.len() == path.len()
+                            && ctx.path.iter().zip(path.iter()).enumerate().all(
+                                |(i, (a, b))| {
+                                    a.control_index == b.0
+                                        && a.cell_index == b.1
+                                        && (i + 1 == path.len()
+                                            || a.cell_para_index == b.2)
+                                },
+                            )
+                            && ctx
+                                .path
+                                .last()
+                                .map_or(false, |e| e.cell_para_index == cpi)
                     });
                     if matches_cell {
                         let cs = tr.char_start.unwrap_or(0);
@@ -1888,12 +1901,12 @@ impl DocumentCore {
                     }
                 }
                 for child in &node.children {
-                    visit(child, ppi, ci, cei, cpi, offset, page, bias, best);
+                    visit(child, ppi, path, cpi, offset, page, bias, best);
                 }
             }
 
             let mut best = None;
-            visit(node, ppi, ci, cei, cpi, offset, page, bias, &mut best);
+            visit(node, ppi, path, cpi, offset, page, bias, &mut best);
             best.map(|(_, hit)| hit)
         }
 
@@ -1936,8 +1949,8 @@ impl DocumentCore {
         let mut tree_cache: Vec<(u32, crate::renderer::render_tree::PageRenderTree)> = Vec::new();
 
         // 선택 범위에 관련된 페이지 번호 수집 (중복 제거)
-        let lookup_para = if let Some((ppi, _, _)) = cell_ctx {
-            ppi
+        let lookup_para = if let Some((ppi, _)) = cell_ctx.as_ref() {
+            *ppi
         } else {
             start_para_idx
         };
@@ -1974,8 +1987,8 @@ impl DocumentCore {
             ($para_idx:expr, $offset:expr, $bias:expr) => {{
                 let mut result: Option<CursorHit> = None;
                 for (pn, tree) in tree_cache.iter() {
-                    let hit = if let Some((ppi, ci, cei)) = cell_ctx {
-                        find_cell_cursor(&tree.root, ppi, ci, cei, $para_idx, $offset, *pn, $bias)
+                    let hit = if let Some((ppi, path)) = cell_ctx.as_ref() {
+                        find_cell_cursor(&tree.root, *ppi, path, $para_idx, $offset, *pn, $bias)
                     } else {
                         find_body_cursor(
                             &tree.root,
@@ -2021,12 +2034,17 @@ impl DocumentCore {
         let mut rects: Vec<String> = Vec::new();
 
         for para_idx in start_para_idx..=end_para_idx {
-            let para = if let Some((ppi, ci, cei)) = cell_ctx {
-                self.get_cell_paragraph_ref(section_idx, ppi, ci, cei, para_idx)
-                    .ok_or_else(|| {
+            let para = if let Some((ppi, path)) = cell_ctx.as_ref() {
+                // 마지막 entry 의 문단 자리만 순회 인덱스로 바꿔 경로 해석
+                let mut lookup = path.clone();
+                if let Some(last) = lookup.last_mut() {
+                    last.2 = para_idx;
+                }
+                self.resolve_paragraph_by_path(section_idx, *ppi, &lookup)
+                    .map_err(|e| {
                         HwpError::RenderError(format!(
-                            "셀 문단 참조 실패: sec={} ppi={} ci={} cei={} cpi={}",
-                            section_idx, ppi, ci, cei, para_idx
+                            "셀 문단 참조 실패: sec={} ppi={} path={:?} cpi={} ({})",
+                            section_idx, ppi, path, para_idx, e
                         ))
                     })?
             } else {
@@ -2137,5 +2155,161 @@ impl DocumentCore {
         }
 
         Ok(format!("[{}]", rects.join(",")))
+    }
+}
+
+#[cfg(test)]
+mod selection_rects_tests {
+    use crate::model::control::Control;
+
+    fn load(path: &str) -> Option<crate::document_core::DocumentCore> {
+        let p = std::path::Path::new(path);
+        if !p.exists() {
+            eprintln!("테스트 파일 없음: {} — 건너뜀", path);
+            return None;
+        }
+        let data = std::fs::read(p).ok()?;
+        crate::document_core::DocumentCore::from_bytes(&data).ok()
+    }
+
+    /// 섹션 0에서 첫 깊이2 셀을 찾는다.
+    /// 반환: (ppi, path=[(외곽 ci, cei, cpi), (내부 ci, cei, 0)], 내부 첫 문단 글자 수)
+    fn find_first_nested_cell(
+        core: &crate::document_core::DocumentCore,
+    ) -> Option<(usize, Vec<(usize, usize, usize)>, usize)> {
+        let sec = core.document.sections.first()?;
+        for (ppi, para) in sec.paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let Control::Table(t) = ctrl else { continue };
+                for (cei, cell) in t.cells.iter().enumerate() {
+                    for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+                        for (ci2, c2) in cp.controls.iter().enumerate() {
+                            let Control::Table(t2) = c2 else { continue };
+                            for (cei2, cell2) in t2.cells.iter().enumerate() {
+                                let Some(inner_para) = cell2.paragraphs.first() else {
+                                    continue;
+                                };
+                                let n = inner_para.text.chars().count();
+                                if n >= 2 {
+                                    return Some((
+                                        ppi,
+                                        vec![(ci, cei, cpi), (ci2, cei2, 0)],
+                                        n,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// [2026-08-18] 깊이2 셀 안 텍스트 선택 — 종전엔 find_cell_cursor 가
+    /// path.first()(외곽)만 비교해 rects 가 항상 비었다 (009 안내문 박스 실측:
+    /// 드래그해도 선택 하이라이트가 그려지지 않음).
+    #[test]
+    fn nested_cell_selection_returns_rects() {
+        let Some(core) = load("samples/hwpx/nested-table-staff-handbook.hwpx") else {
+            return;
+        };
+        let Some((ppi, path, char_count)) = find_first_nested_cell(&core) else {
+            panic!("픽스처 전제: 깊이2 셀(글자 2자 이상)이 있어야 한다");
+        };
+        let end = (char_count.saturating_sub(1)).max(1);
+        let rects = core
+            .get_selection_rects_native(0, 0, 0, 0, end, Some((ppi, path.clone())))
+            .expect("selection rects");
+        assert_ne!(
+            rects, "[]",
+            "깊이2 셀 {:?} 안 0..{} 선택은 rect 를 내야 한다",
+            (ppi, &path),
+            end
+        );
+        assert!(rects.contains("\"width\""), "rect JSON 형태: {}", rects);
+    }
+
+
+    /// [2026-08-18 재현] 깊이2 셀의 "텍스트 줄 밖 여백" 클릭 — 캐럿이 외곽
+    /// placeholder run 으로 새는지. 깊이2 셀 bbox 를 렌더 트리에서 찾아
+    /// 오른쪽 여백 지점을 hit_test 한다.
+    #[test]
+    fn nested_cell_margin_click_repro() {
+        let Some(core) = load("samples/hwpx/nested-table-staff-handbook.hwpx") else {
+            return;
+        };
+        let mut core = core;
+        core.paginate();
+        eprintln!("[재현] page_count={}", core.page_count());
+        // 렌더 트리에서 깊이2 셀 bbox 수집 (build_page_tree 는 0-based 시도 후 1-based)
+        let tree = core
+            .build_page_tree(0)
+            .or_else(|_| core.build_page_tree(1))
+            .expect("page tree");
+        let mut nested_runs: Vec<(f64, f64, f64, f64, usize)> = Vec::new();
+        fn walk(
+            node: &crate::renderer::render_tree::RenderNode,
+            out: &mut Vec<(f64, f64, f64, f64, usize)>,
+        ) {
+            if let crate::renderer::render_tree::RenderNodeType::TextRun(ref tr) = node.node_type {
+                if let Some(ctx) = tr.cell_context.as_ref() {
+                    if ctx.path.len() >= 2 {
+                        out.push((
+                            node.bbox.x,
+                            node.bbox.y,
+                            node.bbox.width,
+                            node.bbox.height,
+                            ctx.path.len(),
+                        ));
+                    }
+                }
+            }
+            for c in &node.children {
+                walk(c, out);
+            }
+        }
+        walk(&tree.root, &mut nested_runs);
+        assert!(!nested_runs.is_empty(), "깊이2 run 이 렌더 트리에 있어야 한다");
+        // 첫 깊이2 run 의 오른쪽 바깥(같은 y, x=run 끝+40px) — 셀 안 여백 근사
+        let (x, y, w, h, _) = nested_runs[0];
+        let probe_x = x + w + 40.0;
+        let probe_y = y + h / 2.0;
+        let hit = core.hit_test_native(0, probe_x, probe_y).expect("hit");
+        eprintln!("[재현] run=({x:.0},{y:.0},{w:.0},{h:.0}) probe=({probe_x:.0},{probe_y:.0})");
+        eprintln!("[재현] hit = {hit}");
+        // cellPath 깊이 2 로 판정되어야 한다 (외곽 placeholder run 으로 새면 1 또는 없음)
+        let depth2 = hit.contains("\"cellPath\":[") && hit.matches("controlIndex").count() >= 2;
+        assert!(depth2, "여백 클릭이 깊이2 셀로 판정되어야 한다: {hit}");
+    }
+
+    /// 깊이1(외곽 표 셀) 경로 — 종전 동작 보존 (positional API 위임 경로).
+    #[test]
+    fn depth1_cell_selection_still_returns_rects() {
+        let Some(core) = load("samples/hwpx/nested-table-staff-handbook.hwpx") else {
+            return;
+        };
+        let sec = core.document.sections.first().expect("섹션");
+        // 텍스트 2자 이상인 첫 외곽 셀 문단
+        let mut found = None;
+        'outer: for (ppi, para) in sec.paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let Control::Table(t) = ctrl else { continue };
+                for (cei, cell) in t.cells.iter().enumerate() {
+                    if let Some(cp) = cell.paragraphs.first() {
+                        let n = cp.text.chars().count();
+                        if n >= 2 {
+                            found = Some((ppi, ci, cei, n));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        let (ppi, ci, cei, n) = found.expect("픽스처 전제: 텍스트 있는 외곽 셀");
+        let rects = core
+            .get_selection_rects_native(0, 0, 0, 0, n - 1, Some((ppi, vec![(ci, cei, 0)])))
+            .expect("selection rects");
+        assert_ne!(rects, "[]", "깊이1 셀 선택 rect 유지 (ppi={} ci={} cei={})", ppi, ci, cei);
     }
 }

@@ -1654,6 +1654,12 @@ export class WasmBridge {
     return JSON.parse(this.doc.getSelectionRectsInCell(sec, parentPara, controlIdx, cellIdx, startCellPara, startOffset, endCellPara, endOffset));
   }
 
+  /** 중첩 표 셀 안 선택 사각형 — hitTest 의 cellPath 그대로 전달 (경로 기반). */
+  getSelectionRectsInCellByPath(sec: number, parentPara: number, cellPathJson: string, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): SelectionRect[] {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getSelectionRectsInCellByPath(sec, parentPara, cellPathJson, startCellPara, startOffset, endCellPara, endOffset));
+  }
+
   getSelectionRectsInFootnote(pageNum: number, footnoteIndex: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).getSelectionRectsInFootnote(pageNum, footnoteIndex, startFnPara, startOffset, endFnPara, endOffset));

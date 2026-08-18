@@ -2788,15 +2788,36 @@ export class InputHandler {
       const startInCell = start.parentParaIndex !== undefined;
       const endInCell = end.parentParaIndex !== undefined;
 
-      if (startInCell && endInCell &&
+      // [중첩 표] 위치의 유효 셀 경로 — hitTest 가 cellPath 를 주면 그것,
+      // 아니면 레거시 flat 필드를 깊이1 경로로 승격한다.
+      const pathOf = (p: typeof start) =>
+        p.cellPath && p.cellPath.length > 0
+          ? p.cellPath
+          : (p.controlIndex !== undefined && p.cellIndex !== undefined
+            ? [{ controlIndex: p.controlIndex, cellIndex: p.cellIndex, cellParaIndex: p.cellParaIndex ?? 0 }]
+            : null);
+      // 같은 셀 = 경로 전 단계의 (표, 셀) 일치 + 마지막 전 단계의 문단 일치.
+      // 마지막 단계의 cellParaIndex 는 셀 안 문단 차이라 달라도 같은 셀이다.
+      const sameCell = (a: NonNullable<ReturnType<typeof pathOf>>, b: NonNullable<ReturnType<typeof pathOf>>) =>
+        a.length === b.length &&
+        a.every((ea, i) =>
+          ea.controlIndex === b[i].controlIndex &&
+          ea.cellIndex === b[i].cellIndex &&
+          (i === a.length - 1 || ea.cellParaIndex === b[i].cellParaIndex));
+
+      const startPath = startInCell ? pathOf(start) : null;
+      const endPath = endInCell ? pathOf(end) : null;
+
+      if (startPath && endPath &&
           start.parentParaIndex === end.parentParaIndex &&
-          start.controlIndex === end.controlIndex &&
-          start.cellIndex === end.cellIndex) {
-        // 같은 셀 내부 선택
-        rects = this.wasm.getSelectionRectsInCell(
-          start.sectionIndex, start.parentParaIndex!, start.controlIndex!, start.cellIndex!,
-          start.cellParaIndex!, start.charOffset,
-          end.cellParaIndex!, end.charOffset,
+          sameCell(startPath, endPath)) {
+        // 같은 셀 내부 선택 — 경로 기반 API (깊이1 도 동일 경로로 동작)
+        const startCpi = startPath[startPath.length - 1].cellParaIndex;
+        const endCpi = endPath[endPath.length - 1].cellParaIndex;
+        rects = this.wasm.getSelectionRectsInCellByPath(
+          start.sectionIndex, start.parentParaIndex!, JSON.stringify(startPath),
+          startCpi, start.charOffset,
+          endCpi, end.charOffset,
         );
       } else if (!startInCell && !endInCell) {
         // 본문 선택

@@ -5101,11 +5101,42 @@ impl HwpDocument {
             start_char_offset as usize,
             end_cell_para_idx as usize,
             end_char_offset as usize,
+            // 깊이1 경로 — 마지막 cell_para 자리는 native 가 순회 인덱스로 대체
             Some((
                 parent_para_idx as usize,
-                control_idx as usize,
-                cell_idx as usize,
+                vec![(control_idx as usize, cell_idx as usize, 0)],
             )),
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 중첩 표 셀 안 선택 영역의 줄별 사각형 (경로 기반).
+    ///
+    /// `cell_path_json`: `[{"controlIndex","cellIndex","cellParaIndex"}, ...]` —
+    /// hitTest 가 준 cellPath 그대로. 마지막 entry 의 cellParaIndex 는 무시되고
+    /// start/end CellParaIdx 로 문단을 순회한다.
+    #[wasm_bindgen(js_name = getSelectionRectsInCellByPath)]
+    pub fn get_selection_rects_in_cell_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        start_cell_para_idx: u32,
+        start_char_offset: u32,
+        end_cell_para_idx: u32,
+        end_char_offset: u32,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(cell_path_json)?;
+        if path.is_empty() {
+            return Err(JsValue::from_str("cellPath 가 비어 있다"));
+        }
+        self.get_selection_rects_native(
+            section_idx as usize,
+            start_cell_para_idx as usize,
+            start_char_offset as usize,
+            end_cell_para_idx as usize,
+            end_char_offset as usize,
+            Some((parent_para_idx as usize, path)),
         )
         .map_err(|e| e.into())
     }
@@ -5125,8 +5156,11 @@ impl HwpDocument {
             json_u32(options_json, "endCharOffset").unwrap_or(0) as usize,
             Some((
                 json_u32(options_json, "parentParaIdx").unwrap_or(0) as usize,
-                json_u32(options_json, "controlIdx").unwrap_or(0) as usize,
-                json_u32(options_json, "cellIdx").unwrap_or(0) as usize,
+                vec![(
+                    json_u32(options_json, "controlIdx").unwrap_or(0) as usize,
+                    json_u32(options_json, "cellIdx").unwrap_or(0) as usize,
+                    0,
+                )],
             )),
         )
         .map_err(|e| e.into())
