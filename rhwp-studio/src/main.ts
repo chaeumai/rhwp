@@ -55,7 +55,7 @@ import {
 import { installEmbedRuntime } from '@/embed/runtime';
 import { applyEdits, buildOutline, readPaths } from '@/embed/authoring';
 import { setEmbedInputLocked } from '@/embed/input-lock';
-import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings } from '@/embed/host-policy';
+import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings, surfaceProfile } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 
 const wasm = new WasmBridge();
@@ -1277,8 +1277,10 @@ const initPromise = initialize();
 // 단독 진입은 호스트가 없으므로 최소 툴바에 파일 열기/저장 그룹만 추가한다.
 if (isRestrictedSurface()) {
   // 단독 표면은 서식 바(스타일·글꼴·크기)를 남긴다 (2026-08-17 사용자 결정)
-  // — embed 는 종전대로 전부 봉인.
-  const hiddenChromeIds = isEmbedded()
+  // — 프로파일 기준 (2026-08-18): full 은 서식 바를 노출하고, restricted 는
+  //   종전 embed 그대로 전부 봉인. 단독과 ?profile=full embed 가 같은 화면이다.
+  const profile = surfaceProfile();
+  const hiddenChromeIds = profile === 'restricted'
     ? ['menu-bar', 'icon-toolbar', 'style-bar']
     : ['menu-bar', 'icon-toolbar'];
   for (const id of hiddenChromeIds) {
@@ -1292,7 +1294,7 @@ if (isRestrictedSurface()) {
       element.style.setProperty('display', 'none', 'important');
     }
   }
-  document.documentElement.dataset.rhwpEmbed = 'restricted';
+  document.documentElement.dataset.rhwpEmbed = profile;
 
   // 감춘 chrome 대신 허용 명령만 담은 최소 툴바를 같은 자리에 노출한다.
   // 문서가 열리기 전에는 전 버튼 disabled — 버튼 자체는 항상 렌더한다.
@@ -1303,7 +1305,7 @@ if (isRestrictedSurface()) {
       (commandId) => {
         void dispatcher.dispatch(commandId);
       },
-      { includeFileCommands: !isEmbedded() },
+      { profile },
     );
     iconToolbarEl.insertAdjacentElement('beforebegin', embedToolbar.element);
   }

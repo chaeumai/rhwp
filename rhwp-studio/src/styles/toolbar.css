@@ -260,6 +260,8 @@
 #embed-toolbar {
   display: flex;
   align-items: stretch;
+  /* 버튼 묶음을 문서(중앙 정렬)와 시각적으로 맞춘다 — 좌측 쏠림 방지 (2026-08-18) */
+  justify-content: center;
   padding: 2px 8px;
   background: linear-gradient(to bottom, var(--ui-toolbar-bg-start), var(--ui-toolbar-bg-end));
   border-bottom: 1px solid var(--ui-border);

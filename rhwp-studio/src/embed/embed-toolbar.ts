@@ -37,17 +37,13 @@ const EMBED_TOOLBAR_ENTRIES: EmbedToolbarEntry[] = [
 ];
 
 /**
- * 단독 제한 표면 전용 파일 그룹 (host-policy.STANDALONE_ALLOWED_COMMANDS 대응).
- * embed 에는 넣지 않는다 — 반입·반출은 호스트 RPC 의 몫.
+ * full 프로파일 추가 그룹 — 표 편집·그림·화면 전용 보기 토글.
+ *
+ * 단독 진입(검증 표면)과 `?profile=full` embed 가 같은 목록을 쓴다 — 검증
+ * 표면에서 본 구성이 제품 embed 와 달라지면 안 된다 (2026-08-18 결정).
+ * 파일 열기/저장 버튼은 두지 않는다 — 반입·반출은 호스트 RPC(?url=/lab)의 몫.
  */
-const STANDALONE_FILE_ENTRIES: EmbedToolbarEntry[] = [
-  { command: 'file:open', glyph: '📂', label: '열기', title: '열기 (Ctrl+O)', alwaysEnabled: true },
-  { command: 'file:save', glyph: '💾', label: '저장', title: '저장 (Ctrl+S)' },
-  'separator',
-];
-
-/** 단독 표면 후미 그룹 — 표 편집과 화면 전용 보기 토글. */
-const STANDALONE_VIEW_ENTRIES: EmbedToolbarEntry[] = [
+const FULL_PROFILE_ENTRIES: EmbedToolbarEntry[] = [
   'separator',
   // 표 편집 — 캐럿이 표 안에 있을 때만 dispatcher canExecute 가 실행을 허용한다.
   { command: 'table:insert-row-below', glyph: '⊕', label: '행 추가', title: '아래에 행 추가' },
@@ -56,6 +52,12 @@ const STANDALONE_VIEW_ENTRIES: EmbedToolbarEntry[] = [
   { command: 'table:delete-col', glyph: '⊟', label: '열 삭제', title: '열 삭제' },
   { command: 'table:cell-merge', glyph: '⧉', label: '셀 병합', title: '셀 합치기 (셀 블록 선택 후)' },
   { command: 'table:cell-split', glyph: '⿲', label: '셀 나누기', title: '셀 나누기' },
+  'separator',
+  // 그림 — 삽입은 파일 선택 후 본문/셀 안 클릭·드래그로 배치한다.
+  // 속성·삭제·캡션·배치·뒤집기는 그림 선택 후 우클릭 컨텍스트 메뉴에도 있다.
+  { command: 'insert:image', glyph: '🖼', label: '그림', title: '그림 넣기 — 파일 선택 후 본문/셀 안에서 클릭·드래그' },
+  { command: 'insert:picture-props', glyph: '⚙', label: '개체 속성', title: '선택한 그림/개체 속성 (그림 선택 후)' },
+  { command: 'insert:picture-delete', glyph: '✖', label: '개체 삭제', title: '선택한 그림/개체 지우기 (그림 선택 후)' },
   'separator',
   {
     command: 'view:border-transparent',
@@ -74,7 +76,7 @@ export interface EmbedToolbar {
 export function createEmbedToolbar(
   doc: Document,
   dispatch: (commandId: string) => void,
-  options?: { includeFileCommands?: boolean },
+  options?: { profile?: 'full' | 'restricted' },
 ): EmbedToolbar {
   const bar = doc.createElement('div');
   bar.id = 'embed-toolbar';
@@ -83,8 +85,8 @@ export function createEmbedToolbar(
   group.className = 'tb-group';
   bar.appendChild(group);
 
-  const entries: EmbedToolbarEntry[] = options?.includeFileCommands
-    ? [...STANDALONE_FILE_ENTRIES, ...EMBED_TOOLBAR_ENTRIES, ...STANDALONE_VIEW_ENTRIES]
+  const entries: EmbedToolbarEntry[] = options?.profile === 'full'
+    ? [...EMBED_TOOLBAR_ENTRIES, ...FULL_PROFILE_ENTRIES]
     : EMBED_TOOLBAR_ENTRIES;
 
   const buttons: HTMLButtonElement[] = [];

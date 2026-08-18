@@ -91,42 +91,79 @@ export function isRestrictedSurface(): boolean {
 }
 
 /**
- * 단독 제한 표면에서 추가로 허용하는 파일 명령.
+ * 제한 표면의 편집 프로파일 (2026-08-18 사용자 결정).
  *
- * embed 에서는 문서 반입·반출을 호스트가 postMessage RPC 로 수행하므로 파일
- * 명령이 허용 목록에 없다. 단독 진입에는 호스트가 없어 왕복 실험 자체가
- * 불가능해지므로 열기/저장만 연다. embed 에서는 이 목록이 적용되지 않는다.
+ * "검증 표면(단독)에서 본 것과 embed 에 실은 것이 다르면 검증이 무의미하다"
+ * — 그래서 표면 구성을 isEmbedded() 로 가르지 않고 프로파일 하나로 가른다.
+ *
+ * - `full`       : 서식·표·그림까지 여는 작성 표면. 단독 진입의 기본이자,
+ *                  새 제품 화면(rhwp 기본 작성 화면)이 iframe src 에
+ *                  `?profile=full` 을 붙여 선택하는 값. 단독에서 검증한
+ *                  표면과 정확히 같은 코드 경로다.
+ * - `restricted` : 기존 제한 편집(T1, 값만 고치기). embed 기본값 — 기존
+ *                  draft-edit 흐름은 아무 표시 없이 지금 동작을 유지한다.
+ *                  서버 저장 게이트(페이지 수·셀 수 불변)와 짝을 이룬다.
+ *
+ * 파일 명령(file:*)은 어느 프로파일에도 없다 — 문서 반입·반출은 호스트
+ * RPC(loadFile/exportHwpx)의 몫이고, 단독 검증 표면은 ?url= 자동 로드와
+ * lab.html 하니스로 왕복한다 (2026-08-18: 열기/저장 버튼 제거 결정).
  */
-const STANDALONE_ALLOWED_COMMANDS = new Set([
-  'file:open',
-  'file:save',
-  'file:save-as-hwpx',
-  // 투명 테두리 가이드 토글 (기본 ON, 화면 전용 렌더)
-  'view:border-transparent',
-]);
+export type SurfaceProfile = 'full' | 'restricted';
+
+export function surfaceProfile(): SurfaceProfile {
+  if (!isEmbedded()) return 'full';
+  try {
+    const p = new URLSearchParams(window.location.search).get('profile');
+    if (p === 'full') return 'full';
+  } catch {
+    // location 접근이 막히는 환경(테스트 등)은 보수적으로 restricted.
+  }
+  return 'restricted';
+}
 
 /**
- * 단독 제한 표면에서 접두어 단위로 허용하는 명령 계열 (2026-08-17 사용자 결정).
+ * full 프로파일에서 추가로 허용하는 명령.
  *
- * - `format:` — 서식 바(스타일·글꼴·크기·굵게 등)를 단독에서 재노출하므로
- *   그 바가 발사하는 서식 명령을 연다
- * - `table:` — 표 행/열 추가·삭제·셀 병합 등. 컨텍스트 메뉴·단축키로 동작
+ * 서식 바(format:)·표 편집(table:)에 더해 그림 반입·편집 일체(2026-08-18
+ * 사용자 결정: "모두 다"): 삽입·속성·삭제·캡션·배치·뒤집기·묶기, 그리고
+ * 그림 컨텍스트 메뉴가 발사하는 잘라내기/복사/붙여넣기 계열.
  *
- * embed(제품 제한 편집)에는 적용되지 않는다 — 거기서는 구조·서식이 저장
- * 게이트(페이지 수·셀 수 불변)와 함께 봉인 유지.
+ * 의도적으로 계속 봉인: file:*(호스트 RPC 몫), page:*(쪽 설정), insert:table
+ * (새 표 삽입 — 서식 골격 보존 원칙, 필요해지면 별도 결정), 수식·차트 등
+ * 나머지 insert 계열.
  */
-const STANDALONE_ALLOWED_PREFIXES = ['format:', 'table:'];
+const FULL_SURFACE_COMMANDS = new Set([
+  'view:border-transparent',
+  'insert:image',
+  'insert:picture-props',
+  'insert:picture-delete',
+  'insert:group-shapes',
+  'insert:ungroup-shapes',
+  'edit:cut',
+  'edit:copy',
+  'edit:paste',
+  'edit:format-copy',
+  'edit:format-paste',
+]);
+
+const FULL_SURFACE_PREFIXES = [
+  'format:',
+  'table:',
+  'insert:caption-',
+  'insert:arrange-',
+  'insert:flip-',
+];
 
 export function isCommandAllowedInEmbed(commandId: string): boolean {
-  if (isEmbedded()) return EMBED_ALLOWED_COMMANDS.has(commandId);
-  if (RESTRICTED_STANDALONE) {
+  if (!isRestrictedSurface()) return true;
+  if (EMBED_ALLOWED_COMMANDS.has(commandId)) return true;
+  if (surfaceProfile() === 'full') {
     return (
-      EMBED_ALLOWED_COMMANDS.has(commandId)
-      || STANDALONE_ALLOWED_COMMANDS.has(commandId)
-      || STANDALONE_ALLOWED_PREFIXES.some((prefix) => commandId.startsWith(prefix))
+      FULL_SURFACE_COMMANDS.has(commandId)
+      || FULL_SURFACE_PREFIXES.some((prefix) => commandId.startsWith(prefix))
     );
   }
-  return true;
+  return false;
 }
 
 /**

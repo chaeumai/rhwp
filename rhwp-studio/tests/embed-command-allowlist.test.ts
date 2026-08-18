@@ -56,32 +56,87 @@ test('허용 목록 방식이다 — 단축키 맵의 미열거 명령은 기본
   });
 });
 
-test('단독 실행도 제한 표면 — 파일 반입·반출만 추가 허용된다', () => {
+// full 프로파일에서 열리는 대표 명령 — 단독 기본과 ?profile=full embed 가
+// 같은 집합을 봐야 한다 (2026-08-18 결정: 검증 표면 = 제품 표면).
+const FULL_PROFILE_SAMPLE = [
+  'edit:undo',
+  'view:zoom-in',
+  'view:border-transparent',
+  'format:bold',
+  'format:apply-style',
+  'table:insert-row-above',
+  'table:cell-merge',
+  'insert:image',
+  'insert:picture-props',
+  'insert:picture-delete',
+  'insert:caption-toggle',
+  'insert:arrange-front',
+  'insert:flip-horz',
+  'edit:cut',
+  'edit:copy',
+  'edit:paste',
+];
+
+// full 에서도 계속 봉인되는 명령 — 파일 반입·반출은 호스트 RPC 몫(2026-08-18
+// 열기/저장 버튼 제거 결정), 쪽 설정·새 표 삽입·기타 개체는 별도 결정 전 봉인.
+const SEALED_EVERYWHERE = [
+  'file:open',
+  'file:save',
+  'file:save-as-hwpx',
+  'file:new-doc',
+  'file:print',
+  'page:setup',
+  'insert:table',
+  'insert:shape',
+  'insert:equation',
+];
+
+test('단독 실행은 full 프로파일 — 서식·표·그림이 열리고 파일 명령은 봉인', () => {
   const previous = (globalThis as { window?: unknown }).window;
   const self: Record<string, unknown> = {};
   self.parent = self;
   Object.defineProperty(globalThis, 'window', { configurable: true, value: self });
   try {
-    // 호스트가 없으므로 파일 명령과, 사용자 결정(2026-08-17)에 따른 서식·표
-    // 계열, 투명선 토글이 열린다.
-    for (const id of [
-      'file:open',
-      'file:save',
-      'file:save-as-hwpx',
-      'edit:undo',
-      'view:zoom-in',
-      'view:border-transparent',
-      'format:bold',
-      'format:apply-style',
-      'table:insert-row-above',
-      'table:cell-merge',
-    ]) {
-      assert.equal(isCommandAllowedInEmbed(id), true, `단독 제한 표면에서 ${id} 는 허용`);
+    for (const id of FULL_PROFILE_SAMPLE) {
+      assert.equal(isCommandAllowedInEmbed(id), true, `단독(full)에서 ${id} 는 허용`);
     }
-    // 개체 삽입·쪽 설정·기타 파일 명령은 계속 봉인된다.
-    for (const id of ['insert:image', 'insert:shape', 'page:setup', 'file:new-doc', 'file:print']) {
-      assert.equal(isCommandAllowedInEmbed(id), false, `단독 제한 표면에서 ${id} 는 차단`);
+    for (const id of SEALED_EVERYWHERE) {
+      assert.equal(isCommandAllowedInEmbed(id), false, `단독(full)에서 ${id} 는 차단`);
     }
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previous });
+  }
+});
+
+test('embed 도 ?profile=full 이면 단독과 같은 집합을 본다', () => {
+  const previous = (globalThis as { window?: unknown }).window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { parent: { different: true }, location: { search: '?profile=full' } },
+  });
+  try {
+    for (const id of FULL_PROFILE_SAMPLE) {
+      assert.equal(isCommandAllowedInEmbed(id), true, `embed(full)에서 ${id} 는 허용`);
+    }
+    for (const id of SEALED_EVERYWHERE) {
+      assert.equal(isCommandAllowedInEmbed(id), false, `embed(full)에서 ${id} 는 차단`);
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previous });
+  }
+});
+
+test('embed 기본(restricted)은 profile 파라미터가 없으면 종전 봉인 그대로', () => {
+  const previous = (globalThis as { window?: unknown }).window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { parent: { different: true }, location: { search: '' } },
+  });
+  try {
+    for (const id of ['format:bold', 'table:insert-row-above', 'insert:image', 'edit:cut']) {
+      assert.equal(isCommandAllowedInEmbed(id), false, `embed(restricted)에서 ${id} 는 차단`);
+    }
+    assert.equal(isCommandAllowedInEmbed('edit:undo'), true);
   } finally {
     Object.defineProperty(globalThis, 'window', { configurable: true, value: previous });
   }

@@ -95,22 +95,34 @@ test('문서가 열리기 전에는 전 버튼 비활성이고 클릭해도 발�
   assert.deepEqual(dispatched, []);
 });
 
-test('단독 제한 표면에서는 파일 그룹이 추가되고 열기는 문서 이전에도 활성', () => {
-  const toolbar = createEmbedToolbar(fakeDocument, () => {}, { includeFileCommands: true });
+test('full 프로파일에는 표·그림 그룹이 추가되고 파일 버튼은 없다', () => {
+  const toolbar = createEmbedToolbar(fakeDocument, () => {}, { profile: 'full' });
   const buttons = collectButtons(toolbar.element as unknown as FakeElement);
   const cmds = buttons.map((btn) => btn.dataset.cmd);
-  assert.ok(cmds.includes('file:open'), '열기 버튼이 있어야 한다');
-  assert.ok(cmds.includes('file:save'), '저장 버튼이 있어야 한다');
+  // 표 편집 그룹
+  for (const id of [
+    'table:insert-row-below', 'table:delete-row',
+    'table:insert-col-right', 'table:delete-col',
+    'table:cell-merge', 'table:cell-split',
+  ]) {
+    assert.ok(cmds.includes(id), `${id} 버튼이 있어야 한다`);
+  }
+  // 그림 그룹
+  for (const id of ['insert:image', 'insert:picture-props', 'insert:picture-delete']) {
+    assert.ok(cmds.includes(id), `${id} 버튼이 있어야 한다`);
+  }
+  // 파일 반입·반출은 호스트 RPC 몫 — 버튼 자체가 없어야 한다 (2026-08-18 결정)
+  assert.ok(!cmds.includes('file:open'), '열기 버튼은 없어야 한다');
+  assert.ok(!cmds.includes('file:save'), '저장 버튼은 없어야 한다');
+});
 
-  const open = buttons.find((btn) => btn.dataset.cmd === 'file:open')!;
-  const save = buttons.find((btn) => btn.dataset.cmd === 'file:save')!;
-  assert.equal(open.disabled, false, '열기는 문서가 없어도 활성');
-  assert.equal(save.disabled, true, '저장은 문서가 열려야 활성');
-
-  toolbar.setEnabled(true);
-  assert.equal(save.disabled, false);
-  toolbar.setEnabled(false);
-  assert.equal(open.disabled, false, '비활성 전환에도 열기는 활성 유지');
+test('restricted 프로파일(기본)에는 표·그림 버튼이 없다 — 기존 T1 화면 보존', () => {
+  const toolbar = createEmbedToolbar(fakeDocument, () => {});
+  const buttons = collectButtons(toolbar.element as unknown as FakeElement);
+  const cmds = buttons.map((btn) => btn.dataset.cmd);
+  for (const id of ['table:insert-row-below', 'insert:image', 'file:open']) {
+    assert.ok(!cmds.includes(id), `${id} 버튼은 없어야 한다`);
+  }
 });
 
 test('setEnabled(true) 후에는 클릭이 해당 명령을 발사한다', () => {
