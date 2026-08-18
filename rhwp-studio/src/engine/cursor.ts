@@ -1367,10 +1367,13 @@ export class CursorState {
     return true;
   }
 
-  /** 지정한 표를 객체 선택한다 (커서 위치와 무관). */
-  enterTableObjectSelectionDirect(sec: number, ppi: number, ci: number): void {
+  /** 지정한 표를 객체 선택한다 (커서 위치와 무관).
+   *  cellPath 깊이2+ 를 주면 중첩 표(경로의 마지막 controlIndex)를 선택한다. */
+  enterTableObjectSelectionDirect(sec: number, ppi: number, ci: number, cellPath?: CellPathEntry[]): void {
     this._tableObjectSelected = true;
-    this.selectedTableRef = { sec, ppi, ci };
+    this.selectedTableRef = cellPath && cellPath.length > 1
+      ? { sec, ppi, ci, cellPath }
+      : { sec, ppi, ci };
   }
 
   /** 표 객체 선택을 해제한다. */

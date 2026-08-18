@@ -143,12 +143,18 @@ function clampResizePosition(pos: number, bounds: { min: number; max: number }):
   return Math.min(Math.max(pos, bounds.min), bounds.max);
 }
 
-function selectTableObjectFromResize(this: any, tableRef: { sec: number; ppi: number; ci: number }): void {
+function selectTableObjectFromResize(this: any, tableRef: { sec: number; ppi: number; ci: number; pathJson?: string }): void {
   this.cursor.clearSelection();
   this.cursor.exitCellSelectionMode();
   this.cellSelectionRenderer?.clear();
   this.exitPictureObjectSelectionIfNeeded();
-  this.cursor.enterTableObjectSelectionDirect(tableRef.sec, tableRef.ppi, tableRef.ci);
+  // [중첩 표] hover 캐시가 경로(pathJson)를 알고 있으면 그 표를 경로째 선택한다
+  // — 종전엔 flat 진입이라 중첩 표 경계 탭이 최외곽 표를 선택했다.
+  let cellPath: any;
+  if (tableRef.pathJson) {
+    try { cellPath = JSON.parse(tableRef.pathJson); } catch { /* flat 으로 진행 */ }
+  }
+  this.cursor.enterTableObjectSelectionDirect(tableRef.sec, tableRef.ppi, tableRef.ci, cellPath);
   this.active = true;
   this.caret.hide();
   this.fieldMarker.hide();
@@ -656,6 +662,9 @@ export function startResizeDrag(this: any,
     pageBboxes,
     affectedCellIndices,
     borderOriginalPos,
+    // 탭(클릭) 판정용 — 경계선 위치가 아니라 실제 누른 지점. 경계선에서
+    // 1~4px 떨어진 클릭이 '오프셋=드래그'로 오인돼 미세 리사이즈되는 것 차단.
+    startPagePos: edge.type === 'row' ? pageY : pageX,
     minResizePos: resizeBounds.min,
     maxResizePos: resizeBounds.max,
     resizeTarget,
@@ -740,8 +749,15 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
   // 1 page px (96 DPI) = 75 HWPUNIT (7200/96)
   const deltaHwpUnit = Math.round(deltaPagePx * 75);
 
-  // 너무 작은 드래그는 무시 (1px 미만)
-  if (Math.abs(deltaHwpUnit) < 75) {
+  // 탭(누른 지점에서 화면 3px 미만 이동) → 리사이즈가 아니라 클릭.
+  // delta 는 '경계선으로부터의 오프셋'이라, 경계선에서 1px 떨어져 누르기만
+  // 해도 1px 리사이즈로 오인됐다 — 이동량 기준으로 먼저 가른다.
+  const movedPagePx = Math.abs(rawNewPos - (state.startPagePos ?? state.borderOriginalPos));
+  const tapThresholdPx = 3 / Math.max(zoom, 0.1);
+  const isTap = movedPagePx < tapThresholdPx;
+
+  // 탭 또는 너무 작은 드래그(1px 미만)는 리사이즈하지 않는다
+  if (isTap || Math.abs(deltaHwpUnit) < 75) {
     const shouldSelectTable = isOuterResizeEdge(this, state.edge, state.pageBboxes);
     const tableRef = { ...state.tableRef };
     this.cleanupResizeDrag();
@@ -1273,6 +1289,8 @@ export function finishImagePlacement(this: any, e: MouseEvent): void {
 export function moveSelectedTable(this: any, key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
   const ref = this.cursor.getSelectedTableRef();
   if (!ref) return;
+  // [중첩 표] moveTableOffset 은 flat 전용 — 외곽 표가 움직이는 오동작 차단.
+  if (ref.cellPath && ref.cellPath.length > 1) return;
 
   const step = Math.round(this.gridStepMm * 7200 / 25.4); // mm → HWPUNIT
   let deltaH = 0;

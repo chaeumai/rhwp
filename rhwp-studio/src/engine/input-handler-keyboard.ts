@@ -863,6 +863,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
       e.preventDefault();
       const ref = this.cursor.getSelectedTableRef();
+      // [중첩 표] copyControl 은 flat 전용 — 외곽 표가 복사되는 오동작 차단.
+      if (ref && ref.cellPath && ref.cellPath.length > 1) {
+        console.warn('[InputHandler] 중첩 표 복사는 미지원');
+        return;
+      }
       if (ref) {
         try {
           this.wasm.copyControl(ref.sec, ref.ppi, ref.ci);

@@ -376,8 +376,10 @@ export function onClick(this: any, e: MouseEvent): void {
     let clickedInsideSelectedTable = false;
 
     // 좌클릭이 표 내부이면 → 이동 드래그 시작
+    // [중첩 표] moveTableOffset 은 flat 전용이라 중첩 선택은 이동 드래그를
+    // 시작하지 않는다 (외곽 표가 움직이는 오동작 차단) — 내부 클릭은 선택 해제로.
     const ref = this.cursor.getSelectedTableRef();
-    if (ref && e.button === 0) {
+    if (ref && e.button === 0 && !(ref.cellPath && ref.cellPath.length > 1)) {
       const zoom = this.viewportManager.getZoom();
       const sc = this.container.querySelector('#scroll-content');
       if (sc) {
@@ -779,8 +781,14 @@ export function onClick(this: any, e: MouseEvent): void {
     if (edge) {
       e.preventDefault();
       this.startResizeDrag(edge, pageX, pageY, resizeHit!.pageBboxes, e.shiftKey);
-      this.textarea.focus();
-      return;
+      // [중첩 표] startResizeDrag 는 조절 대상이 없으면(예: 위쪽 외곽 경계)
+      // 조용히 조기 반환한다. 그때 여기서 return 하면 경계 클릭이 통째로
+      // 죽는다 — 드래그가 실제로 시작된 경우에만 클릭을 소비하고, 아니면
+      // 아래 표 객체 선택 판정으로 통과시킨다.
+      if (this.isResizeDragging) {
+        this.textarea.focus();
+        return;
+      }
     }
   }
 
@@ -939,6 +947,22 @@ export function onClick(this: any, e: MouseEvent): void {
 
     // 표 경계선 클릭 감지 → 표 객체 선택 (셀 내부에서 외곽 클릭)
     if (hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && !hit.isTextBox) {
+      // [중첩 표] 안쪽 표 경계선 우선 판정 — 일치하면 그 표를 경로로 객체 선택
+      const nestedPath = this.findNestedTableBorderPath(pageIdx, pageX, pageY, hit);
+      if (nestedPath) {
+        this.cursor.clearSelection();
+        this.cursor.moveTo(hit); // 셀 위치로 이동 (유효한 렌더링 위치)
+        this.cursor.enterTableObjectSelectionDirect(
+          hit.sectionIndex, hit.parentParaIndex, hit.controlIndex, nestedPath);
+        this.active = true;
+        this.caret.hide();
+        this.selectionRenderer.clear();
+        this.tableResizeRenderer?.clear();
+        this.renderTableObjectSelection();
+        this.eventBus.emit('table-object-selection-changed', true);
+        this.textarea.focus();
+        return;
+      }
       if (this.isTableBorderClick(pageX, pageY, hit.sectionIndex, hit.parentParaIndex, hit.controlIndex)) {
         this.cursor.clearSelection();
         this.cursor.moveTo(hit); // 셀 위치로 이동 (유효한 렌더링 위치)
@@ -1700,8 +1724,9 @@ export function onMouseMove(this: any, e: MouseEvent): void {
       this.container.style.cursor = cursorMap[dir] ?? '';
     } else {
       // 핸들 밖이면 표 내부인지 확인 → move 커서
+      // [중첩 표] 중첩 선택은 이동 미지원이라 move 커서를 내지 않는다.
       const ref = this.cursor.getSelectedTableRef();
-      if (ref) {
+      if (ref && !(ref.cellPath && ref.cellPath.length > 1)) {
         const zoom = this.viewportManager.getZoom();
         const pi = this.virtualScroll.getPageAtPoint(x, y);
         const po = this.virtualScroll.getPageOffset(pi);

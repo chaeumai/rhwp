@@ -1542,6 +1542,45 @@ export class InputHandler {
     }
   }
 
+  /** [중첩 표] 클릭 좌표가 중첩 표(깊이2+)의 외곽 경계선 위이면 그 표의 경로를 반환한다.
+   *  innermost 부터 바깥 방향으로 판정 — 경계가 겹치면 안쪽 표가 우선이다
+   *  (hitTest 가 안쪽 셀 경로를 반환했다 = 클릭이 안쪽 표 영역).
+   *  깊이1(최외곽)은 기존 isTableBorderClick 몫이라 여기서 다루지 않는다. */
+  private findNestedTableBorderPath(
+    pageIdx: number, pageX: number, pageY: number, hit: any,
+  ): any[] | null {
+    const path = hit.cellPath;
+    if (!Array.isArray(path) || path.length < 2) return null;
+    const tolerance = 5;
+    for (let depth = path.length; depth >= 2; depth--) {
+      const prefix = path.slice(0, depth);
+      try {
+        const bboxes = this.wasm.getTableCellBboxesByPath(
+          hit.sectionIndex, hit.parentParaIndex, JSON.stringify(prefix));
+        if (!Array.isArray(bboxes) || bboxes.length === 0) continue;
+        // 클릭한 페이지의 셀 합집합 bbox (다중 페이지 표 대비)
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const b of bboxes) {
+          if (b.pageIndex !== pageIdx) continue;
+          minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+          maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h);
+        }
+        if (!Number.isFinite(minX)) continue;
+        const nearLeft = Math.abs(pageX - minX) <= tolerance;
+        const nearRight = Math.abs(pageX - maxX) <= tolerance;
+        const nearTop = Math.abs(pageY - minY) <= tolerance;
+        const nearBottom = Math.abs(pageY - maxY) <= tolerance;
+        const inVertRange = pageY >= minY - tolerance && pageY <= maxY + tolerance;
+        const inHorzRange = pageX >= minX - tolerance && pageX <= maxX + tolerance;
+        if ((nearLeft && inVertRange) || (nearRight && inVertRange) ||
+            (nearTop && inHorzRange) || (nearBottom && inHorzRange)) {
+          return prefix;
+        }
+      } catch { /* 이 깊이는 건너뛰고 바깥쪽 계속 */ }
+    }
+    return null;
+  }
+
   /** [Task #919] 클릭 좌표가 (sec, ppi, ci) 글상자의 외곽 경계선 위인지 판정.
    *  isShapeBorderClick(picture 모듈) 의 sec/ppi/ci 변형 — getShapeBBox API 사용
    *  tolerance 5px 한컴 정합 (Native bbox + 5px 안). */
@@ -4042,6 +4081,11 @@ export class InputHandler {
     }
     if (this.cursor.isInTableObjectSelection()) {
       const ref = this.cursor.getSelectedTableRef();
+      // [중첩 표] copyControl 은 flat 전용 — 외곽 표가 복사되는 오동작 차단.
+      if (ref && ref.cellPath && ref.cellPath.length > 1) {
+        console.warn('[InputHandler] 중첩 표 복사는 미지원');
+        return;
+      }
       if (ref) {
         try {
           this.wasm.copyControl(ref.sec, ref.ppi, ref.ci);
@@ -4099,6 +4143,13 @@ export class InputHandler {
     }
     if (this.cursor.isInTableObjectSelection()) {
       const ref = this.cursor.getSelectedTableRef();
+      // [중첩 표] copyControl·deleteTableControl 은 flat 전용 — 외곽 표가
+      // 잘려나가는 오동작을 차단한다 (Delete 키 경로와 동일 정책).
+      if (ref && ref.cellPath && ref.cellPath.length > 1) {
+        this.cursor.moveOutOfSelectedTable();
+        this.eventBus.emit('table-object-selection-changed', false);
+        return;
+      }
       if (ref) {
         this.performCopy();
         this.cursor.moveOutOfSelectedTable();
