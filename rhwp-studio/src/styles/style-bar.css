@@ -4,6 +4,9 @@
 #style-bar {
   display: flex;
   align-items: center;
+  /* embed 툴바와 같은 중앙 정렬 — 좁은 화면에서 넘치면 safe 가 start 로
+     폴백해 왼쪽 항목이 잘리지 않는다 (2026-08-18) */
+  justify-content: safe center;
   gap: 2px;
   padding: 1px 8px;
   background: var(--color-bg);

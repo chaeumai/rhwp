@@ -2258,7 +2258,7 @@ impl LayoutEngine {
         // [Task #429] image fill 처리 — zone 처리와 동일 패턴
         if let Some(img_fill) = border_style.and_then(|bs| bs.image_fill.as_ref()) {
             if let Some(img_content) =
-                crate::renderer::layout::find_bin_data(bin_data_content, img_fill.bin_data_id)
+                crate::renderer::layout::find_bin_data(bin_data_content, img_fill.bin_data_id, self.is_hwpx_source.get())
             {
                 let img_id = tree.next_id();
                 let img_node = RenderNode::new(

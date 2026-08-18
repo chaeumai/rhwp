@@ -328,6 +328,18 @@ impl Document {
             return false;
         }
 
+        // id 일치 항목 우선 — HWPX 는 manifest 나열 순서가 id 순이 아닐 수 있어
+        // (실측 009: image3,4,1,2 순) 위치 기반 갱신이 엉뚱한 항목을 덮어쓴다.
+        // HWP5 순번 참조는 id 미일치 시 아래 위치 폴백으로 종전 동작을 유지한다.
+        if let Some(entry) = self
+            .bin_data_content
+            .iter_mut()
+            .find(|c| c.id == bin_data_id)
+        {
+            entry.data = data.into();
+            entry.extension = extension;
+            return true;
+        }
         let idx = (bin_data_id as usize).saturating_sub(1);
         if idx < self.bin_data_content.len() {
             self.bin_data_content[idx].id = bin_data_id;

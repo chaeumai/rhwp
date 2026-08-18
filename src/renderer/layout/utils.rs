@@ -19,18 +19,39 @@ use crate::model::style::{HeadType, Numbering};
 /// 가드 `c.id == bin_data_id` 는 사용하지 않는다 — `c.id` 는 storage_id 이고 bin_data_id 는
 /// 인덱스이므로, 두 값이 다른 경우 (예: hwpspec.hwp 1 페이지 표지) 정상 매칭이 거짓 실패함.
 /// 자세한 정황: mydocs/troubleshootings/bin_data_id_index_mapping.md
+/// `bin_data_id` 참조를 실제 바이트 항목으로 푼다.
+///
+/// `bin_data_id` 는 포맷에 따라 **의미 공간이 다르다**:
+/// - HWP5: DocInfo BIN_DATA 레코드의 **1-based 순번** (위치). storage id 와
+///   다를 수 있어 순번 우선이 정답 (`find_bin_data_indexed_match_storage_id_differs`).
+/// - HWPX: `binaryItemIDRef="imageN"` 의 **숫자 N = manifest id**. 배열 순서는
+///   manifest 나열 순서라 id 와 무관하다 — 실측 009 장학금신청서는 manifest 가
+///   image3,4,1,2 순이어서 순번 해석 시 바탕쪽 로고 자리에 본문 신분증 견본이
+///   그려지는 등 그림 4장이 전부 뒤바뀌었다 (2026-08-18). id 매칭이 정답.
+///
+/// `id_is_key` 는 렌더러의 `is_hwpx_source` 를 그대로 받는다. 각 모드의
+/// 반대쪽 해석은 방어적 폴백으로만 남긴다.
 pub(crate) fn find_bin_data<'a>(
     bin_data_content: &'a [BinDataContent],
     bin_data_id: u16,
+    id_is_key: bool,
 ) -> Option<&'a BinDataContent> {
     if bin_data_id == 0 {
         return None;
     }
-    // 1-indexed 순번으로 BinDataContent 배열 접근
+    if id_is_key {
+        // HWPX: manifest id 매칭 우선 (sparse 차트 id 60000+N 포함)
+        if let Some(c) = bin_data_content.iter().find(|c| c.id == bin_data_id) {
+            return Some(c);
+        }
+        // 방어적 폴백 — id 재부여가 안 된 비정상 문서의 종전 해석 유지
+        return bin_data_content.get((bin_data_id - 1) as usize);
+    }
+    // HWP5: 1-indexed 순번으로 BinDataContent 배열 접근
     if let Some(c) = bin_data_content.get((bin_data_id - 1) as usize) {
         return Some(c);
     }
-    // 인덱스 범위 밖 (HWPX 차트 sparse id 60000+N 등) — id 직접 검색
+    // 인덱스 범위 밖 — id 직접 검색
     bin_data_content.iter().find(|c| c.id == bin_data_id)
 }
 
@@ -494,7 +515,7 @@ mod tests {
     #[test]
     fn find_bin_data_returns_none_for_zero() {
         let v = vec![mk(1, "png")];
-        assert!(find_bin_data(&v, 0).is_none());
+        assert!(find_bin_data(&v, 0, false).is_none());
     }
 
     #[test]
@@ -579,6 +600,44 @@ mod tests {
         assert_eq!(picture_flow_frame_size_hu(&picture), (9014, 9446));
     }
 
+
+    /// [2026-08-18] HWPX 실측 009 장학금신청서 — manifest 나열이 id 순이 아니다.
+    /// content.hpf 순서: image3(로고), image4(로고), image1(신분증), image2(통장).
+    /// 순번 해석이면 4장 전부 뒤바뀐다 — id 매칭이 정답.
+    #[test]
+    fn find_bin_data_hwpx_unordered_manifest_matches_by_id() {
+        let v = vec![
+            mk(3, "png"), // index 0 — 바탕쪽 좌상단 로고
+            mk(4, "jpg"), // index 1 — 바탕쪽 우상단 로고
+            mk(1, "bmp"), // index 2 — 본문 신분증 견본
+            mk(2, "bmp"), // index 3 — 본문 통장 견본
+        ];
+        for id in 1..=4u16 {
+            let c = find_bin_data(&v, id, true).expect("id 매칭");
+            assert_eq!(c.id, id, "binaryItemIDRef=image{id} 는 id {id} 항목이어야 한다");
+        }
+        // 대조: 순번 해석(false)이면 id=3 이 신분증(bmp, id1)으로 뒤바뀐다
+        let wrong = find_bin_data(&v, 3, false).expect("순번 해석");
+        assert_eq!(wrong.id, 1, "HWP5 해석을 HWPX 에 쓰면 뒤바뀜을 재현");
+    }
+
+    /// HWPX 차트 sparse id 는 id 매칭 경로에서도 그대로 찾는다.
+    #[test]
+    fn find_bin_data_hwpx_id_first_sparse_chart() {
+        let v = vec![mk(2, "png"), mk(1, "png"), mk(60001, "ooxml_chart")];
+        assert_eq!(find_bin_data(&v, 60001, true).unwrap().extension, "ooxml_chart");
+        assert_eq!(find_bin_data(&v, 1, true).unwrap().id, 1);
+        assert_eq!(find_bin_data(&v, 2, true).unwrap().id, 2);
+    }
+
+    /// HWPX id 미일치 시 방어적 순번 폴백 (id 재부여가 안 된 비정상 문서)
+    #[test]
+    fn find_bin_data_hwpx_id_miss_falls_back_to_index() {
+        let v = vec![mk(0, "png"), mk(0, "bmp")];
+        let c = find_bin_data(&v, 2, true).expect("순번 폴백");
+        assert_eq!(c.extension, "bmp");
+    }
+
     /// hwpspec.hwp 패턴 — bin_data_id=1 이 storage_id=12 를 가리킴 (가드 회귀 방지)
     #[test]
     fn find_bin_data_indexed_match_storage_id_differs() {
@@ -588,7 +647,7 @@ mod tests {
             mk(2, "bmp"),  // index 2 → bin_data_id=3
         ];
         // bin_data_id=1 → 인덱스 0 의 BIN000C.png 매칭 (storage_id=12)
-        let c = find_bin_data(&v, 1).expect("매칭 성공");
+        let c = find_bin_data(&v, 1, false).expect("매칭 성공");
         assert_eq!(c.id, 12);
         assert_eq!(c.extension, "png");
     }
@@ -598,7 +657,7 @@ mod tests {
     fn find_bin_data_indexed_match_storage_id_matches() {
         let v = vec![mk(1, "jpg"), mk(2, "png"), mk(3, "bmp")];
         for i in 1..=3u16 {
-            let c = find_bin_data(&v, i).expect("매칭 성공");
+            let c = find_bin_data(&v, i, false).expect("매칭 성공");
             assert_eq!(c.id, i);
         }
     }
@@ -613,11 +672,11 @@ mod tests {
             mk(60002, "ooxml_chart"),
         ];
         // bin_data_id=60001 → 인덱스 60000 범위 밖 → fallback id 직접 검색
-        let c = find_bin_data(&v, 60001).expect("차트 매칭");
+        let c = find_bin_data(&v, 60001, false).expect("차트 매칭");
         assert_eq!(c.id, 60001);
         assert_eq!(c.extension, "ooxml_chart");
 
-        let c2 = find_bin_data(&v, 60002).expect("차트 매칭");
+        let c2 = find_bin_data(&v, 60002, false).expect("차트 매칭");
         assert_eq!(c2.id, 60002);
     }
 
@@ -625,7 +684,7 @@ mod tests {
     #[test]
     fn find_bin_data_out_of_range_returns_none() {
         let v = vec![mk(1, "png"), mk(2, "png")];
-        assert!(find_bin_data(&v, 99).is_none());
+        assert!(find_bin_data(&v, 99, false).is_none());
     }
 
     /// 차트 회귀 방지 — HWPX 의 실제 배열 구조 모사
@@ -643,17 +702,17 @@ mod tests {
 
         // 일반 그림: bin_data_id=1,2,3 → 인덱스 매칭
         for i in 1..=3u16 {
-            let c = find_bin_data(&v, i).expect("그림 매칭");
+            let c = find_bin_data(&v, i, false).expect("그림 매칭");
             assert_eq!(c.id, i);
             assert!(c.extension == "png" || c.extension == "jpg");
         }
 
         // 차트: bin_data_id=60001,60002 → 인덱스 60000+ 범위 밖 → fallback id 검색
-        let chart1 = find_bin_data(&v, 60001).expect("차트 1");
+        let chart1 = find_bin_data(&v, 60001, false).expect("차트 1");
         assert_eq!(chart1.id, 60001);
         assert_eq!(chart1.extension, "ooxml_chart");
 
-        let chart2 = find_bin_data(&v, 60002).expect("차트 2");
+        let chart2 = find_bin_data(&v, 60002, false).expect("차트 2");
         assert_eq!(chart2.id, 60002);
 
         // 차트의 인덱스 위치 (3, 4) 는 일반 그림처럼 1-indexed 로도 접근 가능하지만
@@ -683,7 +742,7 @@ mod tests {
         ];
 
         // 페이지 표지 — bin_data_id=1 → 인덱스 0 → storage_id=12 (PNG)
-        let bg = find_bin_data(&v, 1).expect("페이지 표지");
+        let bg = find_bin_data(&v, 1, false).expect("페이지 표지");
         assert_eq!(
             bg.id, 0x000C,
             "회귀: bin_data_id=1 이 storage_id=12 가 아님 (가드가 정상 매칭을 거짓 실패시킴)"
@@ -691,7 +750,7 @@ mod tests {
         assert_eq!(bg.extension, "png");
 
         // bin_data_id=14 → 인덱스 13 → storage_id=13 (BMP)
-        let p2 = find_bin_data(&v, 14).expect("두 번째 표지");
+        let p2 = find_bin_data(&v, 14, false).expect("두 번째 표지");
         assert_eq!(p2.id, 0x000D);
         assert_eq!(p2.extension, "bmp");
     }
