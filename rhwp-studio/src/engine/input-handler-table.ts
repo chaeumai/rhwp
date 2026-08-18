@@ -776,6 +776,8 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
     localResize?: boolean;
     renderWidth?: number;
     renderHeight?: number;
+    targetWidth?: number;
+    targetHeight?: number;
   }>;
   const inCellSel = this.cursor.isInCellSelectionMode();
   const range = inCellSel ? this.cursor.getSelectedCellRange() : null;
@@ -1029,11 +1031,28 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
       });
     } else {
       const addedNeighbors = new Set<number>();
-      for (const pair of pairs) {
+      for (const pair of pairBoxes) {
         if (state.edge.type === 'col') {
           updates.push({ cellIdx: pair.targetCellIdx, widthDelta: delta });
           if (pair.neighborCellIdx !== null && !addedNeighbors.has(pair.neighborCellIdx)) {
             updates.push({ cellIdx: pair.neighborCellIdx, widthDelta: -delta });
+            addedNeighbors.add(pair.neighborCellIdx);
+          }
+        } else if (state.tableRef.pathJson) {
+          // [중첩 표] cellSz 높이는 콘텐츠-최소 의미라 모델값이 표시값보다
+          // 작을 수 있다 (scholarship 점선 박스: 모델 ~110px, 표시 155.8px).
+          // 모델 delta 는 화면·내보내기에 안 보인다 — "표시 높이 + delta"
+          // 절대 목표(targetHeight)로 보낸다.
+          updates.push({
+            cellIdx: pair.targetCellIdx,
+            targetHeight: getCellDisplaySize(pair.targetBox, state.edge) + delta,
+          });
+          if (pair.neighborCellIdx !== null && pair.neighborBox
+              && !addedNeighbors.has(pair.neighborCellIdx)) {
+            updates.push({
+              cellIdx: pair.neighborCellIdx,
+              targetHeight: getCellDisplaySize(pair.neighborBox, state.edge) - delta,
+            });
             addedNeighbors.add(pair.neighborCellIdx);
           }
         } else {
@@ -1087,6 +1106,185 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
   }
 
   this.cleanupResizeDrag();
+}
+
+// ─── 표 객체 선택 핸들 리사이즈 ─────────────────────────────
+//
+// 객체 선택(모서리 8핸들) 상태에서 핸들을 드래그하면 표 전체를 비례
+// 리사이즈한다 (한컴 정합). flat·중첩 공용 — 중첩은 pathJson 경로로 적용.
+// 높이·너비 모두 "표시 크기 + 비례 배분" 절대 목표(targetWidth/Height)로
+// 보낸다 — cellSz 콘텐츠-최소 의미에서 delta 방식은 표시가 안 변한다.
+
+function handleResizeDeltas(
+  dir: string, dx: number, dy: number,
+): { dw: number; dh: number } {
+  let dw = 0;
+  let dh = 0;
+  if (dir.includes('e')) dw = dx;
+  else if (dir.includes('w')) dw = -dx;
+  if (dir.includes('s')) dh = dy;
+  else if (dir.includes('n')) dh = -dy;
+  return { dw, dh };
+}
+
+function handleResizePagePoint(
+  self: any, e: MouseEvent, pageIdx: number,
+): { x: number; y: number } | null {
+  const sc = self.container.querySelector('#scroll-content');
+  if (!sc) return null;
+  const cr = sc.getBoundingClientRect();
+  const zoom = self.viewportManager.getZoom();
+  const po = self.virtualScroll.getPageOffset(pageIdx);
+  const pl = self.virtualScroll.getPageLeftResolved(pageIdx, sc.clientWidth);
+  return {
+    x: (e.clientX - cr.left - pl) / zoom,
+    y: (e.clientY - cr.top - po) / zoom,
+  };
+}
+
+/** 행/열 표시 크기 비례로 delta 를 배분해 절대 목표 updates 를 만든다. */
+function buildProportionalResizeUpdates(
+  bboxes: CellBbox[], deltaWHU: number, deltaHHU: number,
+): Array<{ cellIdx: number; targetWidth?: number; targetHeight?: number }> {
+  const rows = [...new Set(bboxes.map((b) => b.row))].sort((a, b) => a - b);
+  const cols = [...new Set(bboxes.map((b) => b.col))].sort((a, b) => a - b);
+  // 대표 표시 크기: span 1 셀 우선, 없으면 균등 배분
+  const rowDisp = new Map<number, number>();
+  const colDisp = new Map<number, number>();
+  for (const b of bboxes) {
+    if (b.rowSpan === 1 && !rowDisp.has(b.row)) rowDisp.set(b.row, Math.round(b.h * 75));
+    if (b.colSpan === 1 && !colDisp.has(b.col)) colDisp.set(b.col, Math.round(b.w * 75));
+  }
+  const totalH = rows.reduce((s, r) => s + (rowDisp.get(r) ?? 0), 0);
+  const totalW = cols.reduce((s, c) => s + (colDisp.get(c) ?? 0), 0);
+  const rowShare = new Map<number, number>(rows.map((r) => [
+    r,
+    totalH > 0
+      ? Math.round(deltaHHU * (rowDisp.get(r) ?? totalH / rows.length) / totalH)
+      : Math.round(deltaHHU / rows.length),
+  ]));
+  const colShare = new Map<number, number>(cols.map((c) => [
+    c,
+    totalW > 0
+      ? Math.round(deltaWHU * (colDisp.get(c) ?? totalW / cols.length) / totalW)
+      : Math.round(deltaWHU / cols.length),
+  ]));
+  const updates: Array<{ cellIdx: number; targetWidth?: number; targetHeight?: number }> = [];
+  for (const b of bboxes) {
+    const upd: { cellIdx: number; targetWidth?: number; targetHeight?: number } =
+      { cellIdx: b.cellIdx };
+    if (deltaHHU !== 0) {
+      let share = 0;
+      for (let r = b.row; r < b.row + b.rowSpan; r++) share += rowShare.get(r) ?? 0;
+      upd.targetHeight = Math.max(MIN_TABLE_CELL_SIZE_HWP, Math.round(b.h * 75) + share);
+    }
+    if (deltaWHU !== 0) {
+      let share = 0;
+      for (let c = b.col; c < b.col + b.colSpan; c++) share += colShare.get(c) ?? 0;
+      upd.targetWidth = Math.max(MIN_TABLE_CELL_SIZE_HWP, Math.round(b.w * 75) + share);
+    }
+    if (upd.targetWidth !== undefined || upd.targetHeight !== undefined) updates.push(upd);
+  }
+  return updates;
+}
+
+export function startTableHandleResize(
+  this: any, dir: string, pageIdx: number, pageX: number, pageY: number,
+): boolean {
+  const ref = this.cursor.getSelectedTableRef();
+  if (!ref || dir === 'rotate') return false;
+  const pathJson = ref.cellPath && ref.cellPath.length > 1
+    ? JSON.stringify(ref.cellPath)
+    : undefined;
+  let bboxes: CellBbox[];
+  try {
+    bboxes = pathJson
+      ? this.wasm.getTableCellBboxesByPath(ref.sec, ref.ppi, pathJson)
+      : this.wasm.getTableCellBboxes(ref.sec, ref.ppi, ref.ci, pageIdx);
+  } catch {
+    return false;
+  }
+  const pageBboxes = bboxes.filter((b: CellBbox) => b.pageIndex === pageIdx);
+  if (pageBboxes.length === 0) return false;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of pageBboxes) {
+    minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h);
+  }
+  this.isTableHandleResizing = true;
+  this.tableHandleResizeState = {
+    ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, pathJson },
+    dir,
+    pageIdx,
+    startPageX: pageX,
+    startPageY: pageY,
+    bboxes,
+    union: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+  };
+  document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
+  return true;
+}
+
+export function updateTableHandleResize(this: any, e: MouseEvent): void {
+  const st = this.tableHandleResizeState;
+  if (!st || !this.tableObjectRenderer) return;
+  const pt = handleResizePagePoint(this, e, st.pageIdx);
+  if (!pt) return;
+  const { dw, dh } = handleResizeDeltas(st.dir, pt.x - st.startPageX, pt.y - st.startPageY);
+  const zoom = this.viewportManager.getZoom();
+  this.tableObjectRenderer.renderMultiPage([{
+    pageIndex: st.pageIdx,
+    x: st.union.x,
+    y: st.union.y,
+    width: Math.max(8, st.union.w + dw),
+    height: Math.max(8, st.union.h + dh),
+  }], zoom);
+}
+
+export function finishTableHandleResize(this: any, e: MouseEvent): void {
+  const st = this.tableHandleResizeState;
+  this.isTableHandleResizing = false;
+  this.tableHandleResizeState = null;
+  if (!st) return;
+  const pt = handleResizePagePoint(this, e, st.pageIdx);
+  const zoom = this.viewportManager.getZoom();
+  const tapPx = 3 / Math.max(zoom, 0.1);
+  const { dw, dh } = pt
+    ? handleResizeDeltas(st.dir, pt.x - st.startPageX, pt.y - st.startPageY)
+    : { dw: 0, dh: 0 };
+  if (Math.abs(dw) < tapPx && Math.abs(dh) < tapPx) {
+    this.renderTableObjectSelection();
+    return;
+  }
+  const updates = buildProportionalResizeUpdates(
+    st.bboxes,
+    Math.abs(dw) >= tapPx ? Math.round(dw * 75) : 0,
+    Math.abs(dh) >= tapPx ? Math.round(dh * 75) : 0,
+  );
+  if (updates.length === 0) {
+    this.renderTableObjectSelection();
+    return;
+  }
+  try {
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'resizeTableCells',
+      operation: (wasm: any) => {
+        if (st.ref.pathJson) {
+          wasm.resizeTableCellsByPath(st.ref.sec, st.ref.ppi, st.ref.pathJson, updates);
+        } else {
+          wasm.resizeTableCells(st.ref.sec, st.ref.ppi, st.ref.ci, updates);
+        }
+        return this.cursor.getPosition();
+      },
+    });
+  } catch (err) {
+    console.warn('[InputHandler] 표 핸들 리사이즈 실패:', err);
+  }
+  this.cachedTableRef = null;
+  this.cachedCellBboxes = null;
+  this.eventBus.emit('document-changed');
+  this.renderTableObjectSelection();
 }
 
 export function cleanupResizeDrag(this: any): void {

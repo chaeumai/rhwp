@@ -331,6 +331,18 @@ export class InputHandler {
   private tableLocalResizeSegments = new Set<string>();
 
   // 표 이동 드래그 상태
+  // 표 객체 선택 핸들 리사이즈 드래그 상태
+  private isTableHandleResizing = false;
+  private tableHandleResizeState: {
+    ref: { sec: number; ppi: number; ci: number; pathJson?: string };
+    dir: string;
+    pageIdx: number;
+    startPageX: number;
+    startPageY: number;
+    bboxes: any[];
+    union: { x: number; y: number; w: number; h: number };
+  } | null = null;
+
   private isMoveDragging = false;
   private moveDragState: {
     tableRef: { sec: number; ppi: number; ci: number };
@@ -1324,6 +1336,19 @@ export class InputHandler {
 
   private resizeTableProportional(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
     _table.resizeTableProportional.call(this, key);
+  }
+
+  /** 표 객체 선택 핸들 드래그 리사이즈 시작 (flat·중첩 공용) */
+  private startTableHandleResize(dir: string, pageIdx: number, pageX: number, pageY: number): boolean {
+    return _table.startTableHandleResize.call(this, dir, pageIdx, pageX, pageY);
+  }
+
+  private updateTableHandleResize(e: MouseEvent): void {
+    _table.updateTableHandleResize.call(this, e);
+  }
+
+  private finishTableHandleResize(e: MouseEvent): void {
+    _table.finishTableHandleResize.call(this, e);
   }
 
   /** 마우스 버튼 놓기: 드래그 선택 종료 */

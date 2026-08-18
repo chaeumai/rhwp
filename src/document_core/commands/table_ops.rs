@@ -1475,6 +1475,11 @@ impl DocumentCore {
             local_resize: bool,
             render_width: Option<u32>,
             render_height: Option<u32>,
+            // 절대 목표 크기 (HWPUNIT). cellSz 는 콘텐츠-최소 의미라 모델값이
+            // 표시값보다 작을 수 있다 — delta 를 모델값에 얹으면 표시가 안
+            // 변한다. 호출자가 "표시 크기 + delta" 를 절대값으로 보낸다.
+            target_width: Option<u32>,
+            target_height: Option<u32>,
         }
         let mut updates: Vec<CellUpdate> = Vec::new();
         let mut force_local_resize = false;
@@ -1507,6 +1512,10 @@ impl DocumentCore {
                             .and_then(|v| (v > 0).then_some(v as u32));
                         let render_height = Self::parse_json_i32(obj, "renderHeight")
                             .and_then(|v| (v > 0).then_some(v as u32));
+                        let target_width = Self::parse_json_i32(obj, "targetWidth")
+                            .and_then(|v| (v > 0).then_some(v as u32));
+                        let target_height = Self::parse_json_i32(obj, "targetHeight")
+                            .and_then(|v| (v > 0).then_some(v as u32));
                         updates.push(CellUpdate {
                             cell_idx: cell_idx as usize,
                             width_delta,
@@ -1514,6 +1523,8 @@ impl DocumentCore {
                             local_resize,
                             render_width,
                             render_height,
+                            target_width,
+                            target_height,
                         });
                     }
                 }
@@ -1542,10 +1553,18 @@ impl DocumentCore {
         let mut local_resize_cols = std::collections::BTreeSet::<u16>::new();
         for upd in &updates {
             if let Some(cell) = table.cells.get_mut(upd.cell_idx) {
-                if upd.width_delta != 0 {
+                // targetWidth/targetHeight(절대 HWPUNIT)가 있으면 delta 보다
+                // 우선한다 — cellSz 콘텐츠-최소 의미에서 "표시 크기 + delta" 를
+                // 정확히 박제하는 경로 (없으면 종전 delta 계약 그대로).
+                let new_w_opt: Option<u32> = if let Some(t) = upd.target_width {
+                    Some(t.max(MIN_CELL_SIZE))
+                } else if upd.width_delta != 0 {
+                    Some((cell.width as i32 + upd.width_delta).max(MIN_CELL_SIZE as i32) as u32)
+                } else {
+                    None
+                };
+                if let Some(new_w) = new_w_opt {
                     let old_w = cell.width;
-                    let new_w =
-                        (cell.width as i32 + upd.width_delta).max(MIN_CELL_SIZE as i32) as u32;
                     cell.width = new_w;
                     let actual_delta = new_w as i64 - old_w as i64;
                     applied_width_delta += actual_delta;
@@ -1553,10 +1572,15 @@ impl DocumentCore {
                     entry.0 += 1;
                     entry.1 += actual_delta;
                 }
-                if upd.height_delta != 0 {
+                let new_h_opt: Option<u32> = if let Some(t) = upd.target_height {
+                    Some(t.max(MIN_CELL_SIZE))
+                } else if upd.height_delta != 0 {
+                    Some((cell.height as i32 + upd.height_delta).max(MIN_CELL_SIZE as i32) as u32)
+                } else {
+                    None
+                };
+                if let Some(new_h) = new_h_opt {
                     let old_h = cell.height;
-                    let new_h =
-                        (cell.height as i32 + upd.height_delta).max(MIN_CELL_SIZE as i32) as u32;
                     cell.height = new_h;
                     let actual_delta = new_h as i64 - old_h as i64;
                     applied_height_delta += actual_delta;
@@ -1631,7 +1655,7 @@ impl DocumentCore {
             }
         }
         table.update_ctrl_dimensions();
-        if updates.iter().any(|u| u.height_delta != 0)
+        if updates.iter().any(|u| u.height_delta != 0 || u.target_height.is_some())
             && !force_local_resize
             && original_height > original_row_height_sum
             && table.row_count > 1
@@ -1679,7 +1703,7 @@ impl DocumentCore {
             match self.resolve_table_by_path(section_idx, parent_para_idx, path) {
                 Ok(table) => updates
                     .iter()
-                    .filter(|u| u.width_delta != 0)
+                    .filter(|u| u.width_delta != 0 || u.target_width.is_some())
                     .filter_map(|u| {
                         let pc = table.cells.get(u.cell_idx)?.paragraphs.len();
                         Some((u.cell_idx, pc))
@@ -1692,7 +1716,7 @@ impl DocumentCore {
             if let Some(Control::Table(table)) = para.controls.get(control_idx) {
                 updates
                     .iter()
-                    .filter(|u| u.width_delta != 0)
+                    .filter(|u| u.width_delta != 0 || u.target_width.is_some())
                     .filter_map(|u| {
                         let pc = table.cells.get(u.cell_idx)?.paragraphs.len();
                         Some((u.cell_idx, pc))
@@ -3177,6 +3201,104 @@ mod table_attr_save_roundtrip_tests {
             "전 행 균일 상쇄는 local_resize_rows 마킹 금지 (실제: {:?}, 행 {}개)",
             t.local_resize_rows,
             row_count
+        );
+    }
+
+    /// [2026-08-18] targetHeight — 절대 목표 높이 계약과 HWPX 왕복 보존.
+    ///
+    /// cellSz 는 콘텐츠-최소 의미라, 모델 높이가 표시 높이보다 작은 셀에
+    /// heightDelta 를 얹으면 화면·내보내기에 반영되지 않는다 (scholarship
+    /// 점선 박스 실측 — 표시 155.8px, 모델 ~110px). targetHeight 는
+    /// "표시 높이 + delta" 절대값을 그대로 박제하고 HWPX 재로드 후에도
+    /// 유지되어야 한다.
+    #[test]
+    fn resize_by_path_target_height_absolute_and_roundtrip() {
+        let path_fixture = "samples/hwpx/nested-table-staff-handbook.hwpx";
+        if !std::path::Path::new(path_fixture).exists() {
+            eprintln!("테스트 파일 없음: {} — 건너뜀", path_fixture);
+            return;
+        }
+        let data = std::fs::read(path_fixture).expect("픽스처 읽기");
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).expect("로드");
+
+        let mut found: Option<(usize, Vec<(usize, usize, usize)>)> = None;
+        'outer: for (ppi, para) in core.document.sections[0].paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                for (cei, cell) in t.cells.iter().enumerate() {
+                    for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+                        for (ci2, _c2) in cp.controls.iter().enumerate() {
+                            let crate::model::control::Control::Table(_) = _c2 else {
+                                continue;
+                            };
+                            found = Some((ppi, vec![(ci, cei, cpi), (ci2, 0, 0)]));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        let (ppi, path) = found.expect("픽스처 전제: 깊이2 표");
+        let path_json = format!(
+            "[{}]",
+            path.iter()
+                .map(|(a, b, c)| format!(
+                    "{{\"controlIndex\":{a},\"cellIndex\":{b},\"cellParaIndex\":{c}}}"
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let before = core
+            .resolve_table_by_path(0, ppi, &path)
+            .expect("표 해석")
+            .cells[0]
+            .height;
+        // 모델보다 훨씬 큰 절대 목표 — delta 해석이면 이 값이 나올 수 없다.
+        let target = before + 4321;
+        core.resize_table_cells_by_path_native(
+            0,
+            ppi,
+            &path_json,
+            &format!("[{{\"cellIdx\":0,\"targetHeight\":{target}}}]"),
+        )
+        .expect("targetHeight 리사이즈");
+        let after = core
+            .resolve_table_by_path(0, ppi, &path)
+            .expect("표 재해석")
+            .cells[0]
+            .height;
+        assert_eq!(after, target, "targetHeight 는 절대값으로 박제되어야 한다");
+
+        // HWPX 저장 → 재로드 보존
+        let saved = core.export_hwpx_native().expect("export_hwpx");
+        let reloaded = crate::document_core::DocumentCore::from_bytes(&saved).expect("재로드");
+        let mut found2: Option<(usize, Vec<(usize, usize, usize)>)> = None;
+        'outer2: for (ppi2, para) in reloaded.document.sections[0].paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                for (cei, cell) in t.cells.iter().enumerate() {
+                    for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+                        for (ci2, _c2) in cp.controls.iter().enumerate() {
+                            let crate::model::control::Control::Table(_) = _c2 else {
+                                continue;
+                            };
+                            found2 = Some((ppi2, vec![(ci, cei, cpi), (ci2, 0, 0)]));
+                            break 'outer2;
+                        }
+                    }
+                }
+            }
+        }
+        let (ppi2, path2) = found2.expect("재로드 후 깊이2 표");
+        let after_reload = reloaded
+            .resolve_table_by_path(0, ppi2, &path2)
+            .expect("재로드 표 해석")
+            .cells[0]
+            .height;
+        assert_eq!(
+            after_reload, target,
+            "targetHeight 가 HWPX 왕복에서 유실되면 안 된다"
         );
     }
 }

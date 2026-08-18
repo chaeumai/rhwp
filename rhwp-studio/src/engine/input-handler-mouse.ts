@@ -375,10 +375,34 @@ export function onClick(this: any, e: MouseEvent): void {
 
     let clickedInsideSelectedTable = false;
 
+    const ref = this.cursor.getSelectedTableRef();
+
+    // 핸들 클릭 → 표 비례 리사이즈 드래그 (flat·중첩 공용)
+    if (ref && e.button === 0) {
+      const scHandle = this.container.querySelector('#scroll-content');
+      if (scHandle) {
+        const crh = scHandle.getBoundingClientRect();
+        const hx = e.clientX - crh.left;
+        const hy = e.clientY - crh.top;
+        const handleDir = this.tableObjectRenderer?.getHandleAtPoint(hx, hy);
+        if (handleDir) {
+          const zoomH = this.viewportManager.getZoom();
+          const piH = this.virtualScroll.getPageAtPoint(hx, hy);
+          const poH = this.virtualScroll.getPageOffset(piH);
+          const plH = this.virtualScroll.getPageLeftResolved(piH, scHandle.clientWidth);
+          if (this.startTableHandleResize(
+            handleDir, piH, (hx - plH) / zoomH, (hy - poH) / zoomH)) {
+            e.preventDefault();
+            this.textarea.focus();
+            return;
+          }
+        }
+      }
+    }
+
     // 좌클릭이 표 내부이면 → 이동 드래그 시작
     // [중첩 표] moveTableOffset 은 flat 전용이라 중첩 선택은 이동 드래그를
     // 시작하지 않는다 (외곽 표가 움직이는 오동작 차단) — 내부 클릭은 선택 해제로.
-    const ref = this.cursor.getSelectedTableRef();
     if (ref && e.button === 0 && !(ref.cellPath && ref.cellPath.length > 1)) {
       const zoom = this.viewportManager.getZoom();
       const sc = this.container.querySelector('#scroll-content');
@@ -1555,6 +1579,17 @@ export function onMouseMove(this: any, e: MouseEvent): void {
     return;
   }
 
+  // 표 핸들 리사이즈 드래그 중: bbox 미리보기
+  if (this.isTableHandleResizing && this.tableHandleResizeState) {
+    if (this.dragRafId) return;
+    this.dragRafId = requestAnimationFrame(() => {
+      this.dragRafId = 0;
+      if (!this.isTableHandleResizing || !this.tableHandleResizeState) return;
+      this.updateTableHandleResize(e);
+    });
+    return;
+  }
+
   // 표 이동 드래그 중
   if (this.isMoveDragging && this.moveDragState) {
     if (this.dragRafId) return;
@@ -1923,6 +1958,12 @@ export function onMouseUp(this: any, _e: MouseEvent): void {
   // 글상자 배치 모드 마우스업 → 삽입 실행
   if (this.textboxPlacementMode && this.textboxPlacementDrag) {
     this.finishTextboxPlacement(_e);
+    return;
+  }
+
+  // 표 핸들 리사이즈 드래그 종료
+  if (this.isTableHandleResizing) {
+    this.finishTableHandleResize(_e);
     return;
   }
 
