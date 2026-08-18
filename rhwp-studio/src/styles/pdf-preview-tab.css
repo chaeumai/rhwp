@@ -21,8 +21,12 @@
 #pdf-preview-tab.pdfp-open { background: var(--ui-selected); color: var(--ui-text); }
 
 /* display 명시가 UA 의 [hidden]{display:none} 을 밀어내므로 직접 못 박는다
-   (menu-bar 숨김과 같은 함정 — main.ts 1284 부근 주석 참고). */
-#pdf-preview-panel[hidden] { display: none; }
+   (menu-bar 숨김과 같은 함정 — main.ts 1284 부근 주석 참고).
+   .pdfp-empty 는 특히 치명적: absolute inset:0 오버레이라 hidden 이 안 먹으면
+   투명한 채 iframe 을 덮어 PDF 뷰어의 휠·클릭을 전부 삼킨다 (라이브 실측). */
+#pdf-preview-panel[hidden],
+.pdfp-empty[hidden],
+.pdfp-frame[hidden] { display: none; }
 
 #pdf-preview-panel {
   position: fixed;
