@@ -1,0 +1,154 @@
+/**
+ * PDF 확인 탭 — 단독 검증 표면(디버깅 화면) 전용.
+ *
+ * 현재 문서를 HWPX 로 내보내 hwpx-agent(hwpAgent-api)에 변환을 맡기고,
+ * 결과 PDF 를 슬라이드 패널의 iframe 으로 보여준다. 편집기 저장 경로와
+ * 무관한 눈 검증용 도구라 문서 상태를 건드리지 않는다.
+ *
+ * 서빙 전제: same-origin `/hwpx-agent/*` 가 hwpAgent-api(:3001) 로 중계된다
+ * (dev 는 vite proxy, 라이브는 nginx location — CSP connect-src 'self' 유지).
+ */
+
+const AGENT_BASE = '/hwpx-agent';
+const POLL_INTERVAL_MS = 700;
+const POLL_TIMEOUT_MS = 90_000;
+
+export interface PdfPreviewTabOptions {
+  /** 현재 문서의 HWPX 바이트를 반환한다. 문서 미로드 시 throw 가능. */
+  exportHwpx: () => Uint8Array;
+  /** 다운로드 파일명에 쓸 문서 이름 (확장자 제외). */
+  getDocName?: () => string;
+}
+
+export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
+  // ── DOM 구성 ──
+  const tab = document.createElement('button');
+  tab.id = 'pdf-preview-tab';
+  tab.type = 'button';
+  tab.textContent = 'PDF 확인';
+  tab.title = 'hwpx-agent 로 변환한 PDF 를 확인합니다';
+
+  const panel = document.createElement('div');
+  panel.id = 'pdf-preview-panel';
+  panel.hidden = true;
+  panel.innerHTML = `
+    <div class="pdfp-header">
+      <span class="pdfp-title">PDF 미리보기 — hwpx-agent</span>
+      <span class="pdfp-status" role="status"></span>
+      <span class="pdfp-spacer"></span>
+      <button type="button" class="pdfp-btn pdfp-refresh" title="현재 문서로 다시 변환">다시 변환</button>
+      <button type="button" class="pdfp-btn pdfp-download" title="PDF 다운로드" disabled>다운로드</button>
+      <button type="button" class="pdfp-btn pdfp-close" title="닫기">×</button>
+    </div>
+    <div class="pdfp-body">
+      <div class="pdfp-empty">아직 변환 결과가 없습니다.</div>
+      <iframe class="pdfp-frame" title="PDF 미리보기" hidden></iframe>
+    </div>`;
+
+  document.body.appendChild(tab);
+  document.body.appendChild(panel);
+
+  const statusEl = panel.querySelector('.pdfp-status') as HTMLElement;
+  const emptyEl = panel.querySelector('.pdfp-empty') as HTMLElement;
+  const frameEl = panel.querySelector('.pdfp-frame') as HTMLIFrameElement;
+  const refreshBtn = panel.querySelector('.pdfp-refresh') as HTMLButtonElement;
+  const downloadBtn = panel.querySelector('.pdfp-download') as HTMLButtonElement;
+  const closeBtn = panel.querySelector('.pdfp-close') as HTMLButtonElement;
+
+  let converting = false;
+  let blobUrl: string | null = null;
+  let hasResult = false;
+
+  const setStatus = (text: string, isError = false): void => {
+    statusEl.textContent = text;
+    statusEl.classList.toggle('pdfp-error', isError);
+  };
+
+  const showPdf = (url: string): void => {
+    emptyEl.hidden = true;
+    frameEl.hidden = false;
+    frameEl.src = url;
+    downloadBtn.disabled = false;
+  };
+
+  const convert = async (): Promise<void> => {
+    if (converting) return;
+    converting = true;
+    refreshBtn.disabled = true;
+    const startedAt = performance.now();
+    try {
+      setStatus('HWPX 내보내는 중…');
+      const bytes = opts.exportHwpx();
+      const name = (opts.getDocName?.() || 'document').replace(/\.(hwpx?|hml)$/i, '');
+
+      setStatus('변환 요청 중…');
+      const form = new FormData();
+      form.append('file', new File([new Blob([bytes as BlobPart])], `${name}.hwpx`));
+      const submitRes = await fetch(`${AGENT_BASE}/api/jobs/pdf-only`, { method: 'POST', body: form });
+      if (!submitRes.ok) {
+        throw new Error(submitRes.status === 503
+          ? 'hwpx-agent 가 바쁩니다 — 잠시 후 다시 시도하세요'
+          : `변환 요청 실패 (HTTP ${submitRes.status})`);
+      }
+      const { jobId } = await submitRes.json();
+      if (!jobId) throw new Error('jobId 없는 응답');
+
+      // 상태 폴링
+      for (;;) {
+        if (performance.now() - startedAt > POLL_TIMEOUT_MS) {
+          throw new Error('변환 시간 초과 (90초)');
+        }
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const jobRes = await fetch(`${AGENT_BASE}/api/jobs/${jobId}`);
+        if (!jobRes.ok) throw new Error(`상태 조회 실패 (HTTP ${jobRes.status})`);
+        const job = await jobRes.json();
+        if (job.status === 'SUCCEEDED') break;
+        if (job.status === 'FAILED') {
+          throw new Error(`변환 실패: ${job.error ?? '원인 미상'}`);
+        }
+        setStatus(`변환 중… (${((performance.now() - startedAt) / 1000).toFixed(0)}초)`);
+      }
+
+      const pdfRes = await fetch(`${AGENT_BASE}/api/jobs/${jobId}/result/pdf`);
+      if (!pdfRes.ok) throw new Error(`PDF 다운로드 실패 (HTTP ${pdfRes.status})`);
+      const pdfBlob = await pdfRes.blob();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      blobUrl = URL.createObjectURL(pdfBlob.type === 'application/pdf'
+        ? pdfBlob
+        : new Blob([pdfBlob], { type: 'application/pdf' }));
+      downloadBtn.dataset.filename = `${name}.pdf`;
+      showPdf(blobUrl);
+      hasResult = true;
+      setStatus(`완료 (${((performance.now() - startedAt) / 1000).toFixed(1)}초)`);
+    } catch (err) {
+      const msg = err instanceof TypeError
+        ? 'hwpx-agent 에 연결할 수 없습니다 (/hwpx-agent 중계 확인)'
+        : String(err instanceof Error ? err.message : err);
+      setStatus(msg, true);
+    } finally {
+      converting = false;
+      refreshBtn.disabled = false;
+    }
+  };
+
+  const openPanel = (): void => {
+    panel.hidden = false;
+    tab.classList.add('pdfp-open');
+    if (!hasResult && !converting) void convert();
+  };
+  const closePanel = (): void => {
+    panel.hidden = true;
+    tab.classList.remove('pdfp-open');
+  };
+
+  tab.addEventListener('click', () => (panel.hidden ? openPanel() : closePanel()));
+  closeBtn.addEventListener('click', closePanel);
+  refreshBtn.addEventListener('click', () => void convert());
+  downloadBtn.addEventListener('click', () => {
+    if (!blobUrl) return;
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = downloadBtn.dataset.filename ?? 'document.pdf';
+    a.click();
+  });
+}

@@ -57,6 +57,7 @@ import { applyEdits, buildOutline, readPaths } from '@/embed/authoring';
 import { setEmbedInputLocked } from '@/embed/input-lock';
 import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings, surfaceProfile } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
+import { installPdfPreviewTab } from '@/ui/pdf-preview-tab';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -1309,6 +1310,16 @@ if (isRestrictedSurface()) {
     );
     iconToolbarEl.insertAdjacentElement('beforebegin', embedToolbar.element);
   }
+}
+
+// PDF 확인 탭 — 단독 검증 표면(디버깅 화면) 전용. embed(제품 화면)에는 달지
+// 않는다. 컨트롤 패널(최소 툴바)과 별개의 우측 고정 탭으로, 현재 문서를
+// HWPX 로 내보내 hwpx-agent 변환 PDF 를 눈으로 확인하는 용도다.
+if (!isEmbedded()) {
+  installPdfPreviewTab({
+    exportHwpx: () => wasm.exportHwpx(),
+    getDocName: () => wasm.fileName || 'document',
+  });
 }
 
 /**

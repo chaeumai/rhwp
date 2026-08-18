@@ -31,6 +31,15 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 7700,
+    // [PDF 확인 탭] hwpx-agent(hwpAgent-api, :3001) 를 same-origin 으로 중계.
+    // 라이브(editor.hdev.kr)는 nginx location /hwpx-agent/ 가 같은 역할을 한다.
+    proxy: {
+      '/hwpx-agent': {
+        target: 'http://127.0.0.1:3001',
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/hwpx-agent/, ''),
+      },
+    },
     fs: {
       // [Task #741 후속] 외부 file path 그림 영역 영역 samples/ dir 영역 영역 fetch 가능 영역.
       allow: [
