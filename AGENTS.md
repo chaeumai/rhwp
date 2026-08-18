@@ -29,6 +29,23 @@ upstream 문서의 **절차**(PR 검토, collaborator 역할, `upstream/devel` �
 `scripts/rhwp-selfhost/rhwp-pin.json`(한채움 저장소)의 감사 기록을
 **출처 증명**으로 보존한다. 배포본 SBOM 과 폰트 라이선스 manifest 도 같다.
 
+## 제한 표면 profile (2026-08-18)
+
+편집 표면 구성은 `?profile=full|restricted` 로 가른다
+(`rhwp-studio/src/embed/host-policy.ts`). isEmbedded() 로 표면을 가르지
+않는다 — 단독 검증 표면과 embed 가 다른 코드 경로를 타면 검증이 무의미하다.
+
+- **full**: 단독 진입 기본. embed 는 iframe src 에 `?profile=full`.
+  서식(format:)·표(table:)·그림 일체(insert:image·속성·삭제·캡션·배치·
+  뒤집기)·cut/copy/paste 를 연다. 툴바에 표·그림 그룹 노출.
+- **restricted**: embed 기본값 — 기존 제한 편집(T1, 값만 고치기).
+  호스트의 저장 게이트(페이지 수·셀 수 불변)와 짝을 이룬다.
+- file:*·page:*·insert:table 은 어느 profile 에서도 봉인. 반입·반출은
+  호스트 RPC(loadFile/exportHwpx)와 `?url=` 자동 로드의 몫이다.
+
+새 명령을 열 때는 allowlist(host-policy)와 툴바(embed-toolbar) 그리고
+`tests/embed-command-allowlist.test.ts` 의 표본 목록을 함께 갱신한다.
+
 ## 문서와 검증
 
 - 렌더링·레이아웃 변경은 PDF/SVG 또는 동등한 근거를 남긴다.
