@@ -375,6 +375,13 @@ export class WasmBridge {
     return this.doc?.pageCount() ?? 0;
   }
 
+  /** 저장 검증용 구조 시그니처 — 중첩 포함 총 셀 수(논리 셀, 병합=1)와
+   *  편집기 렌더 기준 쪽 수. 정의는 엔진 structure_signature_native 주석 참고. */
+  getStructureSignature(): { totalCells: number; pageCount: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getStructureSignature());
+  }
+
   flushDeferredPagination(): { ok: boolean; pageCount?: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as { flushDeferredPagination?: () => string };

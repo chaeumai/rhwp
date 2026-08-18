@@ -9,6 +9,10 @@ export interface EmbedRpcHandlers {
     skipUnsavedGuard: boolean,
   ): Promise<{ pageCount: number }>;
   pageCount(): Promise<number>;
+  /** 한채움 fork: 저장 검증용 구조 시그니처 — 중첩 포함 총 셀 수(논리 셀,
+   *  병합=1) + 편집기 렌더 기준 쪽 수. DraftEditSaveService 의 tx-html
+   *  파싱(maxPage/countCells) 대체 (2026-08-19 인계). */
+  getStructureSignature(): Promise<{ totalCells: number; pageCount: number }>;
   /** 한채움 fork: 마지막 로드·저장 이후 편집이 있었는지. 호스트가 폴링한다. */
   isDirty(): Promise<boolean>;
   getRendererDiagnostics(page: number): Promise<EmbedRendererDiagnosticsV1>;
@@ -94,6 +98,7 @@ export async function routeEmbedRequest(
         params.skipUnsavedGuard === true,
       );
     case 'pageCount': return handlers.pageCount();
+    case 'getStructureSignature': return handlers.getStructureSignature();
     // 한채움 fork: 호스트가 저장 필요 여부를 폴링한다.
     case 'isDirty': return handlers.isDirty();
     case 'getRendererDiagnostics': {

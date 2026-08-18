@@ -1367,6 +1367,10 @@ installEmbedRuntime({
       await initPromise;
       return wasm.pageCount;
     },
+    async getStructureSignature() {
+      await initPromise;
+      return wasm.getStructureSignature();
+    },
     async getRendererDiagnostics(pageIndex) {
       await initPromise;
       return {

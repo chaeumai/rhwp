@@ -264,6 +264,45 @@ pub fn build_structure(doc: &Document, mode: StructureMode) -> StructureDoc {
 }
 
 impl DocumentCore {
+    /// [2026-08-19] 저장 검증용 구조 시그니처 — 중첩 포함 총 셀 수 + 쪽 수.
+    ///
+    /// 셀 수 정의(계약 — DraftEditSaveService 인계): 본문 구역 문단의
+    /// `Control::Table` **논리 셀** 합계 — 병합 셀은 `cells[]` 1항이므로
+    /// 1개로 센다(tx-html `data-rc` div 셈과 동일 의미). 셀 안 문단의 중첩
+    /// 표는 깊이 제한 없이 재귀 포함. 머리말/꼬리말·각주 등 비본문
+    /// 컨테이너는 제외. 절대값 계약이 아니라 저장 전후 **비교용**이라
+    /// 정의의 일관성이 곧 계약이다. `pageCount` 는 편집기 렌더 기준.
+    pub fn structure_signature_native(&self) -> String {
+        fn count_table(table: &crate::model::table::Table) -> u64 {
+            let mut n = table.cells.len() as u64;
+            for cell in &table.cells {
+                for para in &cell.paragraphs {
+                    for ctrl in &para.controls {
+                        if let crate::model::control::Control::Table(t) = ctrl {
+                            n += count_table(t);
+                        }
+                    }
+                }
+            }
+            n
+        }
+        let mut total: u64 = 0;
+        for section in &self.document.sections {
+            for para in &section.paragraphs {
+                for ctrl in &para.controls {
+                    if let crate::model::control::Control::Table(t) = ctrl {
+                        total += count_table(t);
+                    }
+                }
+            }
+        }
+        format!(
+            "{{\"totalCells\":{},\"pageCount\":{}}}",
+            total,
+            self.page_count()
+        )
+    }
+
     /// 문서 구조(개요/조문) 트리를 JSON으로 반환한다.
     ///
     /// `mode`: `"auto"` | `"outline"` | `"clause"` (인식 불가 시 `auto` 폴백).
@@ -308,5 +347,73 @@ mod tests {
     fn clause_marker_extracted() {
         assert_eq!(classify_clause("제3조 적용범위").unwrap().marker, "제3조");
         assert_eq!(classify_clause("②다음").unwrap().marker, "②");
+    }
+
+    /// [2026-08-19] 구조 시그니처 — 중첩 셀 포함·리사이즈 불변 계약.
+    #[test]
+    fn structure_signature_counts_nested_and_ignores_resize() {
+        let path_fixture = "samples/hwpx/nested-table-staff-handbook.hwpx";
+        if !std::path::Path::new(path_fixture).exists() {
+            eprintln!("테스트 파일 없음: {} — 건너뜀", path_fixture);
+            return;
+        }
+        let data = std::fs::read(path_fixture).expect("픽스처 읽기");
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).expect("로드");
+
+        let sig = core.structure_signature_native();
+        let total: u64 = sig
+            .split("\"totalCells\":")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.parse().ok())
+            .expect("totalCells 파싱");
+        assert!(sig.contains("\"pageCount\":"), "pageCount 포함: {sig}");
+
+        // 최외곽 표 셀만 센 값보다 커야 한다 — 중첩 포함의 증거
+        // (outline 기반 셈은 이 outer_only 와 같아서 게이트 구멍이 됐다).
+        let mut outer_only: u64 = 0;
+        let mut nested_path: Option<(usize, String)> = None;
+        for (ppi, para) in core.document.sections[0].paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                outer_only += t.cells.len() as u64;
+                if nested_path.is_none() {
+                    'cell: for (cei, cell) in t.cells.iter().enumerate() {
+                        for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+                            for (ci2, c2) in cp.controls.iter().enumerate() {
+                                if matches!(c2, crate::model::control::Control::Table(_)) {
+                                    nested_path = Some((ppi, format!(
+                                        "[{{\"controlIndex\":{ci},\"cellIndex\":{cei},\"cellParaIndex\":{cpi}}},{{\"controlIndex\":{ci2},\"cellIndex\":0,\"cellParaIndex\":0}}]"
+                                    )));
+                                    break 'cell;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            total > outer_only,
+            "중첩 셀 포함이어야 한다 (total={total}, outer_only={outer_only})"
+        );
+
+        // 리사이즈는 구조 변화가 아니다 — 시그니처의 totalCells 불변
+        let (ppi, path_json) = nested_path.expect("픽스처 전제: 깊이2 표");
+        core.resize_table_cells_by_path_native(
+            0,
+            ppi,
+            &path_json,
+            "[{\"cellIdx\":0,\"targetHeight\":9000}]",
+        )
+        .expect("경로 리사이즈");
+        let sig2 = core.structure_signature_native();
+        let total2: u64 = sig2
+            .split("\"totalCells\":")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.parse().ok())
+            .expect("totalCells 재파싱");
+        assert_eq!(total, total2, "리사이즈 후 totalCells 불변");
     }
 }

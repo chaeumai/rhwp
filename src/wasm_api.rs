@@ -443,6 +443,15 @@ impl HwpDocument {
         self.core.page_count()
     }
 
+    /// 저장 검증용 구조 시그니처 — 중첩 포함 총 셀 수와 쪽 수.
+    ///
+    /// 반환: JSON `{"totalCells":N,"pageCount":N}`. 셀 수는 본문 표의 논리
+    /// 셀(병합=1) 재귀 합계 — 정의는 structure_signature_native 주석 참고.
+    #[wasm_bindgen(js_name = getStructureSignature)]
+    pub fn get_structure_signature(&self) -> String {
+        self.core.structure_signature_native()
+    }
+
     /// 특정 페이지를 SVG 문자열로 렌더링한다.
     #[wasm_bindgen(js_name = renderPageSvg)]
     pub fn render_page_svg(&self, page_num: u32) -> Result<String, JsValue> {
