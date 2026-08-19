@@ -23,7 +23,13 @@ export interface PdfPreviewTabOptions {
   getDocName?: () => string;
   /** 문서가 편집될 때마다 cb 를 불러 달라 (재변환 필요 감지용). */
   onDocumentChanged?: (cb: () => void) => void;
+  /** 문서가 로드돼 있는가 (기본 열림 시 첫 변환 시점 판단용). */
+  hasDocument?: () => boolean;
+  /** true 면 설치 즉시 분할 패널을 연다 (?url= 디버그 진입). */
+  autoOpen?: boolean;
 }
+
+const WIDTH_KEY = 'rhwp-pdfp-width';
 
 export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   // ── DOM 구성 ──
@@ -37,6 +43,7 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   panel.id = 'pdf-preview-panel';
   panel.hidden = true;
   panel.innerHTML = `
+    <div class="pdfp-divider" title="드래그로 폭 조절"></div>
     <div class="pdfp-header">
       <span class="pdfp-title">PDF 미리보기 — hwpx-agent</span>
       <span class="pdfp-status" role="status"></span>
@@ -55,6 +62,7 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
   document.body.appendChild(tab);
   document.body.appendChild(panel);
 
+  const dividerEl = panel.querySelector('.pdfp-divider') as HTMLElement;
   const statusEl = panel.querySelector('.pdfp-status') as HTMLElement;
   const emptyEl = panel.querySelector('.pdfp-empty') as HTMLElement;
   const frameEl = panel.querySelector('.pdfp-frame') as HTMLIFrameElement;
@@ -164,20 +172,79 @@ export function installPdfPreviewTab(opts: PdfPreviewTabOptions): void {
     }
   };
 
+  // ── 분할 폭 관리 — --pdfp-width 하나로 에디터 margin·패널·탭 위치를 다스린다 ──
+  const clampWidth = (w: number): number =>
+    Math.min(Math.max(w, 360), Math.round(window.innerWidth * 0.7));
+  let panelWidth = clampWidth(
+    parseInt(localStorage.getItem(WIDTH_KEY) ?? '', 10) || Math.round(window.innerWidth * 0.45));
+  const applyWidth = (): void => {
+    document.documentElement.style.setProperty('--pdfp-width', `${panelWidth}px`);
+  };
+  applyWidth();
+  window.addEventListener('resize', () => {
+    panelWidth = clampWidth(panelWidth);
+    applyWidth();
+  });
+
+  dividerEl.addEventListener('pointerdown', (ev: PointerEvent) => {
+    ev.preventDefault();
+    dividerEl.setPointerCapture(ev.pointerId);
+    dividerEl.classList.add('pdfp-dragging');
+    document.documentElement.classList.add('pdfp-resizing');
+    const onMove = (mv: PointerEvent): void => {
+      panelWidth = clampWidth(window.innerWidth - mv.clientX);
+      applyWidth();
+    };
+    const onUp = (): void => {
+      dividerEl.classList.remove('pdfp-dragging');
+      document.documentElement.classList.remove('pdfp-resizing');
+      localStorage.setItem(WIDTH_KEY, String(panelWidth));
+      dividerEl.removeEventListener('pointermove', onMove);
+      dividerEl.removeEventListener('pointerup', onUp);
+    };
+    dividerEl.addEventListener('pointermove', onMove);
+    dividerEl.addEventListener('pointerup', onUp);
+  });
+
+  /** 문서가 준비돼 있고 결과가 없거나 낡았으면 변환한다. */
+  const maybeConvert = (): void => {
+    if (converting || panel.hidden) return;
+    if (opts.hasDocument && !opts.hasDocument()) {
+      setStatus('문서 로드 대기 중…');
+      return;
+    }
+    if (!hasResult || convertedRevision !== docRevision) void convert();
+  };
+
   const openPanel = (): void => {
     panel.hidden = false;
-    tab.classList.add('pdfp-open');
-    // 결과가 없거나 마지막 변환 이후 문서가 편집됐으면 자동 재변환.
-    if (!converting && (!hasResult || convertedRevision !== docRevision)) void convert();
+    document.documentElement.classList.add('pdfp-open-split');
+    tab.title = 'PDF 패널 접기';
+    maybeConvert();
   };
   const closePanel = (): void => {
     panel.hidden = true;
-    tab.classList.remove('pdfp-open');
+    document.documentElement.classList.remove('pdfp-open-split');
+    tab.title = 'hwpx-agent 로 변환한 PDF 를 확인합니다';
   };
 
   tab.addEventListener('click', () => (panel.hidden ? openPanel() : closePanel()));
   closeBtn.addEventListener('click', closePanel);
   refreshBtn.addEventListener('click', () => void convert());
+
+  // ?url= 디버그 진입은 고정 분할이 기본 — 문서 로드가 끝나면 첫 변환을 돈다.
+  if (opts.autoOpen) {
+    openPanel();
+    if (opts.hasDocument && !opts.hasDocument()) {
+      const waitId = window.setInterval(() => {
+        if (panel.hidden) { window.clearInterval(waitId); return; }
+        if (opts.hasDocument!()) {
+          window.clearInterval(waitId);
+          maybeConvert();
+        }
+      }, 400);
+    }
+  }
 
   // HWPX 저장 — 저장 위치를 고르는 파일 저장 (미지원 브라우저는 다운로드로).
   saveHwpxBtn.addEventListener('click', () => {

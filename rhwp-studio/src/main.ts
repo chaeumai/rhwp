@@ -1325,6 +1325,9 @@ if (!isEmbedded()) {
       eventBus.on('document-changed', cb);
       eventBus.on('document-mutated', cb);
     },
+    hasDocument: () => wasm.pageCount > 0,
+    // ?url= 디버그 진입은 좌(에디터)/우(PDF) 고정 분할이 기본.
+    autoOpen: new URLSearchParams(window.location.search).has('url'),
   });
 }
 
