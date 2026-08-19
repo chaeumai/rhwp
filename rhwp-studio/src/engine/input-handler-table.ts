@@ -959,7 +959,9 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
     // [중첩 표] 모델 속성 clamp(getCellProperties)는 (sec,ppi,ci) 가 외곽 표
     // 좌표라 중첩 셀에서 엉뚱한 셀 크기를 읽는다 — 경로 모드는 표시 bbox
     // 기반 clamp 로 (getCellDisplaySize 가 px→HWPUNIT 변환 포함).
-    const delta = hasLocalHistory || state.tableRef.pathJson
+    // [열폭 정규화] col 경계는 표시 폭 기준으로 clamp 한다 — 렌더 열폭은
+    // 모델 폭 합↔표 폭 불일치 시 비례 확대돼 모델 기준 clamp 가 어긋난다.
+    const delta = hasLocalHistory || state.tableRef.pathJson || state.edge.type === 'col'
       ? clampCompensatedDisplayDelta(state.edge, pairBoxes, deltaHwpUnit)
       : clampCompensatedResizeDelta(
         this.wasm,
@@ -1033,9 +1035,22 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
       const addedNeighbors = new Set<number>();
       for (const pair of pairBoxes) {
         if (state.edge.type === 'col') {
-          updates.push({ cellIdx: pair.targetCellIdx, widthDelta: delta });
-          if (pair.neighborCellIdx !== null && !addedNeighbors.has(pair.neighborCellIdx)) {
-            updates.push({ cellIdx: pair.neighborCellIdx, widthDelta: -delta });
+          // [열폭 정규화 박제] 렌더 열폭은 모델 폭 합↔표 폭 불일치 시 비례
+          // 확대(k배)돼, 모델 delta 는 화면에서 k배로 나타나고 저장본과
+          // 어긋난다 (scholarship 실측: +30px 드래그 → 화면 +53px, 재로드
+          // +29px). 대상·이웃은 "표시 폭 ± delta", 나머지 전 셀은 표시 폭
+          // 그대로를 절대값(targetWidth)으로 박제해 k=1 로 만든다.
+          updates.push({
+            cellIdx: pair.targetCellIdx,
+            targetWidth: getCellDisplaySize(pair.targetBox, state.edge) + delta,
+          });
+          addedNeighbors.add(pair.targetCellIdx);
+          if (pair.neighborCellIdx !== null && pair.neighborBox
+              && !addedNeighbors.has(pair.neighborCellIdx)) {
+            updates.push({
+              cellIdx: pair.neighborCellIdx,
+              targetWidth: getCellDisplaySize(pair.neighborBox, state.edge) - delta,
+            });
             addedNeighbors.add(pair.neighborCellIdx);
           }
         } else if (state.tableRef.pathJson) {
@@ -1061,6 +1076,15 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
             updates.push({ cellIdx: pair.neighborCellIdx, heightDelta: -delta });
             addedNeighbors.add(pair.neighborCellIdx);
           }
+        }
+      }
+      if (state.edge.type === 'col') {
+        // 나머지 전 셀도 표시 폭 그대로 박제 — Σ모델폭 = 표 폭이 되어
+        // 정규화 배율이 1 로 고정된다 (화면 = 저장본).
+        for (const box of state.bboxes) {
+          if (addedNeighbors.has(box.cellIdx)) continue;
+          addedNeighbors.add(box.cellIdx);
+          updates.push({ cellIdx: box.cellIdx, targetWidth: Math.round(box.w * 75) });
         }
       }
     }

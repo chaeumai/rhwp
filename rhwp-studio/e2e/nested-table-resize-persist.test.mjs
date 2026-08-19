@@ -176,5 +176,66 @@ runTest('중첩 표 리사이즈 지속성 (경계·핸들)', async ({ page }) =
   console.log(`  [C] flat e 핸들: w ${outer.width.toFixed(1)} → ${outer2.width.toFixed(1)} (기대 ~+30)`);
   assert(Math.abs(outer2.width - (outer.width + 30)) <= 5,
     `flat 표 e 핸들 +30px 반영 (실제 ${(outer2.width - outer.width).toFixed(1)}px)`);
+
+  // ── [D] 열 경계 드래그: 화면 1:1 + export 왕복 유지 ──
+  //     렌더 열폭은 모델 폭 합↔표 폭 불일치 시 비례 확대(k배)라, 종전엔
+  //     모델 delta 가 화면에서 k배로 나타나고 저장본과 어긋났다 (scholarship
+  //     실측 +30px → 화면 +53px, 재로드 +29px). 전 셀 표시폭 박제로 k=1.
+  //     픽스처 외곽 표는 다중 열 행이 없어 중첩 표의 내부 열 경계로 검증한다
+  //     (col+pathJson 경로 — 같은 박제 코드).
+  // [C] 의 객체 선택이 남아 있으면 hover 가 리사이즈 캐시를 만들지 못하고
+  // 내부 클릭이 이동 드래그가 된다 — Esc 로 해제하고 시작한다.
+  await page.keyboard.press('Escape');
+  await sleep(page, 300);
+  ref = await findNested(page);
+  const colRow = await page.evaluate(({ sec, ppi, pathJson }) => {
+    const bb = window.__wasm.getTableCellBboxesByPath(sec, ppi, pathJson).filter((b) => b.pageIndex === 0);
+    const byRow = {};
+    for (const b of bb) (byRow[b.row] ??= []).push(b);
+    const row = Object.values(byRow).find((r2) => r2.length >= 2);
+    if (!row) return null;
+    row.sort((a, b) => a.col - b.col);
+    const c0 = row[0];
+    return { c0: { x: c0.x, y: c0.y, w: c0.w, h: c0.h }, w0: +c0.w.toFixed(1), row: c0.row, col: c0.col };
+  }, ref);
+  assert(!!colRow, '중첩 표에 2셀 이상 행 존재');
+  {
+    const bx = colRow.c0.x + colRow.c0.w;
+    const by = colRow.c0.y + colRow.c0.h / 2;
+    const f = await toClient(page, bx, by);
+    const t = await toClient(page, bx + 30, by);
+    await page.mouse.move(f.cx, f.cy);
+    await sleep(page, 350);
+    await page.mouse.down();
+    await page.mouse.move(t.cx, t.cy, { steps: 6 });
+    await sleep(page, 150);
+    await page.mouse.up();
+    await sleep(page, 600);
+  }
+  const readW = async () => page.evaluate(({ sec, ppi, pathJson, row, col }) => {
+    const bb = window.__wasm.getTableCellBboxesByPath(sec, ppi, pathJson).filter((b) => b.pageIndex === 0);
+    const c = bb.find((b) => b.row === row && b.col === col);
+    return c ? +c.w.toFixed(1) : null;
+  }, { ...ref, row: colRow.row, col: colRow.col });
+  const wAfter = await readW();
+  console.log(`  [D] 열 경계 +30px: w ${colRow.w0} → ${wAfter}`);
+  assert(Math.abs(wAfter - (colRow.w0 + 30)) <= 3,
+    `열 드래그가 화면에 1:1 반영 (실제 ${(wAfter - colRow.w0).toFixed(1)}px)`);
+  await page.evaluate(async () => {
+    const wasm = window.__wasm;
+    const bytes = wasm.exportHwpx();
+    wasm.loadDocument(new Uint8Array(bytes), 'roundtrip.hwpx');
+    window.__canvasView?.loadDocument?.();
+    await new Promise((r2) => setTimeout(r2, 600));
+  });
+  ref = await findNested(page);
+  const wReload = await page.evaluate(({ sec, ppi, pathJson, row, col }) => {
+    const bb = window.__wasm.getTableCellBboxesByPath(sec, ppi, pathJson).filter((b) => b.pageIndex === 0);
+    const c = bb.find((b) => b.row === row && b.col === col);
+    return c ? +c.w.toFixed(1) : null;
+  }, { ...ref, row: colRow.row, col: colRow.col });
+  console.log(`  [D] export→reload: w ${wReload}`);
+  assert(Math.abs(wReload - wAfter) <= 2, `열 드래그가 HWPX 왕복에서 유지 (${wAfter}→${wReload})`);
+  await screenshot(page, '04-col-drag-persist');
   await screenshot(page, '03-flat-handle-width');
 });
