@@ -1349,6 +1349,17 @@ function notifyAuthoringMutation(): void {
 // 이걸로 가른다. -1 은 아직 export 한 적 없음 — 그때 markSaved 는 아무것도 내리지 않는다.
 let lastExportRevision = -1;
 
+/**
+ * 한채움 fork: embed 의 내보내기·구조 조회는 Studio 「저장」(file.ts
+ * flushDeferredPaginationBeforeExplicitOutput)과 같은 explicit-output 경계다 — 셀 안
+ * 텍스트 편집이 미뤄 둔 페이지네이션을 여기서 먼저 턴다. 안 털면 10초 idle 타이머가
+ * 호스트의 markSaved 뒤에 터져 document-changed → markDirty 로 「저장 •」 을 되살렸다
+ * (2026-08-23 라운드3 F1). 내보낸 바이트·페이지 수도 확정 상태가 된다.
+ */
+function flushDeferredPaginationBeforeEmbedOutput(reason: string): void {
+  inputHandler?.flushDeferredPaginationIfNeeded(`embed-${reason}`);
+}
+
 
 installEmbedRuntime({
   hostWindow: window,
@@ -1380,6 +1391,7 @@ installEmbedRuntime({
     },
     async getStructureSignature() {
       await initPromise;
+      flushDeferredPaginationBeforeEmbedOutput('structure-signature');
       return wasm.getStructureSignature();
     },
     async getRendererDiagnostics(pageIndex) {
@@ -1403,16 +1415,20 @@ installEmbedRuntime({
     },
     async exportHwp() {
       await initPromise;
+      flushDeferredPaginationBeforeEmbedOutput('export-hwp');
       return wasm.exportHwp();
     },
     async exportHwpx() {
       await initPromise;
+      // flush 가 document-changed 로 세대를 올릴 수 있으므로 세대는 flush 뒤에 읽는다.
+      flushDeferredPaginationBeforeEmbedOutput('export-hwpx');
       // 호스트가 이 바이트를 저장했다고(markSaved) 알릴 때 대조할 세대를 적어 둔다.
       lastExportRevision = documentState.revision();
       return wasm.exportHwpx();
     },
     async exportHml() {
       await initPromise;
+      flushDeferredPaginationBeforeEmbedOutput('export-hml');
       return wasm.exportHml();
     },
     async getHmlSaveState() {

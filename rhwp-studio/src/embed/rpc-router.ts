@@ -24,6 +24,11 @@ export interface EmbedRpcHandlers {
   markSaved(): Promise<{ clean: boolean }>;
   getRendererDiagnostics(page: number): Promise<EmbedRendererDiagnosticsV1>;
   getPageSvg(page: number): Promise<string>;
+  /**
+   * 한채움 fork: 내보내기·getStructureSignature 는 Studio 「저장」과 같은 explicit-output
+   * 경계다 — 셀 편집이 미뤄 둔 페이지네이션을 먼저 턴다(10초 idle 타이머 해제). 안 그러면
+   * 그 타이머가 markSaved 뒤에 터져 dirty 를 되살린다(2026-08-23 라운드3 F1).
+   */
   exportHwp(): Promise<Uint8Array>;
   exportHwpx(): Promise<Uint8Array>;
   exportHml(): Promise<Uint8Array>;
