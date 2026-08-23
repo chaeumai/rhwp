@@ -456,6 +456,145 @@ fn test_reflow_empty_text() {
     assert_eq!(para.line_segs[0].text_start, 0);
 }
 
+/// 한글 PC lineseg 캐시 보존 — 폭이 실질적으로 안 바뀐 reflow 는 원본 horzsize/horzpos 를 유지
+/// (한컴 47936 vs rhwp 계산 47938 → 한컴이 재조판 → SQUEEZE 셀 겹침, 2026-08-24 실측).
+fn make_geometry_para(text: &str, orig_segs: Vec<LineSeg>) -> Paragraph {
+    let chars: Vec<char> = text.chars().collect();
+    Paragraph {
+        text: text.to_string(),
+        char_offsets: (0..chars.len() as u32).collect(),
+        char_count: chars.len() as u32 + 1,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: orig_segs,
+        ..Default::default()
+    }
+}
+
+/// 47938 HU = 639.17px @96dpi — 셀 폭 그대로인 편집
+const CELL_WIDTH_PX: f64 = 47938.0 * 96.0 / 7200.0;
+
+#[test]
+fn test_reflow_preserves_orig_segment_width_within_tolerance() {
+    let styles = make_styles_with_font_size(16.0);
+    // 16px 글자 40개 = 640px > 639px → 2줄로 늘어난다
+    let mut para = make_geometry_para(
+        &"가".repeat(40),
+        vec![LineSeg {
+            text_start: 0,
+            line_height: 1000,
+            segment_width: 47936,
+            column_start: 0,
+            ..Default::default()
+        }],
+    );
+    reflow_line_segs(&mut para, CELL_WIDTH_PX, &styles, 96.0);
+    assert!(para.line_segs.len() >= 2, "줄이 늘어나야 함: {}", para.line_segs.len());
+    for seg in &para.line_segs {
+        assert_eq!(seg.segment_width, 47936, "원본 horzsize 유지");
+        assert_eq!(seg.column_start, 0);
+    }
+}
+
+#[test]
+fn test_reflow_preserves_orig_column_start_with_width() {
+    // 템플릿 #124: 왼쪽 여백 문단 horzpos=500 horzsize=46740 — 둘 다 원본을 따른다
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_geometry_para(
+        "여백 문단",
+        vec![LineSeg {
+            text_start: 0,
+            line_height: 1000,
+            segment_width: 46740,
+            column_start: 500,
+            ..Default::default()
+        }],
+    );
+    // 계산값 46738 (차이 2)
+    reflow_line_segs(&mut para, 46738.0 * 96.0 / 7200.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    assert_eq!(para.line_segs[0].segment_width, 46740);
+    assert_eq!(para.line_segs[0].column_start, 500);
+}
+
+#[test]
+fn test_reflow_uses_computed_width_when_cell_actually_resized() {
+    // 셀 폭을 실제로 드래그한 편집(차이 > 200 HU)은 계산값
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_geometry_para(
+        "폭 바뀐 셀",
+        vec![LineSeg {
+            text_start: 0,
+            line_height: 1000,
+            segment_width: 47936,
+            ..Default::default()
+        }],
+    );
+    let new_width_hu = 40000;
+    reflow_line_segs(&mut para, new_width_hu as f64 * 96.0 / 7200.0, &styles, 96.0);
+    let expected = px_to_hwpunit(new_width_hu as f64 * 96.0 / 7200.0, 96.0);
+    assert_eq!(para.line_segs[0].segment_width, expected);
+    assert!((expected - new_width_hu).abs() <= 2);
+}
+
+#[test]
+fn test_reflow_uses_computed_width_when_orig_is_wrap_zone() {
+    // 감싸기 영역(줄마다 폭이 다른) 문단은 보존하지 않는다
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_geometry_para(
+        &"가".repeat(40),
+        vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 1000,
+                segment_width: 47936,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 20,
+                line_height: 1000,
+                segment_width: 27000,
+                column_start: 20600,
+                ..Default::default()
+            },
+        ],
+    );
+    reflow_line_segs(&mut para, CELL_WIDTH_PX, &styles, 96.0);
+    let computed = px_to_hwpunit(CELL_WIDTH_PX, 96.0);
+    for seg in &para.line_segs {
+        assert_eq!(seg.segment_width, computed);
+        assert_eq!(seg.column_start, 0);
+    }
+}
+
+#[test]
+fn test_reflow_empty_text_preserves_orig_segment_width() {
+    // 셀 글을 전부 지워 빈 문단이 돼도 horzsize 는 원본
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_geometry_para(
+        "",
+        vec![LineSeg {
+            text_start: 0,
+            line_height: 1000,
+            segment_width: 47936,
+            ..Default::default()
+        }],
+    );
+    reflow_line_segs(&mut para, CELL_WIDTH_PX, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    assert_eq!(para.line_segs[0].segment_width, 47936);
+}
+
+#[test]
+fn test_reflow_no_orig_uses_computed_width() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_geometry_para("원본 없음", vec![]);
+    reflow_line_segs(&mut para, CELL_WIDTH_PX, &styles, 96.0);
+    assert_eq!(para.line_segs[0].segment_width, px_to_hwpunit(CELL_WIDTH_PX, 96.0));
+}
+
 /// 라틴 문자 리플로우 (0.5 * font_size)
 #[test]
 fn test_reflow_latin_text() {

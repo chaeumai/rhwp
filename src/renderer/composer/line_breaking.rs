@@ -1053,6 +1053,34 @@ fn apply_inline_control_line_height(seg: &mut LineSeg, height_hwp: i32) {
     }
 }
 
+/// reflow 가 원본 lineseg 의 가로 기하를 그대로 둘 수 있는지 판정한다.
+///
+/// 반환 `Some((column_start, segment_width))` 이면 새 줄 전부에 그 값을 쓴다.
+/// 한글 PC 는 `horzsize` 가 자기 계산과 같아야 lineseg 캐시를 쓰므로(다르면 재조판 →
+/// SQUEEZE 셀 겹침), px 왕복 절삭 수준(±수 HU)이나 여백 해석 차이(−90 HU 실측)는
+/// 원본을 따르고, 셀 폭을 실제로 바꾼 편집만 계산값으로 간다.
+pub(crate) const SEGMENT_WIDTH_PRESERVE_TOLERANCE_HU: i32 = 200;
+
+pub(crate) fn preserved_horizontal_geometry(
+    orig_segs: &[LineSeg],
+    computed_width_hwp: i32,
+) -> Option<(i32, i32)> {
+    let first = orig_segs.first()?;
+    if first.segment_width <= 0 {
+        return None;
+    }
+    if (first.segment_width - computed_width_hwp).abs() > SEGMENT_WIDTH_PRESERVE_TOLERANCE_HU {
+        return None;
+    }
+    let uniform = orig_segs
+        .iter()
+        .all(|s| s.segment_width == first.segment_width && s.column_start == first.column_start);
+    if !uniform {
+        return None;
+    }
+    Some((first.column_start, first.segment_width))
+}
+
 pub(crate) fn reflow_line_segs(
     para: &mut Paragraph,
     available_width_px: f64,
@@ -1063,6 +1091,14 @@ pub(crate) fn reflow_line_segs(
     let seg_width_hwp = px_to_hwpunit(available_width_px, dpi);
     let orig = para.line_segs.first().cloned();
     let has_valid_orig = orig.as_ref().map(|ls| ls.line_height > 0).unwrap_or(false);
+    // 원본 가로 기하(horzpos/horzsize) 보존 — 한글 PC 는 lineseg 의 horzsize 가 자기 계산과
+    // 같을 때만 캐시를 신뢰하고, 다르면(rhwp 47938 ≠ 한컴 47936, px 왕복 절삭) 문단을
+    // 재조판한다. `lineWrap=SQUEEZE` 셀은 재조판되면 여러 줄이 한 줄로 겹친다
+    // (2026-08-24 한컴 PC A/B/C/D 대조). 폭이 실질적으로 안 바뀐 편집이면 원본 값을 그대로
+    // 쓴다. 조건: 원본 줄들이 모두 같은 (column_start, segment_width) 를 가진다(감싸기
+    // 영역 문단 제외)·segment_width>0·계산값과의 차이 ≤ 200 HU. 셀 폭을 실제로 바꾼
+    // 편집(차이 >200 HU)은 계산값을 쓴다.
+    let preserved_horz = preserved_horizontal_geometry(&para.line_segs, seg_width_hwp);
 
     // ParaPr의 줄간격 설정 (합성 LineSeg에서 line_spacing 계산에 사용)
     let para_style = styles.para_styles.get(para.para_shape_id as usize);
@@ -1096,7 +1132,8 @@ pub(crate) fn reflow_line_segs(
             text_height: text_height_hwp,
             baseline_distance: baseline_distance_hwp,
             line_spacing: line_spacing_hwp,
-            segment_width: seg_width_hwp,
+            column_start: preserved_horz.map(|(cs, _)| cs).unwrap_or(0),
+            segment_width: preserved_horz.map(|(_, sw)| sw).unwrap_or(seg_width_hwp),
             tag: if orig_tag != 0 {
                 orig_tag
             } else {
