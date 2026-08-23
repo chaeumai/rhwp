@@ -112,3 +112,20 @@ export CARGO_PROFILE_TEST_DEBUG=0                                  # 용량 주�
   5분이 매번 앞에 붙는다. 위 39초·307초 측정은 warm 상태 기준이다
 - 장시간 빌드 전후로 `df -h /data`를 확인한다. 여유가 15G 아래로 내려가면
   파일이 조용히 0바이트로 잘린다. 호스트 전체 정책은 `~/DISK_CAPACITY_PLAN.md`
+
+### 배포 빌드 — WASM 캐시와 wasm-opt 레벨 (2026-08-23)
+
+배포본은 이 트리가 아니라 본체 `hanchaeum/scripts/rhwp-selfhost/build-release.sh` 가
+만든다. 정본은 그쪽 `README.md` 의 「빌드 시간과 wasm-opt 레벨」 절이고, 여기는 요지만 둔다.
+
+- **원칙: 개발·검증 배포는 `--wasm-opt-level -O1`, 정식 배포는 기본값(`-O`). `-O2` 는 쓰지 않는다.**
+  레벨차는 실행 속도에 영향이 없고(6라운드 실측 ±3% — 라운드 편차에 묻힘, 재현되는 차이는
+  인스턴스화 +17ms 뿐) 빌드 시간만 다르다(`-O1` 91초 / `-O` 409초). 정식 배포는 크기 우선.
+- WASM 은 **Rust 빌드 입력의 git tree hash** 로 캐시된다(`/data/rhwp-wasm-cache`). TypeScript 만
+  바꾼 커밋은 wasm-pack·wasm-opt 를 통째로 건너뛰어 전체 빌드가 ~10초다. 의심스러우면
+  `--no-wasm-cache`.
+- 배포 빌드는 **깨끗한 트리**를 요구한다 — 미커밋 변경(문서 포함)이 있으면 클린 검증에서 막힌다.
+  fork 의 변경은 커밋하고 나서 빌드한다.
+- ⚠ cargo 캐시가 두 곳이다: 위 테스트 gate 는 `/data/build/cargo-target`, `build-release.sh` 는
+  `/data/rhwp-fork/target`. 한쪽을 warm 해도 다른 쪽 cargo 단계는 짧아지지 않는다(미해결 —
+  통일하려면 두 세션의 락 경합부터 풀어야 한다).
