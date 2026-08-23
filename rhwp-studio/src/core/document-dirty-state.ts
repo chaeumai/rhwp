@@ -13,6 +13,12 @@ export interface DirtyStateChange {
  */
 export class DocumentDirtyState {
   private dirty = false;
+  /**
+   * 한채움 fork: 편집 세대. markDirty 가 불릴 때마다 오른다 — 이미 dirty 여도 오른다.
+   * 호스트가 "export 한 그 상태를 저장했다" 고 알릴 때, export 이후 편집이 끼어들었는지
+   * 가르는 근거다 (export 시점 세대 == 지금 세대 이면 clean 으로 내려도 된다).
+   */
+  private editRevision = 0;
   private beforeUnloadWindow: Window | null = null;
   private readonly eventBus: EventBus;
   private readonly beforeUnloadHandler = (event: BeforeUnloadEvent): string | void => {
@@ -31,7 +37,24 @@ export class DocumentDirtyState {
   }
 
   markDirty(reason?: string): void {
+    this.editRevision += 1;
     this.setDirty(true, reason);
+  }
+
+  /** 한채움 fork: 지금까지의 편집 세대. {@link markDirty} 횟수와 같다. */
+  revision(): number {
+    return this.editRevision;
+  }
+
+  /**
+   * 한채움 fork: 호스트가 {@code revision} 세대의 export 를 저장했다고 알린다.
+   * 그 뒤 편집이 없었으면 clean 으로 내리고 true, 끼어들었으면 그대로 두고 false.
+   * export 자체는 저장이 아니라서(업로드가 실패할 수 있다) export 시점에 내리지 않는다.
+   */
+  markSavedAt(revision: number, reason = 'host-saved'): boolean {
+    if (revision !== this.editRevision) return false;
+    this.setDirty(false, reason);
+    return true;
   }
 
   markClean(reason?: string): void {

@@ -50,6 +50,7 @@ test('embed router는 binary load와 unknown method를 공개 동작으로 처�
     exportHml: async () => new Uint8Array([3]),
     getHmlSaveState: async () => ({ sourceFormat: 'hml', hmlSavable: true, blockers: [] }),
     exportHwpVerify: async () => ({ recovered: true }),
+    markSaved: async () => ({ clean: true }),
   };
 
   assert.deepEqual(
@@ -73,6 +74,8 @@ test('embed router는 binary load와 unknown method를 공개 동작으로 처�
   }
   await assert.rejects(() => routeEmbedRequest('missing', {}, handlers), /Unknown method: missing/);
   assert.deepEqual(await routeEmbedRequest('exportHml', {}, handlers), new Uint8Array([3]));
+  // 한채움 fork: 호스트 저장 통지. 라우터는 인자 없이 그대로 넘긴다.
+  assert.deepEqual(await routeEmbedRequest('markSaved', {}, handlers), { clean: true });
   assert.deepEqual(await routeEmbedRequest('getHmlSaveState', {}, handlers), {
     sourceFormat: 'hml',
     hmlSavable: true,

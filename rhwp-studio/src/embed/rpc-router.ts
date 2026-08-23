@@ -15,6 +15,13 @@ export interface EmbedRpcHandlers {
   getStructureSignature(): Promise<{ totalCells: number; pageCount: number }>;
   /** 한채움 fork: 마지막 로드·저장 이후 편집이 있었는지. 호스트가 폴링한다. */
   isDirty(): Promise<boolean>;
+  /**
+   * 한채움 fork: 호스트가 마지막 exportHwpx 결과를 저장했다고 알린다. 그 export 이후
+   * 편집이 없었으면 편집기가 dirty 를 내린다(`clean: true`). 끼어든 편집이 있으면 내리지
+   * 않는다(`clean: false`) — 호스트는 다시 저장하면 된다. isDirty 폴링과 짝이다: 종전엔
+   * 호스트가 저장해도 편집기는 모른 채 dirty 라 「저장 •」 이 돌아왔다(2026-08-23 라운드1 F1).
+   */
+  markSaved(): Promise<{ clean: boolean }>;
   getRendererDiagnostics(page: number): Promise<EmbedRendererDiagnosticsV1>;
   getPageSvg(page: number): Promise<string>;
   exportHwp(): Promise<Uint8Array>;
@@ -101,6 +108,7 @@ export async function routeEmbedRequest(
     case 'getStructureSignature': return handlers.getStructureSignature();
     // 한채움 fork: 호스트가 저장 필요 여부를 폴링한다.
     case 'isDirty': return handlers.isDirty();
+    case 'markSaved': return handlers.markSaved();
     case 'getRendererDiagnostics': {
       const page = params.page ?? 0;
       if (!Number.isSafeInteger(page) || (page as number) < 0) {

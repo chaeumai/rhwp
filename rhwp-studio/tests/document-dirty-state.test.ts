@@ -101,3 +101,27 @@ test('DocumentDirtyState beforeunload 해제 함수는 설치한 핸들러만 �
   fakeWindow.dispatch('beforeunload', event);
   assert.equal(event.defaultPrevented, false);
 });
+
+test('DocumentDirtyState.markSavedAt 는 export 이후 편집이 없을 때만 clean 으로 내린다 (한채움 F1)', () => {
+  const eventBus = new EventBus();
+  const state = new DocumentDirtyState(eventBus);
+
+  // 아직 export 한 적 없음(-1) — 아무것도 내리지 않는다.
+  state.markDirty('typing');
+  assert.equal(state.markSavedAt(-1), false);
+  assert.equal(state.isDirty(), true);
+
+  // export 시점 세대를 적어 두고, 그 뒤 편집이 없으면 내려간다.
+  const exported = state.revision();
+  assert.equal(state.markSavedAt(exported), true);
+  assert.equal(state.isDirty(), false);
+
+  // export 뒤 편집이 끼어들면 그 export 의 저장은 지금 상태를 대표하지 않는다 — 내리지 않는다.
+  const exported2 = state.revision();
+  state.markDirty('typing-after-export');
+  assert.equal(state.markSavedAt(exported2), false);
+  assert.equal(state.isDirty(), true);
+  // 같은 세대를 다시 export 하고 저장하면 내려간다.
+  assert.equal(state.markSavedAt(state.revision()), true);
+  assert.equal(state.isDirty(), false);
+});

@@ -1345,6 +1345,10 @@ function notifyAuthoringMutation(): void {
   // canvas-view 가 document-changed 에서 refreshPages() 를 돌린다.
   eventBus.emit('document-changed', 'ai-authoring');
 }
+// 한채움 fork: 마지막 exportHwpx 시점의 편집 세대. markSaved 가 "그 뒤 편집이 없었나" 를
+// 이걸로 가른다. -1 은 아직 export 한 적 없음 — 그때 markSaved 는 아무것도 내리지 않는다.
+let lastExportRevision = -1;
+
 
 installEmbedRuntime({
   hostWindow: window,
@@ -1357,6 +1361,10 @@ installEmbedRuntime({
     async isDirty() {
       await initPromise;
       return documentState.isDirty();
+    },
+    async markSaved() {
+      await initPromise;
+      return { clean: documentState.markSavedAt(lastExportRevision) };
     },
     async loadFile(data, fileName, skipUnsavedGuard) {
       await initPromise;
@@ -1399,6 +1407,8 @@ installEmbedRuntime({
     },
     async exportHwpx() {
       await initPromise;
+      // 호스트가 이 바이트를 저장했다고(markSaved) 알릴 때 대조할 세대를 적어 둔다.
+      lastExportRevision = documentState.revision();
       return wasm.exportHwpx();
     },
     async exportHml() {
