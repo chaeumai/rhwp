@@ -348,3 +348,59 @@ test('빈 편집 묶음은 스냅샷도 만들지 않는다', () => {
   assert.deepEqual(result, { ok: true, applied: 0, outcomes: [], snapshotId: null });
   assert.deepEqual(doc.log, []);
 });
+
+/**
+ * 누름틀(가이드) 자리에 쓸 때는 <b>필드를 먼저 푼다</b>.
+ *
+ * 2026-08-23 실측 회귀: 필드를 남긴 채 그 안에 값을 써 넣었더니 변환기가 그것을
+ * 안내문으로 보고 제출본에서 지웠다 — 신청서 9칸 중 누름틀 2칸(학번·수혜인력 성명)이
+ * 담당자가 받는 PDF 에서 빈칸이었다. 글자 모양도 안내문 것을 따라간다.
+ */
+test('누름틀 자리에 쓰면 필드를 먼저 푼다 — 본문 문단', () => {
+  const doc = sampleDocument();
+  const released: unknown[] = [];
+  (doc as any).removeFieldAt = (pos: unknown) => {
+    released.push(pos);
+    return { ok: true };
+  };
+
+  const path = paragraphPath(0, 0);
+  const before = readPath(doc, path);
+  const result = applyEdits(doc, [{ path, expectedText: before ?? '', newText: '채움테스트' }]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(released, [{ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }]);
+  assert.equal(readPath(doc, path), '채움테스트');
+});
+
+test('누름틀 자리에 쓰면 필드를 먼저 푼다 — 표 셀', () => {
+  const doc = sampleDocument();
+  const released: any[] = [];
+  (doc as any).removeFieldAt = (pos: unknown) => {
+    released.push(pos);
+    return { ok: true };
+  };
+
+  const path = cellPath(0, 1, doc.tableControlIndex, 0, 0);
+  const before = readPath(doc, path);
+  const result = applyEdits(doc, [{ path, expectedText: before ?? '', newText: '20260823' }]);
+
+  assert.equal(result.ok, true);
+  assert.equal(released.length, 1);
+  assert.equal(released[0].parentParaIndex, 1);
+  assert.equal(released[0].controlIndex, doc.tableControlIndex);
+  assert.equal(released[0].cellIndex, 0);
+  assert.equal(released[0].cellParaIndex, 0);
+  assert.equal(readPath(doc, path), '20260823');
+});
+
+test('누름틀 해제를 구현하지 않은 문서에서도 쓰기는 그대로 된다', () => {
+  // removeFieldAt 은 optional 이다 — 없다고 쓰기가 막히면 안 된다.
+  const doc = sampleDocument();
+  const path = paragraphPath(0, 0);
+  const before = readPath(doc, path);
+  const result = applyEdits(doc, [{ path, expectedText: before ?? '', newText: '그대로' }]);
+
+  assert.equal(result.ok, true);
+  assert.equal(readPath(doc, path), '그대로');
+});

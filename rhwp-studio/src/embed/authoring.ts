@@ -54,6 +54,14 @@ export interface AuthoringDocument {
   saveSnapshot(): number;
   restoreSnapshot(id: number): void;
   discardSnapshot(id: number): void;
+  /**
+   * 누름틀(가이드) 필드를 푼다. 필드와 그 안의 안내문이 함께 사라진다.
+   * 본문 문단과 셀 안 문단을 한 시그니처로 받는다 (`WasmBridge.removeFieldAt`).
+   *
+   * optional 인 이유: 이 표면의 테스트 더블이 구현하지 않아도 되게 한다. 실제
+   * 런타임 대상은 wasm 브리지이고 거기에는 항상 있다.
+   */
+  removeFieldAt?(pos: FieldPosition): { ok: boolean };
 }
 
 export type NodeKind = 'paragraph' | 'cell';
@@ -127,6 +135,18 @@ const PREVIEW_LIMIT = 40;
 const MAX_OUTLINE_NODES = 2000;
 /** 문단 하나에서 표를 찾을 때 훑어볼 컨트롤 인덱스 범위. */
 const MAX_CONTROL_PROBE = 4;
+
+/** {@link AuthoringDocument.removeFieldAt} 이 받는 위치. `DocumentPosition` 의 부분집합이다. */
+export interface FieldPosition {
+  sectionIndex: number;
+  paragraphIndex: number;
+  charOffset: number;
+  parentParaIndex?: number;
+  controlIndex?: number;
+  cellIndex?: number;
+  cellParaIndex?: number;
+  isTextBox?: boolean;
+}
 
 interface ParsedPath {
   sec: number;
@@ -350,20 +370,61 @@ function sortForApply(edits: readonly EditRequest[]): EditRequest[] {
   });
 }
 
-function writeText(doc: AuthoringDocument, parsed: ParsedPath, current: string, newText: string): boolean {
+/**
+ * 이 자리에 누름틀(가이드)이 걸려 있으면 먼저 푼다.
+ *
+ * <p>서식이 "여기에 학번을 쓰세요" 로 만들어 둔 칸은 누름틀이고, 안 채운 상태의
+ * 본문에는 안내문이 그대로 들어 있다. 필드를 남긴 채 그 안에 값을 써 넣으면 두 가지가
+ * 잘못된다 — ① 변환기가 필드 안 텍스트를 안내문으로 보고 <b>제출본에서 지운다</b>
+ * (2026-08-23 실측: 신청서 9칸 중 누름틀 2칸이 제출 PDF 에서 빔) ② 글자 모양이 안내문
+ * 것을 따라간다. 필드를 풀면 안내문이 함께 사라지고 값은 본문 글자로 들어간다.
+ *
+ * <p>실패는 삼킨다. 이 자리에 누름틀이 없는 경우가 대부분이고, 그때 wasm 은 오류를
+ * 돌려준다 — 정상이다.
+ *
+ * <p>한계: 문단(셀) <b>시작</b>의 누름틀만 푼다. 문단 중간에 걸린 누름틀은 charOffset 0
+ * 이 필드 범위 밖이라 그대로 남는다. 서식의 입력 칸은 셀 하나를 통째로 쓰는 것이
+ * 보통이라 지금은 이 범위로 둔다.
+ */
+function releaseGuideField(doc: AuthoringDocument, parsed: ParsedPath): void {
   try {
+    const pos: FieldPosition = parsed.cell
+      ? {
+        sectionIndex: parsed.sec,
+        paragraphIndex: parsed.para,
+        charOffset: 0,
+        parentParaIndex: parsed.para,
+        controlIndex: parsed.cell.ctrl,
+        cellIndex: parsed.cell.cellIndex,
+        cellParaIndex: parsed.cell.cellPara,
+        isTextBox: false,
+      }
+      : { sectionIndex: parsed.sec, paragraphIndex: parsed.para, charOffset: 0 };
+    doc.removeFieldAt?.(pos);
+  } catch {
+    // 누름틀이 없는 자리다. 쓰기는 그대로 이어 간다.
+  }
+}
+
+function writeText(doc: AuthoringDocument, parsed: ParsedPath, newText: string): boolean {
+  try {
+    releaseGuideField(doc, parsed);
     if (parsed.cell) {
       const pathJson = cellPathJson(parsed);
-      if (current.length > 0) {
-        doc.deleteTextInCellByPath(parsed.sec, parsed.para, pathJson, 0, current.length);
+      // 누름틀을 풀면서 안내문이 함께 지워졌을 수 있다 — `current` 를 믿지 말고
+      // 지금 길이를 다시 읽는다. 옛 길이로 지우면 이웃 글자를 먹는다.
+      const remaining = doc.getCellParagraphLengthByPath(parsed.sec, parsed.para, pathJson);
+      if (remaining > 0) {
+        doc.deleteTextInCellByPath(parsed.sec, parsed.para, pathJson, 0, remaining);
       }
       if (newText.length > 0) {
         doc.insertTextInCellByPath(parsed.sec, parsed.para, pathJson, 0, newText);
       }
       return true;
     }
-    if (current.length > 0) {
-      doc.deleteText(parsed.sec, parsed.para, 0, current.length);
+    const remaining = doc.getParagraphLength(parsed.sec, parsed.para);
+    if (remaining > 0) {
+      doc.deleteText(parsed.sec, parsed.para, 0, remaining);
     }
     if (newText.length > 0) {
       doc.insertText(parsed.sec, parsed.para, 0, newText);
@@ -419,7 +480,7 @@ export function applyEdits(doc: AuthoringDocument, edits: readonly EditRequest[]
       failed = true;
       break;
     }
-    if (!writeText(doc, parsed, current, edit.newText)) {
+    if (!writeText(doc, parsed, edit.newText)) {
       outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
       failed = true;
       break;
