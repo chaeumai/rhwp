@@ -1448,10 +1448,15 @@ pub fn recompose_stored_single_line_if_overflowing(
     if !stored_single || composed.lines.len() != 1 || cell_inner_width_px <= 0.0 {
         return;
     }
+    // [parity r1] "명백히 초과" 문턱 1.05 → 1.5. #2291 의 진짜 부실 저장은
+    // 76자 문단에 ls 1개(실폭 수 배)라 1.5 로도 잡히지만, 1.05 는 rhwp 폰트
+    // 메트릭의 폭 추정 오차(≈1.1×)에도 발동해 정상 저장 1줄('(단위 : 백만원)'
+    // 등)을 2줄로 재분할했다 — cut 모델 행높이가 렌더(저장 lineseg)보다 부풀어
+    // 표 연속쪽이 한컴보다 일찍 끊긴다 (complex-full p10 Δ−121, 2026-08-24 실측).
     let over = composed
         .lines
         .first()
-        .map(|l| estimate_composed_line_width(l, styles) > cell_inner_width_px * 1.05)
+        .map(|l| estimate_composed_line_width(l, styles) > cell_inner_width_px * 1.5)
         .unwrap_or(false);
     if !over {
         return;
