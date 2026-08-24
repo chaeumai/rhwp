@@ -1848,6 +1848,22 @@ export class WasmBridge {
     return JSON.parse(this.doc.getParaPropertiesAt(sec, para));
   }
 
+  getParaPropertiesByPath(sec: number, parentPara: number, pathJson: string): ParaProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getParaPropertiesByPath(sec, parentPara, pathJson));
+  }
+
+  setCheckStateByPath(
+    sec: number,
+    parentPara: number,
+    pathJson: string,
+    expectedChecked: boolean,
+    checked: boolean,
+  ): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).setCheckStateByPath(sec, parentPara, pathJson, expectedChecked, checked);
+  }
+
   getCellParaPropertiesAt(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number): ParaProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getCellParaPropertiesAt(sec, parentPara, controlIdx, cellIdx, cellParaIdx));

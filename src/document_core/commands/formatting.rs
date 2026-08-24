@@ -2,7 +2,8 @@
 
 use super::super::helpers::{
     border_line_type_to_u8_val, build_tab_def_from_json, color_ref_to_css, json_has_border_keys,
-    json_has_tab_keys, parse_char_shape_mods, parse_json_i16_array, parse_para_shape_mods,
+    json_escape, json_has_tab_keys, parse_char_shape_mods, parse_json_i16_array,
+    parse_para_shape_mods,
 };
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
@@ -199,6 +200,107 @@ impl DocumentCore {
             )
             .ok_or_else(|| HwpError::RenderError("셀 문단을 찾을 수 없음".to_string()))?;
         Ok(self.build_para_properties_json(para.para_shape_id, sec_idx))
+    }
+
+    /// 본문·표 셀·중첩 표 셀을 같은 cellPath 계약으로 조회한다.
+    /// 빈 path는 본문 문단, 나머지는 `resolve_paragraph_by_path`가 가리키는 문단이다.
+    pub fn get_para_properties_by_path_native(
+        &self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        let para = self.resolve_control_para(sec_idx, parent_para_idx, cell_path)?;
+        Ok(self.build_para_properties_json(para.para_shape_id, sec_idx))
+    }
+
+    fn check_state_for_para_shape(&self, para_shape_id: u16) -> Result<(bool, bool), HwpError> {
+        use crate::model::style::HeadType;
+
+        let para_shape = self
+            .document
+            .doc_info
+            .para_shapes
+            .get(para_shape_id as usize)
+            .ok_or_else(|| HwpError::RenderError(format!(
+                "문단 모양 ID {} 범위 초과",
+                para_shape_id
+            )))?;
+        if para_shape.head_type != HeadType::Bullet || para_shape.numbering_id == 0 {
+            return Ok((false, false));
+        }
+        let checkable = self
+            .document
+            .doc_info
+            .bullets
+            .get((para_shape.numbering_id - 1) as usize)
+            .map(|bullet| bullet.check_bullet_char != '\0')
+            .unwrap_or(false);
+        let checked = checkable
+            && matches!(para_shape.checked.as_deref(), Some("1" | "true" | "TRUE"));
+        Ok((checkable, checked))
+    }
+
+    /// HWPX 네이티브 체크 글머리표의 문단별 상태를 바꾼다.
+    ///
+    /// ParaShape는 여러 문단이 공유하므로 원본 모양을 수정하지 않는다.
+    /// `find_or_create_para_shape`로 checked만 다른 모양을 만들고 대상 문단의
+    /// 참조만 바꾼다. `expected_checked`는 AI 제안을 기다리는 동안 사람이
+    /// 직접 바꾼 상태를 덮지 않기 위한 낙관적 잠금이다.
+    pub fn set_check_state_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path: &[(usize, usize, usize)],
+        expected_checked: bool,
+        checked: bool,
+    ) -> Result<String, HwpError> {
+        let base_id = self
+            .resolve_control_para(sec_idx, parent_para_idx, cell_path)?
+            .para_shape_id;
+        let (checkable, current) = self.check_state_for_para_shape(base_id)?;
+        if !checkable {
+            return Err(HwpError::RenderError("체크 가능한 글머리표가 아닙니다".to_string()));
+        }
+        if current != expected_checked {
+            return Err(HwpError::RenderError(format!(
+                "체크 상태 불일치: expected={}, actual={}",
+                expected_checked, current
+            )));
+        }
+        if current == checked {
+            return Ok(format!("{{\"ok\":true,\"checked\":{}}}", checked));
+        }
+
+        let mods = crate::model::style::ParaShapeMods {
+            checked: Some(checked),
+            ..Default::default()
+        };
+        let new_id = self.document.find_or_create_para_shape(base_id, &mods);
+        if cell_path.is_empty() {
+            let para = self
+                .document
+                .sections
+                .get_mut(sec_idx)
+                .and_then(|section| section.paragraphs.get_mut(parent_para_idx))
+                .ok_or_else(|| HwpError::RenderError("본문 문단을 찾을 수 없음".to_string()))?;
+            para.para_shape_id = new_id;
+        } else {
+            self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, cell_path)?
+                .para_shape_id = new_id;
+            self.mark_cell_control_dirty(sec_idx, parent_para_idx, cell_path[0].0);
+        }
+
+        self.document.sections[sec_idx].raw_stream = None;
+        self.rebuild_section(sec_idx);
+        self.event_log.push(DocumentEvent::ParaFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+        });
+        Ok(format!(
+            "{{\"ok\":true,\"checked\":{},\"paraShapeId\":{}}}",
+            checked, new_id
+        ))
     }
 
     /// 글자 속성 JSON 생성 헬퍼
@@ -671,6 +773,31 @@ impl DocumentCore {
             .map(|s| s.section_def.default_tab_spacing)
             .unwrap_or(4000);
 
+        // 체크 가능한 글머리표는 일반 Bullet과 같은 numbering_id를 쓰되
+        // Bullet 정의에 checkedChar가 있다. 선택 상태는 각 ParaShape의
+        // paraPr@checked에 있으므로 둘을 함께 봐야 한다.
+        let bullet = ps.and_then(|resolved| {
+            if resolved.head_type != HeadType::Bullet || resolved.numbering_id == 0 {
+                return None;
+            }
+            self.document
+                .doc_info
+                .bullets
+                .get((resolved.numbering_id - 1) as usize)
+        });
+        let checkable = bullet
+            .map(|item| item.check_bullet_char != '\0')
+            .unwrap_or(false);
+        let checked = checkable
+            && matches!(raw_ps.and_then(|item| item.checked.as_deref()), Some("1" | "true" | "TRUE"));
+        let bullet_char = bullet
+            .map(|item| json_escape(&item.bullet_char.to_string()))
+            .unwrap_or_default();
+        let checked_char = bullet
+            .filter(|_| checkable)
+            .map(|item| json_escape(&item.check_bullet_char.to_string()))
+            .unwrap_or_default();
+
         // 테두리/배경 조회
         let bf_id = raw_ps.map(|p| p.border_fill_id).unwrap_or(0);
         let border_spacing = raw_ps.map(|p| p.border_spacing).unwrap_or([0; 4]);
@@ -801,6 +928,7 @@ impl DocumentCore {
                         "\"marginLeft\":{:.1},\"marginRight\":{:.1},\"indent\":{:.1},",
                         "\"spacingBefore\":{:.1},\"spacingAfter\":{:.1},\"paraShapeId\":{},",
                         "\"headType\":\"{}\",\"paraLevel\":{},\"numberingId\":{},",
+                        "\"checkable\":{},\"checked\":{},\"bulletChar\":\"{}\",\"checkedChar\":\"{}\",",
                         "\"widowOrphan\":{},\"keepWithNext\":{},\"keepLines\":{},\"pageBreakBefore\":{},",
                         "\"fontLineHeight\":{},\"singleLine\":{},",
                         "\"autoSpaceKrEn\":{},\"autoSpaceKrNum\":{},\"verticalAlign\":{},",
@@ -818,6 +946,7 @@ impl DocumentCore {
                     raw_ps.map(|r| crate::renderer::hwpunit_to_px(r.spacing_after, self.dpi)).unwrap_or(ps.spacing_after),
                     para_shape_id,
                     head_str, ps.para_level, ps.numbering_id,
+                    checkable, checked, bullet_char, checked_char,
                     widow_orphan, keep_with_next, keep_lines, page_break_before,
                     font_line_height, single_line,
                     auto_space_kr_en, auto_space_kr_num, vertical_align,
@@ -835,6 +964,7 @@ impl DocumentCore {
                         "\"marginLeft\":0.0,\"marginRight\":0.0,\"indent\":0.0,",
                         "\"spacingBefore\":0.0,\"spacingAfter\":0.0,\"paraShapeId\":{},",
                         "\"headType\":\"None\",\"paraLevel\":0,\"numberingId\":0,",
+                        "\"checkable\":false,\"checked\":false,\"bulletChar\":\"\",\"checkedChar\":\"\",",
                         "\"widowOrphan\":false,\"keepWithNext\":false,\"keepLines\":false,\"pageBreakBefore\":false,",
                         "\"fontLineHeight\":false,\"singleLine\":false,",
                         "\"autoSpaceKrEn\":false,\"autoSpaceKrNum\":false,\"verticalAlign\":0,",

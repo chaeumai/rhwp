@@ -8,6 +8,7 @@ import {
   paragraphPath,
   parsePath,
   readPath,
+  readCheckStates,
   readPaths,
   type AuthoringDocument,
 } from '../src/embed/authoring.ts';
@@ -28,6 +29,8 @@ class FakeDocument implements AuthoringDocument {
   failWriteOnCellIndex: number | null = null;
   /** 표가 붙어 있는 컨트롤 인덱스. 실문서에서 0이 아닌 경우가 실제로 있다. */
   tableControlIndex = 0;
+  checkStates = new Map<string, boolean>();
+  checkSnapshots = new Map<number, Map<string, boolean>>();
 
   constructor(
     paragraphs: string[][],
@@ -162,12 +165,48 @@ class FakeDocument implements AuthoringDocument {
     return '{"ok":true}';
   }
 
+  getParaPropertiesAt(sec: number, para: number): { checkable: boolean; checked: boolean } {
+    const key = paragraphPath(sec, para);
+    return { checkable: this.checkStates.has(key), checked: this.checkStates.get(key) === true };
+  }
+
+  getParaPropertiesByPath(sec: number, parentPara: number, pathJson: string): { checkable: boolean; checked: boolean } {
+    const segments = JSON.parse(pathJson) as Array<{
+      controlIndex: number; cellIndex: number; cellParaIndex: number;
+    }>;
+    const path = `s${sec}/p${parentPara}${segments
+      .map((item) => `/c${item.controlIndex}/cell${item.cellIndex}/p${item.cellParaIndex}`).join('')}`;
+    return { checkable: this.checkStates.has(path), checked: this.checkStates.get(path) === true };
+  }
+
+  setCheckStateByPath(
+    sec: number,
+    parentPara: number,
+    pathJson: string,
+    expectedChecked: boolean,
+    checked: boolean,
+  ): string {
+    const segments = JSON.parse(pathJson) as Array<{
+      controlIndex: number; cellIndex: number; cellParaIndex: number;
+    }>;
+    const path = segments.length === 0
+      ? paragraphPath(sec, parentPara)
+      : `s${sec}/p${parentPara}${segments
+        .map((item) => `/c${item.controlIndex}/cell${item.cellIndex}/p${item.cellParaIndex}`).join('')}`;
+    if (!this.checkStates.has(path)) throw new Error('not checkable');
+    if (this.checkStates.get(path) !== expectedChecked) throw new Error('state mismatch');
+    this.checkStates.set(path, checked);
+    this.log.push(`setChecked(${path},${checked})`);
+    return '{"ok":true}';
+  }
+
   saveSnapshot(): number {
     const id = this.nextSnapshotId++;
     this.snapshots.set(id, {
       paragraphs: this.paragraphs.map((section) => [...section]),
       tables: new Map(Array.from(this.tables, ([key, value]) => [key, { ...value, cells: [...value.cells] }])),
     });
+    this.checkSnapshots.set(id, new Map(this.checkStates));
     this.log.push(`saveSnapshot(${id})`);
     return id;
   }
@@ -177,11 +216,13 @@ class FakeDocument implements AuthoringDocument {
     if (!snapshot) throw new Error('no such snapshot');
     this.paragraphs = snapshot.paragraphs.map((section) => [...section]);
     this.tables = new Map(Array.from(snapshot.tables, ([key, value]) => [key, { ...value, cells: [...value.cells] }]));
+    this.checkStates = new Map(this.checkSnapshots.get(id) ?? []);
     this.log.push(`restoreSnapshot(${id})`);
   }
 
   discardSnapshot(id: number): void {
     this.snapshots.delete(id);
+    this.checkSnapshots.delete(id);
     this.log.push(`discardSnapshot(${id})`);
   }
 }
@@ -332,6 +373,26 @@ test('outline은 빈 본문 문단은 빼되 빈 표 셀은 남긴다', () => {
   });
 });
 
+test('outline은 네이티브 체크 글머리표를 별도 노드와 상태로 노출한다', () => {
+  const doc = sampleDocument();
+  doc.checkStates.set('s0/p0', true);
+  doc.checkStates.set('s0/p1/c0/cell2/p0', false);
+
+  const outline = buildOutline(doc);
+  assert.deepEqual(outline.sections[0].paragraphs[0], {
+    path: 's0/p0', kind: 'checkbox', length: 10, preview: '회의비 사전 신청서', checked: true,
+  });
+  assert.deepEqual(outline.sections[0].tables[0].cells[2], {
+    path: 's0/p1/c0/cell2/p0', kind: 'checkbox', length: 5, preview: '회의 목적',
+    checked: false, row: 1, col: 0,
+  });
+  assert.deepEqual(readCheckStates(doc, ['s0/p0', 's0/p2', 'bad']), [
+    { path: 's0/p0', checked: true },
+    { path: 's0/p2', checked: null },
+    { path: 'bad', checked: null },
+  ]);
+});
+
 test('표가 컨트롤 0이 아닌 곳에 있어도 찾는다', () => {
   // 실측 회귀: swuniv 회의비신청서의 표는 컨트롤 2에 있었다. 컨트롤 0만
   // 보던 초기 구현은 개요를 조용히 비워 반환했고, 단위 테스트는 대역이
@@ -437,6 +498,51 @@ test('applyEdits는 expectedText가 맞을 때만 쓰고 결과를 반영한다'
   assert.deepEqual(result.outcomes, [{ path: 's0/p1/c0/cell3/p0', ok: true }]);
   assert.equal(readPath(doc, 's0/p1/c0/cell3/p0'), '정기 회의');
   assert.notEqual(result.snapshotId, null);
+});
+
+test('SET_CHECKED는 텍스트를 바꾸지 않고 체크 상태만 적용한다', () => {
+  const doc = sampleDocument();
+  const path = 's0/p1/c0/cell2/p0';
+  doc.checkStates.set(path, false);
+
+  const result = applyEdits(doc, [{
+    operation: 'SET_CHECKED', path, expectedChecked: false, checked: true,
+  }]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(readCheckStates(doc, [path]), [{ path, checked: true }]);
+  assert.equal(readPath(doc, path), '회의 목적');
+});
+
+test('텍스트와 체크 혼합 배치도 후속 실패 시 함께 원상 복구된다', () => {
+  const doc = sampleDocument();
+  const checkboxPath = 's0/p1/c0/cell2/p0';
+  const textPath = 's0/p1/c0/cell3/p0';
+  doc.checkStates.set(checkboxPath, false);
+
+  const result = applyEdits(doc, [
+    { operation: 'SET_CHECKED', path: checkboxPath, expectedChecked: false, checked: true },
+    { path: textPath, expectedText: '틀린 값', newText: '정기 회의' },
+  ]);
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(readCheckStates(doc, [checkboxPath]), [{ path: checkboxPath, checked: false }]);
+  assert.equal(readPath(doc, textPath), '');
+});
+
+test('체크 기준 상태가 어긋나면 실제 상태를 돌려주고 쓰지 않는다', () => {
+  const doc = sampleDocument();
+  const path = 's0/p1/c0/cell2/p0';
+  doc.checkStates.set(path, true);
+
+  const result = applyEdits(doc, [{
+    operation: 'SET_CHECKED', path, expectedChecked: false, checked: true,
+  }]);
+
+  assert.deepEqual(result.outcomes, [{
+    path, ok: false, errorCode: 'EXPECTED_CHECKED_MISMATCH', actualChecked: true,
+  }]);
+  assert.deepEqual(readCheckStates(doc, [path]), [{ path, checked: true }]);
 });
 
 test('expectedText가 어긋나면 고치지 않고 실제 값을 돌려준다', () => {

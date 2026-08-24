@@ -5598,6 +5598,41 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 본문 또는 중첩 표 셀 문단의 문단 속성을 동일한 path 계약으로 조회한다.
+    /// `cell_path_json`이 빈 배열이면 `parent_para_idx`가 본문 문단이다.
+    #[wasm_bindgen(js_name = getParaPropertiesByPath)]
+    pub fn get_para_properties_by_path(
+        &self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let cell_path = parse_cell_path_arg(cell_path_json)?;
+        self.get_para_properties_by_path_native(sec_idx, parent_para_idx, &cell_path)
+            .map_err(|e| e.into())
+    }
+
+    /// HWPX 네이티브 체크 글머리표의 문단별 선택 상태를 바꾼다.
+    #[wasm_bindgen(js_name = setCheckStateByPath)]
+    pub fn set_check_state_by_path(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        expected_checked: bool,
+        checked: bool,
+    ) -> Result<String, JsValue> {
+        let cell_path = parse_cell_path_arg(cell_path_json)?;
+        self.set_check_state_by_path_native(
+            sec_idx,
+            parent_para_idx,
+            &cell_path,
+            expected_checked,
+            checked,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 셀 내부 문단의 문단 속성을 조회한다.
     #[wasm_bindgen(js_name = getCellParaPropertiesAt)]
     pub fn get_cell_para_properties_at(

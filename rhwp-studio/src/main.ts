@@ -53,7 +53,7 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { installEmbedRuntime } from '@/embed/runtime';
-import { applyEdits, buildOutline, readPaths } from '@/embed/authoring';
+import { applyEdits, buildOutline, readCheckStates, readPaths } from '@/embed/authoring';
 import { setEmbedInputLocked } from '@/embed/input-lock';
 import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings, surfaceProfile } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
@@ -1446,6 +1446,10 @@ installEmbedRuntime({
     async getTextByPaths(paths) {
       await initPromise;
       return readPaths(wasm, paths);
+    },
+    async getCheckStates(paths) {
+      await initPromise;
+      return readCheckStates(wasm, paths);
     },
     async applyEdits(edits) {
       await initPromise;

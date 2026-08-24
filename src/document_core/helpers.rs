@@ -602,6 +602,9 @@ pub(crate) fn parse_para_shape_mods(json: &str) -> crate::model::style::ParaShap
     if let Some(v) = json_bool(json, "borderIgnoreMargin") {
         mods.border_ignore_margin = Some(v);
     }
+    if let Some(v) = json_bool(json, "checked") {
+        mods.checked = Some(v);
+    }
 
     mods
 }

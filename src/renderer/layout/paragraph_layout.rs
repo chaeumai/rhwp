@@ -6171,7 +6171,12 @@ impl LayoutEngine {
                 }
                 // PUA 문자(0xF000~0xF0FF)를 표준 Unicode로 매핑
                 // HWP는 Symbol 폰트 문자를 PUA(0xF000+code)로 저장
-                let bullet_ch = map_pua_bullet_char(bullet.bullet_char);
+                let raw_bullet_ch = if para_style.checked && bullet.check_bullet_char != '\0' {
+                    bullet.check_bullet_char
+                } else {
+                    bullet.bullet_char
+                };
+                let bullet_ch = map_pua_bullet_char(raw_bullet_ch);
                 // 글머리 기호 + 본문과의 거리(text_distance)에 따른 간격
                 if bullet.text_distance > 0 {
                     format!("{} ", bullet_ch)

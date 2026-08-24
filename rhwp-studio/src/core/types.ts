@@ -417,6 +417,12 @@ export interface ParaProperties {
   borderSpacing?: number[];  // [좌, 우, 상, 하] HWPUNIT
   borderConnect?: boolean;   // 문단 테두리 연결
   borderIgnoreMargin?: boolean; // 문단 여백 무시
+  /** HWPX 네이티브 체크 글머리표인지. 일반 글머리표와 구분한다. */
+  checkable?: boolean;
+  /** 체크 글머리표의 현재 문단별 상태. */
+  checked?: boolean;
+  bulletChar?: string;
+  checkedChar?: string;
 }
 
 /** 테두리 선 정보 */

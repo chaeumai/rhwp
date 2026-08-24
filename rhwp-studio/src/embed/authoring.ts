@@ -57,6 +57,15 @@ export interface AuthoringDocument {
   deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string;
   insertText(sec: number, para: number, charOffset: number, text: string): string;
   deleteText(sec: number, para: number, charOffset: number, count: number): string;
+  getParaPropertiesAt(sec: number, para: number): { checkable?: boolean; checked?: boolean };
+  getParaPropertiesByPath(sec: number, parentPara: number, pathJson: string): { checkable?: boolean; checked?: boolean };
+  setCheckStateByPath(
+    sec: number,
+    parentPara: number,
+    pathJson: string,
+    expectedChecked: boolean,
+    checked: boolean,
+  ): string;
   saveSnapshot(): number;
   restoreSnapshot(id: number): void;
   discardSnapshot(id: number): void;
@@ -70,7 +79,7 @@ export interface AuthoringDocument {
   removeFieldAt?(pos: FieldPosition): { ok: boolean };
 }
 
-export type NodeKind = 'paragraph' | 'cell';
+export type NodeKind = 'paragraph' | 'cell' | 'checkbox';
 
 export interface OutlineNode {
   /** 세션 유효 주소. read/write 의 path 인자로 그대로 쓴다. */
@@ -83,6 +92,8 @@ export interface OutlineNode {
   /** 표 셀일 때만. 0-based. */
   row?: number;
   col?: number;
+  /** 네이티브 체크 글머리표 노드일 때 현재 선택 상태. */
+  checked?: boolean;
 }
 
 export interface OutlineTable {
@@ -113,19 +124,31 @@ export interface Outline {
   truncated: boolean;
 }
 
-export interface EditRequest {
+export interface TextEditRequest {
+  operation?: 'SET_TEXT';
   path: string;
   /** 현재 그 자리에 있어야 하는 텍스트. 다르면 적용하지 않는다. */
   expectedText: string;
   newText: string;
 }
 
+export interface CheckEditRequest {
+  operation: 'SET_CHECKED';
+  path: string;
+  /** AI 응답을 기다리는 동안 사용자가 바꾼 상태를 덮지 않게 하는 기준값. */
+  expectedChecked: boolean;
+  checked: boolean;
+}
+
+export type EditRequest = TextEditRequest | CheckEditRequest;
+
 export interface EditOutcome {
   path: string;
   ok: boolean;
-  errorCode?: 'PATH_INVALID' | 'PATH_NOT_FOUND' | 'EXPECTED_TEXT_MISMATCH' | 'WRITE_FAILED';
+  errorCode?: 'PATH_INVALID' | 'PATH_NOT_FOUND' | 'EXPECTED_TEXT_MISMATCH' | 'EXPECTED_CHECKED_MISMATCH' | 'NOT_CHECKABLE' | 'WRITE_FAILED';
   /** 불일치 시 실제로 있던 텍스트. 호출자가 다시 판단할 근거. */
   actualText?: string;
+  actualChecked?: boolean;
 }
 
 export interface ApplyEditsResult {
@@ -264,6 +287,25 @@ function readCellText(doc: AuthoringDocument, sec: number, para: number, pathJso
   }
 }
 
+interface CheckState {
+  checkable: boolean;
+  checked: boolean;
+}
+
+function readCheckStateAt(doc: AuthoringDocument, parsed: ParsedPath): CheckState | null {
+  try {
+    const properties = parsed.cells
+      ? doc.getParaPropertiesByPath(parsed.sec, parsed.para, cellPathJson(parsed))
+      : doc.getParaPropertiesAt(parsed.sec, parsed.para);
+    return {
+      checkable: properties?.checkable === true,
+      checked: properties?.checked === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 문서 개요를 만든다.
  *
@@ -320,6 +362,7 @@ export function buildOutline(doc: AuthoringDocument): Outline {
           const pathSegments = [...ancestors, { ctrl, cellIndex, cellPara }];
           const pathJson = cellSegmentsJson(pathSegments);
           const text = readCellText(doc, sec, para, pathJson);
+          const checkState = readCheckStateAt(doc, { sec, para, cells: pathSegments });
           let nestedControls: number[] = [];
           try {
             nestedControls = tableControlIndices(doc.getTableControlIndicesByPath(sec, para, pathJson));
@@ -337,9 +380,10 @@ export function buildOutline(doc: AuthoringDocument): Outline {
             const info = tryCellInfoByPath(doc, sec, para, pathJson);
             cells.push({
               path: cellSegmentsPath(sec, para, pathSegments),
-              kind: 'cell',
+              kind: checkState?.checkable ? 'checkbox' : 'cell',
               length: text.length,
               preview: preview(text),
+              ...(checkState?.checkable ? { checked: checkState.checked } : {}),
               ...(info ? { row: info.row, col: info.col } : {}),
             });
             nodeCount += 1;
@@ -383,11 +427,13 @@ export function buildOutline(doc: AuthoringDocument): Outline {
         continue;
       }
       if (!text.trim()) continue;
+      const checkState = readCheckStateAt(doc, { sec, para, cells: null });
       paragraphs.push({
         path: paragraphPath(sec, para),
-        kind: 'paragraph',
+        kind: checkState?.checkable ? 'checkbox' : 'paragraph',
         length: text.length,
         preview: preview(text),
+        ...(checkState?.checkable ? { checked: checkState.checked } : {}),
       });
       nodeCount += 1;
     }
@@ -421,6 +467,18 @@ export function readPath(doc: AuthoringDocument, path: string): string | null {
 
 export function readPaths(doc: AuthoringDocument, paths: readonly string[]): Array<{ path: string; text: string | null }> {
   return paths.map((path) => ({ path, text: readPath(doc, path) }));
+}
+
+/** 주소들의 현재 체크 상태를 읽는다. 체크 문단이 아니거나 주소가 없으면 null. */
+export function readCheckStates(
+  doc: AuthoringDocument,
+  paths: readonly string[],
+): Array<{ path: string; checked: boolean | null }> {
+  return paths.map((path) => {
+    const parsed = parsePath(path);
+    const state = parsed ? readCheckStateAt(doc, parsed) : null;
+    return { path, checked: state?.checkable ? state.checked : null };
+  });
 }
 
 /** 같은 문단 안에서 뒤쪽부터 고치도록 정렬한다. 앞선 수정이 뒤쪽 좌표를 밀지 않게. */
@@ -519,6 +577,26 @@ function writeText(doc: AuthoringDocument, parsed: ParsedPath, newText: string):
   }
 }
 
+function writeChecked(
+  doc: AuthoringDocument,
+  parsed: ParsedPath,
+  expectedChecked: boolean,
+  checked: boolean,
+): boolean {
+  try {
+    doc.setCheckStateByPath(
+      parsed.sec,
+      parsed.para,
+      parsed.cells ? cellPathJson(parsed) : '[]',
+      expectedChecked,
+      checked,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 편집 묶음을 원자적으로 적용한다.
  *
@@ -548,26 +626,55 @@ export function applyEdits(doc: AuthoringDocument, edits: readonly EditRequest[]
       failed = true;
       break;
     }
-    const current = readPath(doc, edit.path);
-    if (current === null) {
-      outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
-      failed = true;
-      break;
-    }
-    if (current !== edit.expectedText) {
-      outcomes.push({
-        path: edit.path,
-        ok: false,
-        errorCode: 'EXPECTED_TEXT_MISMATCH',
-        actualText: current,
-      });
-      failed = true;
-      break;
-    }
-    if (!writeText(doc, parsed, edit.newText)) {
-      outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
-      failed = true;
-      break;
+    if (edit.operation === 'SET_CHECKED') {
+      const state = readCheckStateAt(doc, parsed);
+      if (state === null) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
+        failed = true;
+        break;
+      }
+      if (!state.checkable) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'NOT_CHECKABLE' });
+        failed = true;
+        break;
+      }
+      if (state.checked !== edit.expectedChecked) {
+        outcomes.push({
+          path: edit.path,
+          ok: false,
+          errorCode: 'EXPECTED_CHECKED_MISMATCH',
+          actualChecked: state.checked,
+        });
+        failed = true;
+        break;
+      }
+      if (!writeChecked(doc, parsed, edit.expectedChecked, edit.checked)) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
+        failed = true;
+        break;
+      }
+    } else {
+      const current = readPath(doc, edit.path);
+      if (current === null) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
+        failed = true;
+        break;
+      }
+      if (current !== edit.expectedText) {
+        outcomes.push({
+          path: edit.path,
+          ok: false,
+          errorCode: 'EXPECTED_TEXT_MISMATCH',
+          actualText: current,
+        });
+        failed = true;
+        break;
+      }
+      if (!writeText(doc, parsed, edit.newText)) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
+        failed = true;
+        break;
+      }
     }
     outcomes.push({ path: edit.path, ok: true });
   }
