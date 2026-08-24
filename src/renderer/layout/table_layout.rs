@@ -5727,8 +5727,74 @@ impl LayoutEngine {
                         }
                     })
                     .sum();
+                // [파리티 라운드2 T1] 한컴은 flowWithText 중첩 표 뒤에 호스트
+                // 문단 줄을 겹치지 않고 아래로 쌓는다 — 저장 lineseg 가 그
+                // 배치를 기록한다 (jbnu-550 인건비 셀: 직전 문단 끝 52.3 →
+                // 수식표 55.3 → 호스트 줄 v=107.6 sz 8.0 sp 4.8). 종전
+                // nested_h 단독/max() 겹침 모델은 이때 호스트 줄+앵커
+                // 오프셋(≈14px)을 증발시켜 셀 컷 창이 한 유닛 과적된다
+                // (※ 줄이 한컴보다 한 쪽 일찍 담김). 직전 문단 끝→이 문단
+                // 끝의 저장 스팬이 표 높이 이상임이 실증된 문단만 저장
+                // 스팬으로 계상한다 (스팬 < 표 높이 = 겹침 배치 → 종전 유지).
+                let stored_stacked_span = if nested_h > 0.0
+                    && !collapse_empty_rowbreak_spacer
+                    && pi > 0
+                {
+                    let stored_lines_h: f64 = p
+                        .line_segs
+                        .iter()
+                        .map(|seg| hwpunit_to_px(seg.line_height + seg.line_spacing, self.dpi))
+                        .sum();
+                    let prev = &cell.paragraphs[pi - 1];
+                    // [진단] RHWP_DIAG_T1=1 — stored_stacked_span 가드 추적 (동작 불변)
+                    if std::env::var("RHWP_DIAG_T1").is_ok() {
+                        eprintln!(
+                            "DIAG_T1 pi={} nested_h={:.1} prev_segs={} cur_segs={} prev_syn={:?} cur_syn={:?} prev_last={:?} cur_first={:?} cur_last={:?}",
+                            pi,
+                            nested_h,
+                            prev.line_segs.len(),
+                            p.line_segs.len(),
+                            prev.line_segs.last().map(line_seg_is_synthetic),
+                            p.line_segs.first().map(line_seg_is_synthetic),
+                            prev.line_segs.last().map(|s| (s.vertical_pos, s.line_height, s.line_spacing)),
+                            p.line_segs.first().map(|s| (s.vertical_pos, s.line_height, s.line_spacing)),
+                            p.line_segs.last().map(|s| (s.vertical_pos, s.line_height, s.line_spacing)),
+                        );
+                    }
+                    match (prev.line_segs.last(), p.line_segs.first(), p.line_segs.last()) {
+                        (Some(prev_seg), Some(first_seg), Some(last_seg))
+                            if !line_seg_is_synthetic(prev_seg)
+                                && !line_seg_is_synthetic(first_seg)
+                                && !line_seg_is_synthetic(last_seg)
+                                && first_seg.vertical_pos
+                                    >= prev_seg.vertical_pos + prev_seg.line_height =>
+                        {
+                            let prev_end = hwpunit_to_px(
+                                prev_seg.vertical_pos
+                                    + prev_seg.line_height
+                                    + prev_seg.line_spacing,
+                                self.dpi,
+                            );
+                            let cur_end = hwpunit_to_px(
+                                last_seg.vertical_pos
+                                    + last_seg.line_height
+                                    + last_seg.line_spacing,
+                                self.dpi,
+                            );
+                            let span = cur_end - prev_end;
+                            (span >= nested_h - 2.0
+                                && span <= nested_h + stored_lines_h + 24.0)
+                                .then_some(span)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let para_h = if collapse_empty_rowbreak_spacer {
                     0.0
+                } else if let Some(span) = stored_stacked_span {
+                    span
                 } else if line_count == 0 {
                     let h = if nested_h > 0.0 {
                         nested_h
@@ -5807,7 +5873,10 @@ impl LayoutEngine {
                 let hard_break_before = reset_before;
                 let mut para_h = para_h;
                 let mut vpos_gap_before = vpos_gap_before_para;
-                if use_vpos_unit_positions {
+                // [파리티 라운드2 T1] stored_stacked_span 은 직전 문단 끝→이 문단
+                // 끝의 저장 간격을 이미 전부 포함하므로 절대 vpos 가산과 겹치면
+                // 이중 계상이다 — span 채택 시 절대 가산은 건너뛴다.
+                if use_vpos_unit_positions && stored_stacked_span.is_none() {
                     if let Some(seg) = p.line_segs.first() {
                         if !line_seg_is_synthetic(seg) {
                             let target_top = normalized_vpos_px(seg.vertical_pos);
@@ -8078,6 +8147,104 @@ mod row_cut_tests {
                 0
             ),
             "그림 문단을 지난 컷에서는 후속 페이지에 반복 렌더하지 않음"
+        );
+    }
+
+    #[test]
+    fn nested_table_host_para_uses_stored_stacked_span() {
+        // [파리티 라운드2 T1] 한컴은 flowWithText 중첩 표 뒤에 호스트 문단 줄을
+        // 아래로 쌓고 저장 lineseg 가 그 배치를 기록한다 (jbnu-550 인건비 셀
+        // 수식표: 직전 문단 끝→호스트 줄 끝 스팬 68.1px vs 표 높이 53.7px).
+        // 겹침 모델(nested_h.max(line))은 호스트 줄+오프셋을 증발시켜 셀 컷
+        // 창이 한 유닛 과적된다 — 저장 스팬이 표 높이 이상이면 스팬을 계상한다.
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let nested = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                width: 8000,
+                height: 3000, // 40px
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut host = Paragraph {
+            text: " ".to_string(),
+            char_count: 1,
+            line_segs: vec![LineSeg {
+                // 직전 문단 끝(1200HU) + 표(3000HU) 아래 호스트 줄 — 쌓임 배치.
+                vertical_pos: 4200,
+                line_height: 600,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        host.controls
+            .push(crate::model::control::Control::Table(Box::new(nested)));
+        let t = table(vec![cell(0, 0, vec![visible_text_para(1, 0), host])]);
+        let units = eng.cell_units(&t.cells[0], &t, &styles);
+        let host_unit = units
+            .iter()
+            .find(|u| u.para_idx == 1)
+            .expect("호스트 문단 유닛 존재");
+        // 저장 스팬 = (4200+600) − (0+1200) = 3600HU = 48px (표 40 + 줄 8).
+        assert!(
+            (host_unit.height - 48.0).abs() < 0.6,
+            "호스트 유닛이 저장 스팬(표+호스트 줄)을 계상해야 한다: {:.1}",
+            host_unit.height
+        );
+    }
+
+    #[test]
+    fn nested_table_host_para_overlap_layout_keeps_nested_height() {
+        // 대조군: 호스트 줄이 표와 같은 위치에서 시작(겹침 배치 — 스팬 < 표 높이)
+        // 하면 종전 모델(nested_h)을 유지해야 한다. 무근거 문서 보호 가드.
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let nested = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                width: 8000,
+                height: 3000, // 40px
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut host = Paragraph {
+            text: " ".to_string(),
+            char_count: 1,
+            line_segs: vec![LineSeg {
+                // 직전 문단 바로 다음 줄 — 표가 줄과 겹치는 배치 (스팬 8px ≪ 표 40px).
+                vertical_pos: 1200,
+                line_height: 600,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        host.controls
+            .push(crate::model::control::Control::Table(Box::new(nested)));
+        let t = table(vec![cell(0, 0, vec![visible_text_para(1, 0), host])]);
+        let units = eng.cell_units(&t.cells[0], &t, &styles);
+        let host_unit = units
+            .iter()
+            .find(|u| u.para_idx == 1)
+            .expect("호스트 문단 유닛 존재");
+        assert!(
+            (host_unit.height - 40.0).abs() < 0.6,
+            "겹침 배치는 종전 nested_h 모델 유지: {:.1}",
+            host_unit.height
         );
     }
 
