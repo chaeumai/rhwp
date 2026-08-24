@@ -23,6 +23,10 @@ export class FieldMarkerRenderer {
     this.startEl = document.createElement('div');
     this.startEl.className = 'field-marker field-marker-start';
     this.startEl.style.cssText = style;
+    // left는 필드 시작 경계다. 글리프의 왼쪽을 이 좌표에 놓으면 「 전체가
+    // 필드 안쪽으로 들어가 첫 글자와 겹친다. 실제 DOM 글리프 폭만큼 왼쪽으로
+    // 옮겨 오른쪽 끝을 경계에 맞춘다(폰트·줌별 추정 폭을 하드코딩하지 않는다).
+    this.startEl.style.transform = 'translateX(-100%)';
     this.startEl.textContent = '「';
 
     this.endEl = document.createElement('div');
