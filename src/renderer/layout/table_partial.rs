@@ -1268,6 +1268,13 @@ impl LayoutEngine {
                                             );
                                             let start_row = su.min(nrow);
                                             let end_row = eu.min(nrow);
+                                            // [진단] RHWP_DIAG_MIXED=1 — #1073 컷→중첩행 매핑 (동작 불변)
+                                            if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                                                eprintln!(
+                                                    "DIAG_NESTEDCUT su={} eu={} nrow={} -> rows[{}..{}) cell_r{}c{}",
+                                                    su, eu, nrow, start_row, end_row, cell.row, cell.col,
+                                                );
+                                            }
                                             let mut vis_h = 0.0;
                                             for r in start_row..end_row {
                                                 vis_h += nrow_heights[r];
@@ -1282,6 +1289,89 @@ impl LayoutEngine {
                                                 flow_height: vis_h,
                                                 offset_within_start: 0.0,
                                             })
+                                        } else if let Some((su, eu)) = cut_units.filter(|_| {
+                                            // [parity r1 / #1073 확장] mixed 셀(텍스트+중첩 표)도
+                                            // 컷 유닛의 nested_row 마커로 중첩행 창을 만든다.
+                                            // 종전 available_h 휴리스틱은 fragment 마다 row0 부터
+                                            // 재렌더해 창 밖 행이 소실됐다 (complex sec=10 pi=54:
+                                            // '통합' 행은 라운드0 부터, '미시' 행은 컷 이동 후
+                                            // 증발 — 2026-08-24 실측).
+                                            self.cell_units(cell, table, styles)
+                                                .iter()
+                                                .any(|u| u.para_idx == cp_idx && u.nested_row.is_some())
+                                        }) {
+                                            let units = self.cell_units(cell, table, styles);
+                                            let lo = su.min(units.len());
+                                            let hi = eu.min(units.len()).max(lo);
+                                            let rows_in_window: Vec<usize> = units[lo..hi]
+                                                .iter()
+                                                .filter(|u| u.para_idx == cp_idx)
+                                                .filter_map(|u| u.nested_row)
+                                                .collect();
+                                            let ncol = nested_table.col_count as usize;
+                                            let nrow = nested_table.row_count as usize;
+                                            if let (Some(&s0), Some(&e0)) = (
+                                                rows_in_window.iter().min(),
+                                                rows_in_window.iter().max(),
+                                            ) {
+                                                let start_row = s0.min(nrow);
+                                                let end_row = (e0 + 1).min(nrow).max(start_row);
+                                                if start_row == 0 && end_row == nrow {
+                                                    // 전 행이 이 fragment 창 안 — 통렌더(무클립) 유지
+                                                    None
+                                                } else {
+                                                // #1073 pure 경로와 동일한 선언 기준 행높이로 창 높이 산출
+                                                // (렌더러 layout_table 의 행높이와 정합 — content 기준을
+                                                //  쓰면 클립이 실제 렌더보다 작아 하단 행 텍스트가 잘린다)
+                                                let nrow_heights = self.resolve_row_heights(
+                                                    nested_table,
+                                                    ncol,
+                                                    nrow,
+                                                    None,
+                                                    styles,
+                                                    true,
+                                                );
+                                                let ncs = hwpunit_to_px(
+                                                    nested_table.cell_spacing as i32,
+                                                    self.dpi,
+                                                );
+                                                let mut vis_h = 0.0;
+                                                for r in start_row..end_row {
+                                                    vis_h += nrow_heights[r];
+                                                    if r + 1 < end_row {
+                                                        vis_h += ncs;
+                                                    }
+                                                }
+                                                if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                                                    eprintln!(
+                                                        "DIAG_MIXEDCUT su={} eu={} -> rows[{}..{}) vis={:.1} cell_r{}c{}",
+                                                        su, eu, start_row, end_row, vis_h, cell.row, cell.col,
+                                                    );
+                                                }
+                                                Some(NestedTableSplit {
+                                                    start_row,
+                                                    end_row,
+                                                    visible_height: vis_h,
+                                                    flow_height: vis_h,
+                                                    offset_within_start: 0.0,
+                                                })
+                                                }
+                                            } else {
+                                                // 이 fragment 창에 중첩행 없음 — 그리지 않는다
+                                                if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                                                    eprintln!(
+                                                        "DIAG_MIXEDCUT su={} eu={} -> EMPTY cell_r{}c{}",
+                                                        su, eu, cell.row, cell.col,
+                                                    );
+                                                }
+                                                Some(NestedTableSplit {
+                                                    start_row: 0,
+                                                    end_row: 0,
+                                                    visible_height: 0.0,
+                                                    flow_height: 0.0,
+                                                    offset_within_start: 0.0,
+                                                })
+                                            }
                                         } else if nested_h > available_h + 0.5 {
                                             let ncol = nested_table.col_count as usize;
                                             let nrow = nested_table.row_count as usize;

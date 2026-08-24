@@ -363,14 +363,14 @@ pub(super) struct CellUnit {
     hard_break_before: bool,
     vpos_gap_before: bool,
     /// 이 유닛이 속한 문단 인덱스 (셀 내).
-    para_idx: usize,
+    pub(super) para_idx: usize,
     /// 이 유닛이 visible 일 때 기여하는 문단 내 줄 범위 `[vis_start, vis_end)`.
     /// 텍스트 줄 유닛 = `(li, li+1)`, 중첩/빈 atom = `(0, line_count.max(1))`.
     vis_start: usize,
     vis_end: usize,
     /// [Task #1073] 이 유닛이 중첩 표의 한 행을 표현하면 그 행 인덱스. 텍스트/일반 유닛은 None.
     /// 분할 행에서 컷 → `NestedTableSplit`(중첩행 범위) 매핑에 사용.
-    nested_row: Option<usize>,
+    pub(super) nested_row: Option<usize>,
     mixed_nested_fragment: bool,
     mixed_nested_trailing: bool,
     mixed_nested_content_height: f64,
@@ -1602,7 +1602,7 @@ impl LayoutEngine {
         )
     }
 
-    fn resolve_row_heights_for_content(
+    pub(super) fn resolve_row_heights_for_content(
         &self,
         table: &crate::model::table::Table,
         col_count: usize,
@@ -7237,6 +7237,30 @@ impl LayoutEngine {
         } else {
             visible
         };
+        // [진단] RHWP_DIAG_MIXED=1 — mixed 중첩 컷 clip 창 계산 덤프 (동작 불변)
+        if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+            let all: Vec<String> = units
+                .iter()
+                .enumerate()
+                .map(|(i, u)| {
+                    format!(
+                        "{}{}:p{}h{:.1}{}{}",
+                        if i >= lo && i < hi { "*" } else { "" },
+                        i,
+                        u.para_idx,
+                        u.height,
+                        if u.mixed_nested_fragment { "N" } else { "" },
+                        if u.mixed_nested_trailing { "t" } else { "" },
+                    )
+                })
+                .collect();
+            eprintln!(
+                "DIAG_MIXED cp={} lo={} hi={} total={:.1} offset={:.1} flow_vis={:.1} units=[{}]",
+                para_idx, lo, hi, total, offset,
+                visible_units.iter().map(|(h, _)| *h).sum::<f64>(),
+                all.join(" "),
+            );
+        }
         if total <= 0.5 || visible <= 0.5 {
             return None;
         }
