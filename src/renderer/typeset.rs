@@ -3856,6 +3856,48 @@ impl TypesetEngine {
                 );
             } else {
                 // 표 문단: Phase 2에서 전환 예정. 현재는 기존 방식 호환용 stub.
+                //
+                // [parity r1] 표 문단도 배치 직전 vpos 스냅으로 누적 drift 를 제거한다.
+                // 종전에는 비표 문단(위 분기)만 스냅해, 표 직전까지 쌓인 문단 sa 트림
+                // 성분(flow_underrun)이 표 분할 예산을 과대평가했다 — complex-full p9:
+                // cur_h 344.3 vs 저장 vpos 370.1 (−25.8px) → 한컴이 p10 으로 넘긴
+                // 행(18.1px)을 p9 에 수용 (LAYOUT_OVERFLOW 6.3px, 쪽수 78/73 발산 시작점).
+                self.vpos_snap_current_height(&mut st, para_idx, paragraphs, styles);
+                // [parity r1] 잔여 드리프트는 표 앵커 자신의 저장 vpos 로 닫는다.
+                // 스냅은 prev-끝 + lazy_base 경유라 계단식 오프셋 귀속으로 저부족할
+                // 수 있다 (p9: 스냅 후 353.6 vs 앵커 370.1). 같은 쪽 안에서 전진
+                // (모노톤)·소폭(≤48px)일 때만 — 낡은 절대좌표(#2098 계열) 차단.
+                if st.col_count == 1 && !st.current_items.is_empty() {
+                    let own_vpos_px = paragraphs
+                        .get(para_idx)
+                        .and_then(|p| p.line_segs.first())
+                        .filter(|s| {
+                            s.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                                == 0
+                                && s.vertical_pos > 0
+                        })
+                        .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi));
+                    if let Some(v) = own_vpos_px {
+                        let delta = v - st.current_height;
+                        // 보정 폭은 이 단에서 실제로 트림한 누계(flow_underrun)
+                        // 이내로만 — 좌표계 상수 오프셋(+4px 계 등, jbnu-550 실측)
+                        // 까지 스냅하면 무드리프트 문서가 통째로 밀린다(91→92쪽).
+                        if delta > 0.0
+                            && delta <= 48.0
+                            && delta <= st.flow_underrun + 2.0
+                            && v <= st.base_available_height()
+                        {
+                            if std::env::var("RHWP_DIAG_TAC").is_ok() {
+                                eprintln!(
+                                    "DIAG_TBL_ANCHOR pi={} cur_h={:.1} -> own_vpos={:.1} (underrun={:.1})",
+                                    para_idx, st.current_height, v, st.flow_underrun
+                                );
+                            }
+                            st.current_height = v;
+                            st.flow_underrun = (st.flow_underrun - delta).max(0.0);
+                        }
+                    }
+                }
                 self.typeset_table_paragraph(
                     &mut st,
                     para_idx,
@@ -17434,6 +17476,101 @@ mod tests {
             result.pages[1].column_contents[0].items.as_slice(),
             [PageItem::FullParagraph { para_index: 2 }]
         ));
+    }
+
+    /// [parity r1] 표 문단도 배치 직전 vpos 스냅을 받는다.
+    ///
+    /// 선행 문단의 저장 lineseg 는 흐름 위치를 절대좌표로 못박는데, 누적
+    /// advance(트림된 spacing_after)만 따르면 표 분할 예산이 과대해져 한컴이
+    /// 다음 쪽으로 넘긴 행을 현재 쪽에 담는다 (complex-full p9 Δ+58:
+    /// cur_h 344.3 vs 저장 370.1, 2026-08-24 실측). 종전에는 비표 문단만
+    /// 스냅했다 (`if !has_table` 분기).
+    #[test]
+    fn table_paragraph_snaps_to_stored_vpos_before_split() {
+        use crate::model::control::Control;
+        use crate::model::table::{Cell, Table, TablePageBreak};
+
+        let engine = TypesetEngine::with_default_dpi();
+        let mut styles = ResolvedStyleSet::default();
+        styles
+            .para_styles
+            .push(crate::renderer::style_resolver::ResolvedParaStyle {
+                // 흐름 트림 조건(spacing_after > 0.5) 활성화 — 드리프트 재현
+                spacing_after: hwpunit_to_px(2000, DEFAULT_DPI),
+                ..Default::default()
+            });
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+
+        // 선행 문단: 한컴 저장 좌표는 vpos=2000HU(26.7px)에서 시작해
+        // 끝이 40px 이지만, 누적 advance 는 트림으로 ~13.3px 에 머문다.
+        let lead = Paragraph {
+            text: "lead".to_string(),
+            para_shape_id: 0,
+            line_segs: vec![LineSeg {
+                vertical_pos: 2000,
+                line_height: 1000,
+                text_height: 1000,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // 표: 3행 × 435px. 스냅 없이는(cur_h≈13.3, 가용≈882) 두 행(870)이
+        // 첫 쪽에 들어가고, 스냅하면(cur_h=40, 가용≈856) 한 행만 들어간다.
+        let row_h_hu: u32 = 32625; // 435px
+        let mut table_para = Paragraph::default();
+        table_para.controls.push(Control::Table(Box::new(Table {
+            row_count: 3,
+            col_count: 1,
+            page_break: TablePageBreak::CellBreak,
+            cells: (0..3)
+                .map(|r| Cell {
+                    row: r,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    height: row_h_hu,
+                    width: 30000,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })));
+
+        let paras = vec![lead, table_para];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured = HeightMeasurer::with_default_dpi().measure_section(
+            &paras,
+            &composed,
+            &styles,
+            None,
+        );
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        let first_end_row = result.pages[0].column_contents[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                PageItem::PartialTable { end_row, .. } => Some(*end_row),
+                _ => None,
+            })
+            .expect("첫 쪽에 표 fragment 가 있어야 한다");
+        assert_eq!(
+            first_end_row, 1,
+            "표 분할 예산은 저장 vpos(40px) 기준이어야 한다 — 2행이 들어갔다면 \
+             표 문단 vpos 스냅이 빠진 것 (드리프트 예산 과대)"
+        );
     }
 
     #[test]

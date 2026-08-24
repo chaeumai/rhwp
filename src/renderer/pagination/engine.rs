@@ -2543,6 +2543,19 @@ impl Paginator {
             {
                 const MIN_SPLIT_CONTENT_PX: f64 = 10.0;
 
+                // [진단] RHWP_DIAG_SPLIT=1 — 표 분할 판정 입력값 덤프 (동작 불변)
+                if std::env::var("RHWP_DIAG_SPLIT").is_ok() {
+                    eprintln!(
+                        "DIAG_SPLIT pi={} cont={} cursor={} cur_h={:.1} tavail={:.1} bavail={:.1} host={:.1} voff={:.1} sb={:.1} cap={:.1} hdr={:.1} avail_rows={:.1} rows={:?}",
+                        para_idx, is_continuation, cursor_row, st.current_height,
+                        table_available_height, base_available_height, host_text_height,
+                        v_offset_px, spacing_before_px, caption_extra, header_overhead,
+                        avail_for_rows,
+                        &mt.row_heights[cursor_row..(cursor_row + 30).min(row_count)]
+                            .iter().map(|h| (h * 10.0).round() / 10.0).collect::<Vec<_>>(),
+                    );
+                }
+
                 let approx_end_raw =
                     mt.find_break_row(avail_for_rows, cursor_row, effective_first_row_h);
                 // Task #398: rowspan 묶음 중간에서 잘리지 않도록 블록 경계로 스냅
