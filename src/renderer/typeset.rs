@@ -384,7 +384,10 @@ const BOTTOM_SQUEEZE_MAX_REST_PX: f64 = 100.0;
 /// [#2097] 압축 수용에 필요한 콘텐츠 여유(잔여-콘텐츠) 하한 — 콘텐츠가 눌릴
 /// 공간이 없으면 한글도 이월한다 (scattered_header r139 여유 1.3px 이월 vs
 /// 1741000 여유 30~58px 압축 실측).
-const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 12.0;
+/// [파리티 라운드2 T2] 12→10: complex-full sec4 ③ 표 마지막 행(잔여 91.3,
+/// 콘텐츠 80.0, 여유 11.3px)을 한컴이 압축 실측 — 이월 실측(1.3px)과의
+/// 사이로 하향. squeeze 밴드 컷 게이트와 공유.
+const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 10.0;
 const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
 /// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
 /// 제한된 tail 경로에만 허용하는 누적 높이 drift 완화값.
@@ -14432,7 +14435,43 @@ impl TypesetEngine {
                 // 컷해 페이지를 본문 높이 끝까지 채운다 (21761835 p1/p3/p5 경계
                 // 낭비 157/37/39px, 한글 PDF는 매 경계 만충). 콘텐츠-소진 컷을
                 // 밴드 컷으로 수용 — RowBreak + rowspan 걸침 행 한정.
-                let band_cut_ok = rowspan_touched[r]
+                // [파리티 라운드2 T2] 쪽 하단 압축 밴드: rowspan 없는 일반 행도,
+                // 선언 행높이만 잔여를 초과하고 콘텐츠는 전부 들어가는 쪽 마지막
+                // 행이면 한글은 행을 콘텐츠 높이로 압축해 같은 쪽에 담는다
+                // (complex-full sec4 ③ 표 r1: 선언 109.1 vs 잔여 91.3, 콘텐츠
+                // 80.0 — 한컴 압축 실측, 대조북 p21). #2097 SQUEEZE 수용처럼
+                // 선언 전체를 consumed 에 가산하면 렌더가 표를 위로 당겨 위
+                // 문단을 덮으므로(클램프), 밴드 컷으로 배치 높이 자체를 제한한다.
+                // 게이트는 #2097 과 동일 계열: 쪽 끝자락(잔여 ≤ MAX_REST)·콘텐츠
+                // 여유(≥ MIN_HEADROOM)·측정-선언 정합·중첩 표 행 제외.
+                let squeeze_band = !rowspan_touched[r] && {
+                    let rest = (avail_for_rows - consumed - cs_before).max(0.0);
+                    rest <= BOTTOM_SQUEEZE_MAX_REST_PX
+                        && rest - res.consumed_height >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                        && {
+                            let row_decl_max = table
+                                .cells
+                                .iter()
+                                .filter(|c| {
+                                    c.row as usize == r
+                                        && c.row_span == 1
+                                        && c.height < 0x8000_0000
+                                })
+                                .map(|c| hwpunit_to_px(c.height as i32, self.dpi))
+                                .fold(0.0f64, f64::max);
+                            row_decl_max > 0.0 && row_total <= row_decl_max * 1.2 + 2.0
+                        }
+                        && !table.cells.iter().any(|c| {
+                            c.row as usize == r
+                                && c.row_span == 1
+                                && c.paragraphs.iter().any(|p| {
+                                    p.controls
+                                        .iter()
+                                        .any(|ctrl| matches!(ctrl, Control::Table(_)))
+                                })
+                        })
+                };
+                let band_cut_ok = (rowspan_touched[r] || squeeze_band)
                     && mt.allows_row_break_split()
                     && r > cursor_row
                     && !res.end_cut.is_empty()
@@ -16064,6 +16103,44 @@ impl TypesetEngine {
                 break;
             }
 
+            // [파리티 라운드2 T2] fully-consumed 밴드 컷이 표 마지막 행의 콘텐츠를
+            // 전부 소진했으면 연속 조각이 없다 — 컷을 실은 **마지막** 조각으로
+            // 완결한다 (complex-full sec4 ③ 표 r1 squeeze 밴드: end_cut=[6]=전체
+            // 유닛, 잔여 0). 중간 조각 + advance 로 처리하면 빈 연속 조각 쪽이
+            // 생기고, advance 뒤 강제 break 는 분할 표 직후 스냅 우회 플래그
+            // (vpos_prev_partial_table)를 잃어 다음 문단이 전 쪽 저장 좌표로
+            // 오스냅된다 (p22 pi=22 y 0→797.2 실측).
+            if split_end_limit > 0.0
+                && split_block_start.is_none()
+                && end_row >= row_count
+                && !layout_engine.row_cut_range_has_visible_content(
+                    table,
+                    end_row - 1,
+                    &split_end_cut,
+                    &[],
+                    styles,
+                )
+            {
+                let bottom_caption_extra = if !caption_is_top {
+                    caption_overhead
+                } else {
+                    0.0
+                };
+                st.current_items.push(PageItem::PartialTable {
+                    para_index: para_idx,
+                    control_index: ctrl_idx,
+                    start_row: cursor_row,
+                    end_row,
+                    is_continuation,
+                    start_cut: start_cut.clone(),
+                    end_cut: split_end_cut.clone(),
+                    is_block_split: start_cut_is_block,
+                });
+                st.current_height +=
+                    partial_height + bottom_caption_extra + ft.host_spacing.spacing_after_only;
+                break;
+            }
+
             // 중간 fragment 배치
             st.current_items.push(PageItem::PartialTable {
                 para_index: para_idx,
@@ -17480,6 +17557,133 @@ mod tests {
 
     /// [parity r1] 표 문단도 배치 직전 vpos 스냅을 받는다.
     ///
+    /// [파리티 라운드2 T2] 쪽 하단 squeeze 밴드 컷 — 선언 행높이만 잔여를
+    /// 초과하고(콘텐츠는 여유) 쪽 마지막에 놓인 RowBreak 표의 마지막 행을,
+    /// 한글은 콘텐츠 높이로 압축해 같은 쪽에 담는다 (complex-full sec4 ③ 표
+    /// r1: 선언 109.1 vs 잔여 91.3, 콘텐츠 80.0 — 한컴 압축 실측, 2026-08-25).
+    /// 종전에는 #2097 사전 게이트(초과 ≤ 13px)를 넘는 순간 행 전체가 다음
+    /// 쪽으로 이월됐다. 밴드 컷은 마지막 조각으로 완결되어 빈 연속 조각
+    /// 쪽을 만들지 않아야 한다.
+    #[test]
+    fn declared_tall_last_row_squeezes_into_page_bottom_band() {
+        use crate::model::control::Control;
+        use crate::model::table::{Cell, Table, TablePageBreak};
+
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+
+        // 선행 문단: 본문(a4_page_def 876.8px) 상단 766.7px 차지 — 잔여 ≈ 110px.
+        let lead = Paragraph {
+            text: "lead".to_string(),
+            para_shape_id: 0,
+            line_segs: vec![LineSeg {
+                vertical_pos: 0,
+                line_height: 57500, // 766.7px
+                text_height: 57500,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // 표: r0 헤더 18.4px + r1 선언 109.1px(콘텐츠는 6줄 = 80px).
+        // 선언 기준 초과 ≈ 17.7px(> 종전 사전 게이트 13) — 콘텐츠는 잔여에
+        // 전부 들어가므로 squeeze 밴드가 같은 쪽에 담아야 한다.
+        let body_cell_para = Paragraph {
+            text: "줄줄줄줄줄줄".to_string(),
+            char_count: 6,
+            line_segs: (0..6)
+                .map(|i| LineSeg {
+                    vertical_pos: i * 1040,
+                    line_height: 800,  // 10.7px
+                    text_height: 800,
+                    line_spacing: 240, // 3.2px
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut table_para = Paragraph::default();
+        table_para.controls.push(Control::Table(Box::new(Table {
+            row_count: 2,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            cells: vec![
+                Cell {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    height: 1380, // 18.4px
+                    width: 30000,
+                    paragraphs: vec![Paragraph {
+                        text: "헤더".to_string(),
+                        char_count: 2,
+                        line_segs: vec![LineSeg {
+                            vertical_pos: 0,
+                            line_height: 800,
+                            text_height: 800,
+                            line_spacing: 0,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                Cell {
+                    row: 1,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    height: 8183, // 109.1px 선언 — 콘텐츠(80px)보다 크다
+                    width: 30000,
+                    paragraphs: vec![body_cell_para],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })));
+
+        let paras = vec![lead, table_para];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured =
+            HeightMeasurer::with_default_dpi().measure_section(&paras, &composed, &styles, None);
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        assert_eq!(
+            result.pages.len(),
+            1,
+            "선언만 초과한 마지막 행은 압축 밴드로 같은 쪽에 담겨야 한다 \
+             (이월되면 2쪽 — 한컴 반례)"
+        );
+        let (end_row, end_cut) = result.pages[0].column_contents[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                PageItem::PartialTable {
+                    end_row, end_cut, ..
+                } => Some((*end_row, end_cut.clone())),
+                _ => None,
+            })
+            .expect("첫 쪽에 표 fragment 가 있어야 한다");
+        assert_eq!(end_row, 2, "두 행 모두 첫 쪽에 담겨야 한다");
+        assert!(
+            !end_cut.is_empty(),
+            "마지막 행은 밴드 컷(end_cut)으로 높이 제한되어야 한다"
+        );
+    }
+
     /// 선행 문단의 저장 lineseg 는 흐름 위치를 절대좌표로 못박는데, 누적
     /// advance(트림된 spacing_after)만 따르면 표 분할 예산이 과대해져 한컴이
     /// 다음 쪽으로 넘긴 행을 현재 쪽에 담는다 (complex-full p9 Δ+58:
