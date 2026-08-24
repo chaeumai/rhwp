@@ -2049,6 +2049,33 @@ impl HwpDocument {
         Ok(para.text.chars().count() as u32)
     }
 
+    /// 본문 문단에 포함된 표 컨트롤 인덱스를 JSON 배열로 반환한다.
+    #[wasm_bindgen(js_name = getTableControlIndices)]
+    pub fn get_table_control_indices(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_table_control_indices_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    /// 셀/글상자 안 문단에 포함된 표 컨트롤 인덱스를 JSON 배열로 반환한다.
+    #[wasm_bindgen(js_name = getTableControlIndicesByPath)]
+    pub fn get_table_control_indices_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+    ) -> Result<String, JsValue> {
+        self.get_table_control_indices_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            path_json,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표 셀의 텍스트 방향을 반환한다 (0=가로, 1=세로/영문눕힘, 2=세로/영문세움).
     #[wasm_bindgen(js_name = getCellTextDirection)]
     pub fn get_cell_text_direction(
@@ -5888,7 +5915,7 @@ impl HwpDocument {
             lang_id: 1042, // 한국어 default (HWP5 spec 표 47)
             para_shape_id,
             char_shape_id,
-        lock_form: None,
+            lock_form: None,
         };
         self.core.document.doc_info.styles.push(new_style);
         self.core.document.doc_info.raw_stream_dirty = true;

@@ -932,6 +932,16 @@ export class WasmBridge {
     return this.doc.getCellParagraphCountByPath(sec, parentPara, pathJson);
   }
 
+  getTableControlIndices(sec: number, para: number): number[] {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getTableControlIndices(sec, para));
+  }
+
+  getTableControlIndicesByPath(sec: number, parentPara: number, pathJson: string): number[] {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getTableControlIndicesByPath(sec, parentPara, pathJson));
+  }
+
   getCellParagraphLengthByPath(sec: number, parentPara: number, pathJson: string): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.getCellParagraphLengthByPath(sec, parentPara, pathJson);

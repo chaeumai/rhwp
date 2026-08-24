@@ -80,6 +80,32 @@ class FakeDocument implements AuthoringDocument {
     return { row: Math.floor(cellIdx / table.cols), col: cellIdx % table.cols, rowSpan: 1, colSpan: 1 };
   }
 
+  getTableControlIndices(sec: number, para: number): number[] {
+    return this.tables.has(this.tableKey(sec, para)) ? [this.tableControlIndex] : [];
+  }
+
+  getTableControlIndicesByPath(): number[] {
+    return [];
+  }
+
+  getTableDimensionsByPath(sec: number, parentPara: number, pathJson: string): {
+    rowCount: number; colCount: number; cellCount: number;
+  } {
+    const [{ controlIndex }] = JSON.parse(pathJson) as Array<{ controlIndex: number }>;
+    return this.getTableDimensions(sec, parentPara, controlIndex);
+  }
+
+  getCellInfoByPath(sec: number, parentPara: number, pathJson: string): {
+    row: number; col: number; rowSpan: number; colSpan: number;
+  } {
+    const [{ controlIndex, cellIndex }] = JSON.parse(pathJson) as Array<{ controlIndex: number; cellIndex: number }>;
+    return this.getCellInfo(sec, parentPara, controlIndex, cellIndex);
+  }
+
+  getCellParagraphCountByPath(): number {
+    return 1;
+  }
+
   private cellIndexFromPath(pathJson: string): number {
     const parsed = JSON.parse(pathJson) as Array<{ cellIndex: number }>;
     return parsed[0].cellIndex;
@@ -160,6 +186,99 @@ class FakeDocument implements AuthoringDocument {
   }
 }
 
+/** 실제 멘티 신청서와 같은 "외곽 셀의 두 번째 문단 안 표" 구조 대역. */
+class NestedFakeDocument extends FakeDocument {
+  private nestedTexts = new Map<string, string>();
+  private nestedSnapshots = new Map<number, Map<string, string>>();
+
+  constructor() {
+    super([['']]);
+    this.nestedTexts.set(this.key([{ controlIndex: 5, cellIndex: 0, cellParaIndex: 0 }]), '멘토링 신청 분야');
+    this.nestedTexts.set(this.key([{ controlIndex: 5, cellIndex: 1, cellParaIndex: 0 }]), '지원동기 및 요청사항');
+    this.nestedTexts.set(this.key([{ controlIndex: 5, cellIndex: 1, cellParaIndex: 1 }]), '');
+    for (let cellIndex = 0; cellIndex < 3; cellIndex += 1) {
+      this.nestedTexts.set(this.key([
+        { controlIndex: 5, cellIndex: 1, cellParaIndex: 1 },
+        { controlIndex: 0, cellIndex, cellParaIndex: 0 },
+      ]), cellIndex === 0 ? '1순위' : '');
+    }
+  }
+
+  private key(path: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>): string {
+    return JSON.stringify(path);
+  }
+
+  override getTableControlIndices(_sec: number, para: number): number[] {
+    return para === 0 ? [5] : [];
+  }
+
+  override getTableControlIndicesByPath(_sec: number, _para: number, pathJson: string): number[] {
+    const path = JSON.parse(pathJson) as Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>;
+    return path.length === 1 && path[0].controlIndex === 5
+      && path[0].cellIndex === 1 && path[0].cellParaIndex === 1 ? [0] : [];
+  }
+
+  override getTableDimensionsByPath(_sec: number, _para: number, pathJson: string) {
+    const path = JSON.parse(pathJson) as unknown[];
+    if (path.length === 1) return { rowCount: 1, colCount: 2, cellCount: 2 };
+    if (path.length === 2) return { rowCount: 1, colCount: 3, cellCount: 3 };
+    throw new Error('no table');
+  }
+
+  override getCellInfoByPath(_sec: number, _para: number, pathJson: string) {
+    const path = JSON.parse(pathJson) as Array<{ cellIndex: number }>;
+    const cellIndex = path.at(-1)?.cellIndex ?? 0;
+    return { row: 0, col: cellIndex, rowSpan: 1, colSpan: 1 };
+  }
+
+  override getCellParagraphCountByPath(_sec: number, _para: number, pathJson: string): number {
+    const path = JSON.parse(pathJson) as Array<{ controlIndex: number; cellIndex: number }>;
+    return path.length === 1 && path[0].controlIndex === 5 && path[0].cellIndex === 1 ? 2 : 1;
+  }
+
+  override getTextInCellByPath(_sec: number, _para: number, pathJson: string, offset: number, count: number): string {
+    const text = this.nestedTexts.get(pathJson);
+    if (text === undefined) throw new Error('no cell paragraph');
+    return text.slice(offset, offset + count);
+  }
+
+  override getCellParagraphLengthByPath(_sec: number, _para: number, pathJson: string): number {
+    const text = this.nestedTexts.get(pathJson);
+    if (text === undefined) throw new Error('no cell paragraph');
+    return text.length;
+  }
+
+  override insertTextInCellByPath(_sec: number, _para: number, pathJson: string, offset: number, text: string): string {
+    const current = this.nestedTexts.get(pathJson);
+    if (current === undefined) throw new Error('no cell paragraph');
+    this.nestedTexts.set(pathJson, current.slice(0, offset) + text + current.slice(offset));
+    return '{"ok":true}';
+  }
+
+  override deleteTextInCellByPath(_sec: number, _para: number, pathJson: string, offset: number, count: number): string {
+    const current = this.nestedTexts.get(pathJson);
+    if (current === undefined) throw new Error('no cell paragraph');
+    this.nestedTexts.set(pathJson, current.slice(0, offset) + current.slice(offset + count));
+    return '{"ok":true}';
+  }
+
+  override saveSnapshot(): number {
+    const id = this.nextSnapshotId++;
+    this.nestedSnapshots.set(id, new Map(this.nestedTexts));
+    return id;
+  }
+
+  override restoreSnapshot(id: number): void {
+    const snapshot = this.nestedSnapshots.get(id);
+    if (!snapshot) throw new Error('no snapshot');
+    this.nestedTexts = new Map(snapshot);
+  }
+
+  override discardSnapshot(id: number): void {
+    this.nestedSnapshots.delete(id);
+  }
+}
+
 function sampleDocument(): FakeDocument {
   return new FakeDocument(
     [['회의비 사전 신청서', '', '아래와 같이 신청합니다.']],
@@ -168,9 +287,17 @@ function sampleDocument(): FakeDocument {
 }
 
 test('경로 문법은 본문 문단과 표 셀을 구분해 왕복한다', () => {
-  assert.deepEqual(parsePath('s0/p3'), { sec: 0, para: 3, cell: null });
+  assert.deepEqual(parsePath('s0/p3'), { sec: 0, para: 3, cells: null });
   assert.deepEqual(parsePath('s1/p2/c0/cell5/p0'), {
-    sec: 1, para: 2, cell: { ctrl: 0, cellIndex: 5, cellPara: 0 },
+    sec: 1, para: 2, cells: [{ ctrl: 0, cellIndex: 5, cellPara: 0 }],
+  });
+  assert.deepEqual(parsePath('s0/p0/c2/cell17/p2/c0/cell4/p0'), {
+    sec: 0,
+    para: 0,
+    cells: [
+      { ctrl: 2, cellIndex: 17, cellPara: 2 },
+      { ctrl: 0, cellIndex: 4, cellPara: 0 },
+    ],
   });
   assert.equal(paragraphPath(0, 3), 's0/p3');
   assert.equal(cellPath(1, 2, 0, 5, 0), 's1/p2/c0/cell5/p0');
@@ -179,6 +306,7 @@ test('경로 문법은 본문 문단과 표 셀을 구분해 왕복한다', () =
   assert.equal(parsePath('s0'), null);
   assert.equal(parsePath('p0'), null);
   assert.equal(parsePath('s0/p1/c0/cell2'), null);
+  assert.equal(parsePath('s0/p1/c0/cell2/p0/trailing'), null);
   assert.equal(parsePath(''), null);
 });
 
@@ -209,17 +337,60 @@ test('표가 컨트롤 0이 아닌 곳에 있어도 찾는다', () => {
   // 보던 초기 구현은 개요를 조용히 비워 반환했고, 단위 테스트는 대역이
   // 컨트롤 0을 쓰는 바람에 통과했다.
   const doc = sampleDocument();
-  doc.tableControlIndex = 2;
+  doc.tableControlIndex = 9;
 
   const outline = buildOutline(doc);
   const table = outline.sections[0].tables[0];
   assert.ok(table, '컨트롤 0이 아니어도 표를 찾아야 한다');
-  assert.equal(table.path, 's0/p1/c2');
+  assert.equal(table.path, 's0/p1/c9');
   assert.deepEqual(table.cells.map((cell) => cell.path), [
-    's0/p1/c2/cell0/p0', 's0/p1/c2/cell1/p0', 's0/p1/c2/cell2/p0', 's0/p1/c2/cell3/p0',
+    's0/p1/c9/cell0/p0', 's0/p1/c9/cell1/p0', 's0/p1/c9/cell2/p0', 's0/p1/c9/cell3/p0',
   ]);
   // 그 주소로 읽기·쓰기까지 이어져야 의미가 있다.
-  assert.equal(readPath(doc, 's0/p1/c2/cell2/p0'), '회의 목적');
+  assert.equal(readPath(doc, 's0/p1/c9/cell2/p0'), '회의 목적');
+});
+
+test('outline은 셀의 모든 문단과 중첩 표를 재귀적으로 노출한다', () => {
+  const outline = buildOutline(new NestedFakeDocument());
+  assert.equal(outline.truncated, false);
+  assert.deepEqual(outline.sections[0].tables.map((table) => table.path), [
+    's0/p0/c5',
+    's0/p0/c5/cell1/p1/c0',
+  ]);
+  assert.deepEqual(outline.sections[0].tables[0].cells.map((cell) => cell.path), [
+    's0/p0/c5/cell0/p0',
+    's0/p0/c5/cell1/p0',
+  ]);
+  // 외곽 cell1/p1은 중첩 표만 담는 빈 컨테이너라 편집 노드에서 제외한다.
+  assert.equal(outline.sections[0].tables[0].cells.some((cell) => cell.path.endsWith('/cell1/p1')), false);
+  assert.deepEqual(outline.sections[0].tables[1].cells.map((cell) => cell.path), [
+    's0/p0/c5/cell1/p1/c0/cell0/p0',
+    's0/p0/c5/cell1/p1/c0/cell1/p0',
+    's0/p0/c5/cell1/p1/c0/cell2/p0',
+  ]);
+  assert.equal(outline.nodeCount, 5);
+});
+
+test('중첩 표 셀은 같은 경로로 읽고 원자적으로 쓴다', () => {
+  const doc = new NestedFakeDocument();
+  const path = 's0/p0/c5/cell1/p1/c0/cell1/p0';
+  assert.equal(readPath(doc, path), '');
+  const result = applyEdits(doc, [{ path, expectedText: '', newText: 'C언어 중급' }]);
+  assert.equal(result.ok, true);
+  assert.equal(readPath(doc, path), 'C언어 중급');
+});
+
+test('중첩 표 배치의 후속 편집이 실패하면 앞선 편집도 복원한다', () => {
+  const doc = new NestedFakeDocument();
+  const first = 's0/p0/c5/cell1/p1/c0/cell1/p0';
+  const second = 's0/p0/c5/cell1/p1/c0/cell2/p0';
+  const result = applyEdits(doc, [
+    { path: first, expectedText: '', newText: 'C언어 중급' },
+    { path: second, expectedText: '틀린 값', newText: '웹 개발 기초' },
+  ]);
+  assert.equal(result.ok, false);
+  assert.equal(readPath(doc, first), '');
+  assert.equal(readPath(doc, second), '');
 });
 
 test('구역은 전체 문단 수를 함께 알려 빈 개요의 원인을 구분한다', () => {
