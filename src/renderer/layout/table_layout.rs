@@ -78,24 +78,13 @@ use crate::model::shape::{
     Caption, CaptionDirection, CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertRelTo,
 };
 
-fn caption_has_topbottom_picture(caption: &Caption) -> bool {
-    caption.paragraphs.iter().any(|para| {
-        para.controls.iter().any(|ctrl| {
-            matches!(
-                ctrl,
-                Control::Picture(pic) if matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
-            )
-        })
-    })
-}
-
 fn should_render_table_caption(table: &crate::model::table::Table, depth: usize) -> bool {
-    depth == 0
-        || (depth == 1
-            && table
-                .caption
-                .as_ref()
-                .is_some_and(caption_has_topbottom_picture))
+    // [파리티 라운드3 T1] 한컴은 중첩 표(depth≥1)의 텍스트 캡션도 그린다 —
+    // 550 sec2 6×7 표 BOTTOM 캡션(한컴 PDF p73 실증)이 depth==0 게이트에
+    // 막혀 통째로 소실됐다(모자란 한글 43 의 뿌리). 흐름 예약은
+    // calc_nested_table_height 의 caption_extra 가 짝으로 계상한다.
+    let _ = (table, depth);
+    true
 }
 
 fn caption_flow_extra(caption: &Option<Caption>, caption_height: f64, caption_spacing: f64) -> f64 {
@@ -379,6 +368,7 @@ pub(super) struct CellUnit {
 }
 
 /// 중첩 표 부분 렌더링을 위한 행 범위 정보
+#[derive(Debug)]
 pub(crate) struct NestedTableSplit {
     pub start_row: usize,
     pub end_row: usize,
@@ -389,6 +379,12 @@ pub(crate) struct NestedTableSplit {
     pub flow_height: f64,
     /// start_row 내부 오프셋: 이미 이전 페이지에 렌더링된 start_row 상단 부분의 높이
     pub offset_within_start: f64,
+    /// [파리티 라운드3 T1] 이 조각이 표의 머리(첫 행 상단)를 싣는가 — Top 캡션 앵커.
+    /// 조각 파라미터(start_row/visible_height)는 창 클립 인공물일 수 있어(예: mixed
+    /// 꼬리 창의 end_row=1, avail=0 컷의 end_row 축소) 생산자가 아는 사실을 명시로 싣는다.
+    pub holds_table_start: bool,
+    /// 이 조각이 표의 끝(마지막 행 하단)을 흐름상 싣는가 — Bottom 캡션 앵커.
+    pub holds_table_end: bool,
 }
 
 /// 중첩 표에서 pixel offset/space를 행 범위로 변환한다.
@@ -407,6 +403,8 @@ pub(crate) fn calc_nested_split_rows(
             visible_height: 0.0,
             flow_height: 0.0,
             offset_within_start: 0.0,
+            holds_table_start: false,
+            holds_table_end: false,
         };
     }
 
@@ -468,12 +466,18 @@ pub(crate) fn calc_nested_split_rows(
         space.min(range_height)
     };
 
+    let unbounded = !(space > 0.0 && space < f64::MAX);
     NestedTableSplit {
         start_row,
         end_row,
         visible_height,
         flow_height: visible_height,
         offset_within_start: 0.0,
+        holds_table_start: offset <= 0.0,
+        // 창이 마지막 행 하단까지 닿을 때만 표 끝을 실은 조각이다 — space=0
+        // (avail 소진) 컷의 end_row 축소 인공물은 여기서 걸러진다.
+        holds_table_end: end_row == row_count
+            && (unbounded || offset + space + 0.5 >= row_y[row_count]),
     }
 }
 
@@ -979,28 +983,54 @@ impl LayoutEngine {
         }
 
         // 중첩 표 부분 렌더링: row_y를 시프트하여 보이는 행만 표시
-        let (row_y_shift, split_row_range, split_y_offset) = if let Some(split) = nested_split {
-            let sr = split.start_row.min(row_count);
-            let er = split.end_row.min(row_count);
-            let shift = row_y[sr];
-            // row_y를 시프트하여 start_row가 0에서 시작하도록 함
-            for y in row_y.iter_mut() {
-                *y -= shift;
-            }
-            // end_row 이후의 모든 row_y를 캡하여 spanning 셀이 보이는 영역을 초과하지 않도록 함
-            let cap_y = if split.visible_height > 0.0 {
-                split.visible_height.min(row_y[er])
+        // [파리티 라운드3 T1] split 조각의 캡션 중복 방지용 플래그도 여기서 계산:
+        // Top 캡션은 첫 조각(표 머리를 실은 조각)에만, Bottom 캡션은 마지막
+        // 행 끝까지 실은 조각에만 그린다 — 조각마다 그리면 한컴에 없는 사본이
+        // 생긴다 (550 sec2 캡션이 p72·p73 두 번 실증).
+        let (row_y_shift, split_row_range, split_y_offset, split_holds_start, split_holds_end) =
+            if let Some(split) = nested_split {
+                let sr = split.start_row.min(row_count);
+                let er = split.end_row.min(row_count);
+                let shift = row_y[sr];
+                // row_y를 시프트하여 start_row가 0에서 시작하도록 함
+                for y in row_y.iter_mut() {
+                    *y -= shift;
+                }
+                // end_row 이후의 모든 row_y를 캡하여 spanning 셀이 보이는 영역을 초과하지 않도록 함
+                let full_end = row_y[er];
+                let cap_y = if split.visible_height > 0.0 {
+                    split.visible_height.min(full_end)
+                } else {
+                    full_end
+                };
+                for i in er..=row_count {
+                    row_y[i] = cap_y;
+                }
+                let holds_start = split.holds_table_start;
+                let holds_end = split.holds_table_end;
+                // [진단] RHWP_DIAG_CAPTION=1 — 캡션 있는 표의 split 조각 파라미터 (동작 불변)
+                if std::env::var("RHWP_DIAG_CAPTION").is_ok()
+                    && table
+                        .caption
+                        .as_ref()
+                        .is_some_and(|c| !c.paragraphs.is_empty())
+                {
+                    eprintln!(
+                        "CAPTION_SPLIT tbl_rows={row_count} sr={sr} er={er} off={:.1} vis={:.1} full_end={full_end:.1} cap_y={cap_y:.1} holds_start={holds_start} holds_end={holds_end}",
+                        split.offset_within_start, split.visible_height
+                    );
+                }
+                // start_row 내부 오프셋: 이미 이전 페이지에 표시된 부분만큼 위로 올림
+                (
+                    shift,
+                    Some((sr, er)),
+                    split.offset_within_start,
+                    holds_start,
+                    holds_end,
+                )
             } else {
-                row_y[er]
+                (0.0, None, 0.0, true, true)
             };
-            for i in er..=row_count {
-                row_y[i] = cap_y;
-            }
-            // start_row 내부 오프셋: 이미 이전 페이지에 표시된 부분만큼 위로 올림
-            (shift, Some((sr, er)), split.offset_within_start)
-        } else {
-            (0.0, None, 0.0)
-        };
 
         let row_col_x = build_row_col_x(
             table,
@@ -1059,7 +1089,15 @@ impl LayoutEngine {
             paper_w,
         );
 
-        let render_caption = should_render_table_caption(table, depth);
+        let render_caption = should_render_table_caption(table, depth)
+            && match table.caption.as_ref().map(|c| c.direction) {
+                // Top 캡션은 표 머리를 실은 조각에만 (분할 사본 방지).
+                Some(CaptionDirection::Top) => split_holds_start,
+                // Bottom(및 세로 정렬 기준이 표 전체인 Left/Right)은 표 끝을
+                // 실은 조각에만.
+                Some(_) => split_holds_end,
+                None => true,
+            };
         let (caption_height, caption_spacing) = if render_caption {
             let ch = self.calculate_caption_height(&table.caption, styles);
             let cs = table
@@ -4336,10 +4374,23 @@ impl LayoutEngine {
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         let om_top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
         let om_bottom = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
+        // [파리티 라운드3 T1] 중첩 표의 Top/Bottom 캡션은 표 블록과 함께 흐르는
+        // 별도 영역 — 렌더(should_render_table_caption)와 짝으로 흐름 예약에도
+        // 계상해야 뒤 문단이 캡션을 덮지 않는다 (550 sec2 6×7 표 캡션 실증).
+        let caption_extra = {
+            let cap_h = self.calculate_caption_height(&table.caption, styles);
+            let cap_s = table
+                .caption
+                .as_ref()
+                .map(|c| hwpunit_to_px(c.spacing as i32, self.dpi))
+                .unwrap_or(0.0);
+            caption_flow_extra(&table.caption, cap_h, cap_s)
+        };
         row_heights.iter().sum::<f64>()
             + cell_spacing * (row_count.saturating_sub(1) as f64)
             + om_top
             + om_bottom
+            + caption_extra
     }
 
     /// 셀 내 중첩 표가 실제로 차지하는 하단 위치를 계산한다.
@@ -7424,6 +7475,19 @@ impl LayoutEngine {
         } else {
             flow_visible.min(remaining)
         };
+        // [파리티 라운드3 T1] 캡션 앵커용 — end_row=1 은 창 클립 인공물이라
+        // 행 범위로는 표 끝을 판별할 수 없다. 유닛 창 기준으로: 비-trailing
+        // 조각 유닛이 창 앞/뒤에 남아 있지 않으면 이 창이 표 머리/끝을 싣는다.
+        let content_unit_outside = |range: std::ops::Range<usize>| {
+            units.iter().enumerate().any(|(idx, u)| {
+                range.contains(&idx)
+                    && u.para_idx == para_idx
+                    && u.mixed_nested_fragment
+                    && !u.mixed_nested_trailing
+            })
+        };
+        let holds_table_start = !content_unit_outside(0..lo);
+        let holds_table_end = !content_unit_outside(hi..units.len());
         Some(NestedTableSplit {
             start_row: 0,
             end_row: 1,
@@ -7433,6 +7497,8 @@ impl LayoutEngine {
             // border wraps only that tail line and the following paragraph in
             // the host cell starts below it.
             offset_within_start,
+            holds_table_start,
+            holds_table_end,
         })
     }
 
@@ -9596,5 +9662,95 @@ mod row_cut_tests {
             table_scan_count, 0,
             "flag update and cache rewarm must not rescan the owner table"
         );
+    }
+
+    #[test]
+    fn nested_table_caption_renders_and_reserves_flow() {
+        // [파리티 라운드3 T1] 한컴은 중첩 표의 텍스트 캡션도 그린다 — 렌더
+        // (should_render_table_caption)와 흐름 예약(calc_nested_table_height)은
+        // 짝이다. 예약 없이 렌더만 켜면 뒤 문단이 캡션을 덮고, 렌더 없이
+        // 예약만 하면 빈 갭이 남는다 (550 sec2 6×7 표 BOTTOM 캡션 실증).
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let base = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                width: 8000,
+                height: 1200,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let caption = crate::model::shape::Caption {
+            direction: crate::model::shape::CaptionDirection::Bottom,
+            spacing: 283,
+            paragraphs: vec![Paragraph {
+                text: "캡션".to_string(),
+                char_count: 2,
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: 1100,
+                    line_spacing: 604,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let plain_h = eng.calc_nested_table_height(&base, &styles);
+        let mut with_cap = base.clone();
+        with_cap.caption = Some(caption.clone());
+        assert!(
+            super::should_render_table_caption(&with_cap, 1),
+            "중첩 표(depth≥1)의 텍스트 캡션도 렌더해야 한다"
+        );
+        let bottom_h = eng.calc_nested_table_height(&with_cap, &styles);
+        // 캡션 줄(1100 hwpunit ≈ 14.7px) + gap(283 ≈ 3.8px) 이상 커져야 한다.
+        assert!(
+            bottom_h - plain_h >= 18.0,
+            "Bottom 캡션은 흐름 예약에 계상: plain {plain_h:.1} → with-cap {bottom_h:.1}"
+        );
+
+        // Left/Right 캡션은 표 높이 흐름에 영향 없음 (caption_flow_extra 규약).
+        let mut with_left = base.clone();
+        let mut left_cap = caption;
+        left_cap.direction = crate::model::shape::CaptionDirection::Left;
+        with_left.caption = Some(left_cap);
+        let left_h = eng.calc_nested_table_height(&with_left, &styles);
+        assert!(
+            (left_h - plain_h).abs() < 0.01,
+            "Left 캡션은 흐름 예약 불변: plain {plain_h:.1} vs left {left_h:.1}"
+        );
+    }
+
+    #[test]
+    fn nested_split_caption_anchor_flags() {
+        // [파리티 라운드3 T1] Bottom 캡션은 표 끝을 실은 조각에만, Top 캡션은
+        // 머리를 실은 조각에만 — 조각 파라미터(end_row 등)는 창 클립 인공물일
+        // 수 있어 생산자가 holds_table_start/end 로 명시한다. avail=0 컷
+        // (550 p72 과적 조각: space=0 → end_row 축소)이 표 끝으로 오판되면
+        // 캡션이 소실되거나 중복된다.
+        let rows = [30.0f64, 30.0, 30.0];
+        // 전체 창: 머리·끝 다 싣는다.
+        let full = super::calc_nested_split_rows(&rows, 0.0, 0.0, 200.0);
+        assert!(full.holds_table_start && full.holds_table_end, "{full:?}");
+        // avail=0 인공물 창: 끝을 싣지 않는다 (space=0 이 end_row 를 줄여도).
+        let starved = super::calc_nested_split_rows(&rows, 0.0, 0.0, 0.0);
+        assert!(
+            starved.holds_table_start && !starved.holds_table_end,
+            "{starved:?}"
+        );
+        // 첫 창(끝 미달): 머리만.
+        let head = super::calc_nested_split_rows(&rows, 0.0, 0.0, 45.0);
+        assert!(head.holds_table_start && !head.holds_table_end, "{head:?}");
+        // 연속 창(끝까지): 끝만.
+        let tail = super::calc_nested_split_rows(&rows, 0.0, 45.0, 60.0);
+        assert!(!tail.holds_table_start && tail.holds_table_end, "{tail:?}");
     }
 }

@@ -1247,6 +1247,8 @@ impl LayoutEngine {
                                                 visible_height: split.visible_height,
                                                 flow_height: split.flow_height,
                                                 offset_within_start: split.offset_within_start,
+                                                holds_table_start: split.holds_table_start,
+                                                holds_table_end: split.holds_table_end,
                                             })
                                         } else if let Some((su, eu)) = nested_cut_range {
                                             // [Task #1073] 페이지네이션 컷(중첩행 범위)으로 직접
@@ -1288,6 +1290,8 @@ impl LayoutEngine {
                                                 visible_height: vis_h,
                                                 flow_height: vis_h,
                                                 offset_within_start: 0.0,
+                                                holds_table_start: start_row == 0,
+                                                holds_table_end: end_row >= nrow,
                                             })
                                         } else if let Some((su, eu)) = cut_units.filter(|_| {
                                             // [parity r1 / #1073 확장] mixed 셀(텍스트+중첩 표)도
@@ -1354,6 +1358,8 @@ impl LayoutEngine {
                                                     visible_height: vis_h,
                                                     flow_height: vis_h,
                                                     offset_within_start: 0.0,
+                                                    holds_table_start: start_row == 0,
+                                                    holds_table_end: end_row >= nrow,
                                                 })
                                                 }
                                             } else {
@@ -1370,6 +1376,8 @@ impl LayoutEngine {
                                                     visible_height: 0.0,
                                                     flow_height: 0.0,
                                                     offset_within_start: 0.0,
+                                                    holds_table_start: false,
+                                                    holds_table_end: false,
                                                 })
                                             }
                                         } else if nested_h > available_h + 0.5 {
@@ -1402,6 +1410,28 @@ impl LayoutEngine {
                                             || s.offset_within_start > 0.5
                                             || s.visible_height + 0.5 < nested_h
                                     });
+                                    // [진단] RHWP_DIAG_CAPTION=1 — 캡션 표 split 생산 분기 (동작 불변)
+                                    if std::env::var("RHWP_DIAG_CAPTION").is_ok()
+                                        && nested_table
+                                            .caption
+                                            .as_ref()
+                                            .is_some_and(|c| !c.paragraphs.is_empty())
+                                    {
+                                        let branch = if mixed_nested_split.is_some() {
+                                            "mixed_copy"
+                                        } else if nested_cut_range.is_some() {
+                                            "nested_cut"
+                                        } else if split_info.is_some() {
+                                            "mixedcut_or_calc"
+                                        } else {
+                                            "none"
+                                        };
+                                        eprintln!(
+                                            "CAPTION_PRODUCER branch={branch} split={:?} nested_h={nested_h:.1} avail={available_h:.1} filtered_out={}",
+                                            split_info.as_ref().map(|s| (s.start_row, s.end_row, s.visible_height, s.flow_height, s.offset_within_start)),
+                                            split_info.is_some() && split_ref.is_none(),
+                                        );
+                                    }
 
                                     let nested_ctx = cell_context_opt.as_ref().map(|ctx| {
                                         let mut new_ctx = ctx.clone();
