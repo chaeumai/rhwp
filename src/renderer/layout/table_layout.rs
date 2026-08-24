@@ -928,14 +928,43 @@ impl LayoutEngine {
 
         // ── 1. 열 폭 + 행 높이 계산 ──
         let col_widths = self.resolve_column_widths(table, col_count);
-        let row_heights = self.resolve_row_heights(
-            table,
-            col_count,
-            row_count,
-            measured_table,
-            styles,
-            depth > 0 || table.common.treat_as_char,
-        );
+        let row_heights = {
+            let mut rh = self.resolve_row_heights(
+                table,
+                col_count,
+                row_count,
+                measured_table,
+                styles,
+                depth > 0 || table.common.treat_as_char,
+            );
+            // [파리티 라운드2 T3] 셀 안 중첩 표에서 per-행 cellSz 선언이 낡아
+            // (편집 잔재) 행합이 표 선언 sz 를 크게 웃돌면, 한컴은 각 행을
+            // 콘텐츠 높이로 그려 표 전체를 선언 sz 에 맞춘다 — 550 p25 [표 4]
+            // 실측: cellSz 합 340.1 vs 표 sz 245.5, 한컴 렌더 245.5(행별
+            // 콘텐츠, r6 선언 105.6 → 실렌더 18.4). 선언대로 그리면 흐름
+            // 예약(sz 기준)을 넘쳐 뒤 문단을 덮거나 컷 창 밖 행이 소실된다.
+            // 콘텐츠 합이 선언 sz 에 들어맞는(= sz 가 콘텐츠 기록임이 실증된)
+            // 경우에만 콘텐츠 기준으로 교체 — 정합 문서([표 1]: 행합 == sz)는
+            // 게이트를 안 넘어 불변.
+            if depth >= 1 && measured_table.is_none() && table.common.height > 0 {
+                let sz_h = hwpunit_to_px(table.common.height as i32, self.dpi);
+                let sum: f64 = rh.iter().sum();
+                if sz_h > 1.0 && sum > sz_h * 1.05 + 4.0 {
+                    let content = self.resolve_row_heights_content_only(
+                        table,
+                        col_count,
+                        row_count,
+                        styles,
+                        depth > 0 || table.common.treat_as_char,
+                    );
+                    let csum: f64 = content.iter().sum();
+                    if csum > 0.5 && csum <= sz_h + 12.0 {
+                        rh = content;
+                    }
+                }
+            }
+            rh
+        };
 
         // ── 2. 누적 위치 계산 ──
         let mut col_x = vec![0.0f64; col_count + 1];
@@ -1599,6 +1628,23 @@ impl LayoutEngine {
             styles,
             true,
             relaxed_pad,
+            false,
+        )
+    }
+
+    /// [파리티 라운드2 T3] 선언(cellSz·병합 선언 높이)을 전부 무시하고 콘텐츠
+    /// 로만 행높이를 산출한다 — 낡은 per-행 선언이 표 선언 sz 와 모순인 중첩
+    /// 표(550 [표 4])의 한컴 정합 렌더용. layout_table 의 게이트에서만 쓴다.
+    pub(super) fn resolve_row_heights_content_only(
+        &self,
+        table: &crate::model::table::Table,
+        col_count: usize,
+        row_count: usize,
+        styles: &ResolvedStyleSet,
+        relaxed_pad: bool,
+    ) -> Vec<f64> {
+        self.resolve_row_heights_with_common_fit(
+            table, col_count, row_count, None, styles, false, relaxed_pad, true,
         )
     }
 
@@ -1619,6 +1665,7 @@ impl LayoutEngine {
             styles,
             false,
             relaxed_pad,
+            false,
         )
     }
 
@@ -1634,6 +1681,7 @@ impl LayoutEngine {
                 .all(|p| !crate::renderer::para_has_no_stored_line_segs(p))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_row_heights_with_common_fit(
         &self,
         table: &crate::model::table::Table,
@@ -1643,6 +1691,9 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         fit_common_height: bool,
         relaxed_pad: bool,
+        // [파리티 라운드2 T3] true 면 선언(cellSz·병합 선언)을 전부 무시하고
+        // 콘텐츠로만 산출 (resolve_row_heights_content_only 전용).
+        ignore_declared: bool,
     ) -> Vec<f64> {
         if let Some(mt) = measured_table {
             let mut rh = mt.row_heights.clone();
@@ -1655,16 +1706,18 @@ impl LayoutEngine {
 
         // 1단계: row_span==1인 셀에서 개별 행 높이 추출
         let mut row_heights = vec![0.0f64; row_count];
-        for cell in &table.cells {
-            if table.local_resize_cols.contains(&cell.col) {
-                continue;
-            }
-            if cell.row_span == 1 && (cell.row as usize) < row_count {
-                let r = cell.row as usize;
-                if cell.height < 0x80000000 {
-                    let h = hwpunit_to_px(cell.height as i32, self.dpi);
-                    if h > row_heights[r] {
-                        row_heights[r] = h;
+        if !ignore_declared {
+            for cell in &table.cells {
+                if table.local_resize_cols.contains(&cell.col) {
+                    continue;
+                }
+                if cell.row_span == 1 && (cell.row as usize) < row_count {
+                    let r = cell.row as usize;
+                    if cell.height < 0x80000000 {
+                        let h = hwpunit_to_px(cell.height as i32, self.dpi);
+                        if h > row_heights[r] {
+                            row_heights[r] = h;
+                        }
                     }
                 }
             }
@@ -1717,7 +1770,8 @@ impl LayoutEngine {
         }
 
         // 2단계: 병합 셀에서 미지 행 높이를 반복적으로 해결
-        {
+        // ([파리티 라운드2 T3] ignore_declared 면 병합 선언 높이도 무시 — 2-b 만)
+        if !ignore_declared {
             let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
             for cell in &table.cells {
                 if table.local_resize_cols.contains(&cell.col) {
@@ -7333,6 +7387,28 @@ impl LayoutEngine {
         if total <= 0.5 || visible <= 0.5 {
             return None;
         }
+        // [파리티 라운드2 T3] 창이 이 문단의 중첩 조각 전체를 담으면(앞 소비 0 ·
+        // 가시 = 전체) 분할이 아니다 — None 으로 통렌더한다. 종전에는 항상
+        // end_row=1 split 이 만들어져 layout_table 이 row_y 를 행 0 다음에서
+        // cap, 행 1+ 가 전부 증발했다 (550 p25 [표 4]: 11행 중 r0 만 렌더,
+        // '녹음재생' 등 전 91쪽 부재 — 라운드2 정찰 실측). 호스트 문단의 가시
+        // 줄 유닛도 창 안일 때만 — 캡션이 이전 조각에 있는 꼬리 창은 split
+        // 경로를 유지해야 문단 스킵 게이트(start_line>=end_line)에 안 걸린다.
+        if offset <= 0.5 && (total - flow_visible).abs() <= 0.5 {
+            let host_line_in_window = units
+                .iter()
+                .enumerate()
+                .any(|(i, u)| {
+                    i >= lo
+                        && i < hi
+                        && u.para_idx == para_idx
+                        && !u.mixed_nested_fragment
+                        && u.vis_start < u.vis_end
+                });
+            if host_line_in_window {
+                return None;
+            }
+        }
         let remaining = (total - offset).max(0.0);
         let flow_height = if is_offset_continuation {
             flow_visible + first_visible_content_height
@@ -8246,6 +8322,114 @@ mod row_cut_tests {
             "겹침 배치는 종전 nested_h 모델 유지: {:.1}",
             host_unit.height
         );
+    }
+
+    #[test]
+    fn stale_declared_nested_rows_resolve_to_content_only() {
+        // [파리티 라운드2 T3] 낡은 per-행 cellSz(편집 잔재)가 콘텐츠보다 훨씬
+        // 클 때, content_only 산출은 선언을 무시하고 콘텐츠 높이를 내야 한다
+        // (550 p25 [표 4]: r6 선언 105.6 vs 한컴 실렌더 18.4).
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let mk_cell = |row: u16, decl_h: u32| Cell {
+            row,
+            col: 0,
+            row_span: 1,
+            col_span: 1,
+            width: 10000,
+            height: decl_h,
+            paragraphs: vec![Paragraph {
+                text: "가".to_string(),
+                char_count: 1,
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: 1200,
+                    line_spacing: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let t = Table {
+            row_count: 2,
+            col_count: 1,
+            cells: vec![mk_cell(0, 1380), mk_cell(1, 7920)],
+            ..Default::default()
+        };
+        let declared = eng.resolve_row_heights(&t, 1, 2, None, &styles, true);
+        assert!(
+            declared[1] > 100.0,
+            "선언 경로는 낡은 cellSz(105.6)를 따른다: {:?}",
+            declared
+        );
+        let content = eng.resolve_row_heights_content_only(&t, 1, 2, &styles, true);
+        assert!(
+            content[1] < 30.0,
+            "콘텐츠 경로는 선언을 무시하고 실제 줄 높이를 내야 한다: {:?}",
+            content
+        );
+    }
+
+    #[test]
+    fn mixed_nested_split_full_window_renders_whole_table() {
+        // [파리티 라운드2 T3] 컷 창이 호스트 줄과 중첩 조각 전체를 담으면
+        // split 이 아니라 None(통렌더)이어야 한다 — 종전 end_row=1 고정 split
+        // 이 행 1+ 를 증발시켰다 (550 p25 [표 4] 11행 중 r0 만 렌더).
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let nested = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                width: 8000,
+                height: 3000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut host = Paragraph {
+            text: "캡션".to_string(),
+            char_count: 2,
+            line_segs: vec![LineSeg {
+                vertical_pos: 0,
+                line_height: 1200,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        host.controls
+            .push(crate::model::control::Control::Table(Box::new(nested)));
+        let t = table(vec![cell(0, 0, vec![host, visible_text_para(1, 5000)])]);
+        let units = eng.cell_units(&t.cells[0], &t, &styles);
+        let n_frag = units.iter().filter(|u| u.mixed_nested_fragment).count();
+        assert!(n_frag > 0, "중첩 조각 유닛이 있어야 한다");
+        // 전체 창 → None (통렌더)
+        let full = eng.mixed_nested_split_from_cut(&t.cells[0], &t, &styles, 0, units.len(), 0);
+        assert!(
+            full.is_none(),
+            "호스트 줄+조각 전체를 담은 창은 통렌더여야 한다 (end_row={:?})",
+            full.map(|s| s.end_row)
+        );
+        // 꼬리 창(호스트 줄 제외, 조각만) → split 유지
+        let first_frag = units
+            .iter()
+            .position(|u| u.mixed_nested_fragment)
+            .unwrap();
+        let tail = eng.mixed_nested_split_from_cut(
+            &t.cells[0],
+            &t,
+            &styles,
+            first_frag,
+            units.len(),
+            0,
+        );
+        assert!(tail.is_some(), "호스트 줄 없는 꼬리 창은 split 경로 유지");
     }
 
     #[test]
