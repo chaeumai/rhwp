@@ -6914,8 +6914,17 @@ impl LayoutEngine {
         let hard_break_unit = &units[*j];
         let prev = &units[*j - 1];
         if prev.para_idx == hard_break_unit.para_idx {
-            *h -= prev.height;
-            *j -= 1;
+            // [파리티 라운드2 T4] #1116 의 취지는 "같은 문단 줄 **하나만** 조각에
+            // 고립"을 막는 것 — 같은 문단 줄이 이미 여러 개 담겨 있으면 저장
+            // lineseg 가 그 배치를 기록한 것이므로 되감지 않는다 (550 r3c2
+            // p11: 한컴은 4줄 중 3줄을 p19 에 두고 4줄째에서 리셋 — 무조건
+            // 되감기가 3줄째를 p20 으로 밀어 p19 Δ−35 를 만들었다).
+            let prev_is_lone_same_para_line =
+                *j < start + 2 || units[*j - 2].para_idx != prev.para_idx;
+            if prev_is_lone_same_para_line {
+                *h -= prev.height;
+                *j -= 1;
+            }
             return;
         }
 
@@ -8322,6 +8331,62 @@ mod row_cut_tests {
             "겹침 배치는 종전 nested_h 모델 유지: {:.1}",
             host_unit.height
         );
+    }
+
+    #[test]
+    fn hard_break_rewind_only_for_lone_same_para_line() {
+        // [파리티 라운드2 T4] #1116 되감기는 "같은 문단 줄 하나만 고립"일 때만.
+        // 저장 vpos 리셋 직전에 같은 문단 줄이 여러 개 담겨 있으면 저장
+        // lineseg 가 그 배치를 기록한 것 — 되감으면 한컴보다 한 줄 일찍
+        // 끊긴다 (550 r3c2 p11: 4줄 중 3줄 p19 유지가 정답, p19 Δ−35 실측).
+        let t = rowbreak_table(vec![cell(0, 0, vec![])]);
+        let unit = |para_idx: usize, hb: bool| super::CellUnit {
+            height: 16.0,
+            hard_break_before: hb,
+            vpos_gap_before: false,
+            para_idx,
+            vis_start: 0,
+            vis_end: 1,
+            nested_row: None,
+            mixed_nested_fragment: false,
+            mixed_nested_trailing: false,
+            mixed_nested_content_height: 0.0,
+            top_and_bottom_flow: false,
+            empty_spacer: false,
+        };
+        // 여러 줄 케이스: 리셋(hb) 직전에 같은 문단 줄 3개 — 저장 배치 유지.
+        let units_multi = vec![
+            unit(0, false),
+            unit(0, false),
+            unit(1, false),
+            unit(1, false),
+            unit(1, false),
+            unit(1, true),
+        ];
+        let (mut j, mut h) = (5usize, 80.0f64);
+        LayoutEngine::rewind_rowbreak_orphan_before_hard_break(
+            &t,
+            &units_multi,
+            0,
+            100.0,
+            false,
+            &mut j,
+            &mut h,
+        );
+        assert_eq!(j, 5, "같은 문단 줄이 여러 개면 되감지 않는다");
+        // 한 줄 케이스(#1116 원형): 리셋 직전 같은 문단 줄이 하나 — 되감기 유지.
+        let units_lone = vec![unit(0, false), unit(0, false), unit(1, false), unit(1, true)];
+        let (mut j2, mut h2) = (3usize, 48.0f64);
+        LayoutEngine::rewind_rowbreak_orphan_before_hard_break(
+            &t,
+            &units_lone,
+            0,
+            76.0,
+            false,
+            &mut j2,
+            &mut h2,
+        );
+        assert_eq!(j2, 2, "같은 문단 줄 하나만 고립되는 경우는 #1116 되감기 유지");
     }
 
     #[test]
