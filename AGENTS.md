@@ -118,9 +118,9 @@ export CARGO_PROFILE_TEST_DEBUG=0                                  # 용량 주�
 배포본은 이 트리가 아니라 본체 `hanchaeum/scripts/rhwp-selfhost/build-release.sh` 가
 만든다. 정본은 그쪽 `README.md` 의 「빌드 시간과 wasm-opt 레벨」 절이고, 여기는 요지만 둔다.
 
-- **원칙: 개발·검증·정식 배포 모두 level 인자 없이 기본값 `-O`를 쓴다.** `-O1`·`-O2`는
-  최적화 수준 비교 실험에서만 명시한다. 배포마다 다른 level을 써서 검증본과 최종본을 가르지 않는다.
-  과거 실측은 `-O1` 91초 / `-O` 409초였지만 현재 운영 결정을 바꾸는 근거로 쓰지 않는다.
+- **원칙: 개발·검증·정식 배포 모두 level 인자 없이 최소 최적화 `-O1`을 쓴다.**
+  다른 level은 최적화 수준 비교 실험에서만 명시한다. 배포마다 다른 level을 써서 검증본과
+  최종본을 가르지 않는다. 실측은 `-O1` 91초 / `-O` 409초였고 실행 속도 차이는 미미했다.
 - WASM 은 **Rust 빌드 입력의 git tree hash** 로 캐시된다(`/data/rhwp-wasm-cache`). TypeScript 만
   바꾼 커밋은 wasm-pack·wasm-opt 를 통째로 건너뛰어 전체 빌드가 ~10초다. 의심스러우면
   `--no-wasm-cache`.
