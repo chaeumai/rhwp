@@ -4432,7 +4432,25 @@ impl LayoutEngine {
     ) -> f64 {
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
-        let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles, true);
+        let mut row_heights =
+            self.resolve_row_heights(table, col_count, row_count, None, styles, true);
+        // [파리티 라운드3 J16] layout_table 의 라운드2 T3 게이트를 유닛 모델에도 — per-행 cellSz
+        // 선언이 표 선언 sz 를 크게 웃돌면(낡은 선언) 한컴은 콘텐츠 높이로 그린다. 유닛만 선언을
+        // 따르면 컷 예산이 과대해 행 중간에서 끊고 연속 조각에 잘린 잔재가 남는다
+        // (550 p74 '위임' 1×2 중첩 표: sz 44.6px vs cellSz 55.5px, 한컴 44.6 — 한 줄만 보이고
+        // p75 에 잔재 반쪽).
+        if table.common.height > 0 {
+            let sz_h = hwpunit_to_px(table.common.height as i32, self.dpi);
+            let sum: f64 = row_heights.iter().sum();
+            if sz_h > 1.0 && sum > sz_h * 1.05 + 4.0 {
+                let content =
+                    self.resolve_row_heights_content_only(table, col_count, row_count, styles, true);
+                let csum: f64 = content.iter().sum();
+                if csum > 0.5 && csum <= sz_h + 12.0 {
+                    row_heights = content;
+                }
+            }
+        }
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         let om_top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
         let om_bottom = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
@@ -6642,6 +6660,9 @@ impl LayoutEngine {
                             &mut h,
                         );
                     }
+                    if std::env::var("RHWP_CUT_DBG").is_ok() {
+                        eprintln!("CUT_DBG_BREAK reason=hard_break j={j} h={h:.1} avail={avail_height:.1}");
+                    }
                     hit_hard_break = true;
                     break;
                 }
@@ -6660,6 +6681,9 @@ impl LayoutEngine {
                     // [#1921] sliver 흡수는 with_row_offsets 경로에만 적용한다. 이 walk 는
                     // relaxed_hard_break(hard-break 조건부 무시) 의미론이라 다음 break 로의
                     // 흡수가 비정상 경계를 강제한다(86712 공식PDF 65→66 회귀 실증).
+                    if std::env::var("RHWP_CUT_DBG").is_ok() {
+                        eprintln!("CUT_DBG_BREAK reason=overflow j={j} h={h:.1} u={:.1} avail={avail_height:.1}", u.height);
+                    }
                     break;
                 }
                 if j > start
@@ -6697,7 +6721,13 @@ impl LayoutEngine {
                     &mut h,
                 )
             {
+                if std::env::var("RHWP_CUT_DBG").is_ok() {
+                    eprintln!("CUT_DBG_BREAK reason=rewind_tail_before_hb j={j} h={h:.1}");
+                }
                 hit_hard_break = true;
+            }
+            if std::env::var("RHWP_CUT_DBG").is_ok() {
+                eprintln!("CUT_DBG_END row={row} cell={i} start={start} j={j} h={h:.1} avail={avail_height:.1}");
             }
             if j < units.len() {
                 fully_consumed = false;
