@@ -11617,6 +11617,26 @@ impl TypesetEngine {
                     )
                 });
 
+        // [파리티 라운드3 T3 진단] fit 판정 분해 — 동작 불변.
+        if std::env::var("RHWP_DIAG_FIT").is_ok() {
+            eprintln!(
+                "DIAG_FIT pi={} cur_h={:.1} h_fit={:.1} avail={:.1} base_avail={:.1} safety={:.1} plain={} saved_single={} saved_list={} forced={:?} nlines={} vpos0={:?} lh0={:?} text={:?}",
+                para_idx,
+                st.current_height,
+                fmt.height_for_fit,
+                available,
+                st.base_available_height(),
+                safety,
+                st.current_height + fmt.height_for_fit <= available,
+                saved_single_line_bottom_fits,
+                saved_list_tail_body_vpos_fits,
+                forced_page_break_line,
+                fmt.line_heights.len(),
+                para.line_segs.first().map(|s| s.vertical_pos),
+                para.line_segs.first().map(|s| s.line_height),
+                para.text.chars().take(20).collect::<String>(),
+            );
+        }
         if forced_page_break_line.is_none()
             && (st.current_height + fmt.height_for_fit <= available
                 || saved_single_line_bottom_fits

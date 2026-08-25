@@ -292,6 +292,7 @@ impl DocumentCore {
     ) {
         use crate::model::control::Control;
 
+        let para_shapes_for_ladder = document.doc_info.para_shapes.clone();
         for section in &mut document.sections {
             let page_def = &section.section_def.page_def;
             let column_def = Self::find_initial_column_def(&section.paragraphs);
@@ -452,7 +453,44 @@ impl DocumentCore {
             // 명시적인 lineSegArray가 이미 계산 완료 상태인 문서는 source의 vertpos를 보존해야 한다.
             // 비-TAC TopAndBottom 표/그림이 있다는 이유만으로 section vpos를 다시 계산하면, 한컴이
             // 저장한 HWPX의 vertpos까지 덮어써 page sequence가 어긋난다 (#949 Stage 32).
-            if body_line_seg_changed {
+            // [파리티 라운드3 T3] 부분 리플로우면 저장 사다리를 보존한다 — 종전에는
+            // 한 문단이라도 합성되면 본문 전체 vpos 를 lh+ls 누적으로 재계산해,
+            // 합성되지 않은 문단의 저장 vpos(쪽 리셋 인코딩·문단 앞뒤 여백 반영)를
+            // 전부 버렸다. jbnu-002(법전원 학칙): 제목·구분선 2문단만 linesegarray
+            // 부재 → 전체 재계산 → 장 제목마다 −40px(앞 2000+뒤 1000HU 소실)·
+            // 쪽 리셋(vpos=0) 소실 → 17쪽 vs 한컴 19쪽. 저장 사다리를 유지하면
+            // p1~p6 이 한컴과 줄 단위 일치(픽셀 투영 실측). 합성된 문단만 앞 문단의
+            // 저장 끝에 이어 붙인다(뒤 문단의 저장 vpos 는 한컴이 그 문단을 이미
+            // 반영한 좌표이므로 밀지 않는다). 전 문단이 합성 대상(생성계 문서 등)
+            // 이면 종전 전체 재계산 유지.
+            let partial_reflow = body_line_seg_changed
+                && section.paragraphs.iter().enumerate().any(|(i, p)| {
+                    !p.line_segs.is_empty()
+                        && !reflowed_paras.contains(&i)
+                        && !p.line_segs.iter().all(|s| {
+                            s.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                                != 0
+                        })
+                });
+            if partial_reflow {
+                let mut prev_end: i32 = 0;
+                for (pi, para) in section.paragraphs.iter_mut().enumerate() {
+                    if reflowed_paras.contains(&pi) {
+                        let (sb, sa) = para_shapes_for_ladder
+                            .get(para.para_shape_id as usize)
+                            .map(|ps| (ps.spacing_before.max(0), ps.spacing_after.max(0)))
+                            .unwrap_or((0, 0));
+                        let mut v = if prev_end > 0 { prev_end + sb } else { prev_end };
+                        for seg in para.line_segs.iter_mut() {
+                            seg.vertical_pos = v;
+                            v += seg.line_height + seg.line_spacing;
+                        }
+                        prev_end = v + sa;
+                    } else if let Some(last) = para.line_segs.last() {
+                        prev_end = last.vertical_pos + last.line_height + last.line_spacing;
+                    }
+                }
+            } else if body_line_seg_changed {
                 let mut running_vpos: i32 = 0;
                 // [Issue #1920] 직전까지 본 "원본(비합성) lineseg 보유 문단"의 마지막 저장
                 // vpos. 결재문서류 생성기는 새 쪽 시작 문단(발신명의 틀 host)에 vpos=0 을
@@ -1913,6 +1951,80 @@ mod validate_linesegs_tests {
     use super::*;
     use crate::model::document::{Document, Section};
     use crate::model::paragraph::{LineSeg, Paragraph};
+
+    /// [파리티 라운드3 T3] 부분 리플로우(일부 문단만 linesegarray 부재)는 합성되지
+    /// 않은 문단의 저장 vpos — 쪽 리셋(vpos=0)·문단 앞뒤 여백이 반영된 한컴 좌표 —
+    /// 를 보존해야 한다. 종전 전체 재계산은 jbnu-002(법전원 학칙)에서 제목·구분선
+    /// 2문단 합성 때문에 본문 전체 사다리를 lh+ls 로 다시 써 17쪽(한컴 19쪽)이 됐다.
+    #[test]
+    fn partial_reflow_preserves_stored_vpos_of_untouched_paragraphs() {
+        let seg = |vpos: i32| LineSeg {
+            vertical_pos: vpos,
+            line_height: 1000,
+            text_height: 1000,
+            line_spacing: 500,
+            segment_width: 30000,
+            ..Default::default()
+        };
+        let text_para = |text: &str, segs: Vec<LineSeg>| Paragraph {
+            text: text.to_string(),
+            char_count: text.chars().count() as u32,
+            line_segs: segs,
+            ..Default::default()
+        };
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![
+                text_para("제목", vec![]),           // linesegarray 부재 → 합성 대상
+                text_para("본문1", vec![seg(3000)]), // 저장 vpos (앞 여백 포함 좌표)
+                text_para("본문2", vec![seg(4500)]),
+                text_para("쪽2 첫줄", vec![seg(0)]), // 저장 쪽 리셋
+                text_para("쪽2 둘째", vec![seg(1500)]),
+            ],
+            ..Default::default()
+        });
+        let styles = crate::renderer::style_resolver::resolve_styles_with_variant(
+            &doc.doc_info,
+            96.0,
+            false,
+        );
+        DocumentCore::reflow_zero_height_paragraphs(&mut doc, &styles, 96.0, true, false);
+        let v: Vec<i32> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1))
+            .collect();
+        assert!(!doc.sections[0].paragraphs[0].line_segs.is_empty(), "제목 문단은 합성돼야 한다");
+        assert_eq!(&v[1..], &[3000, 4500, 0, 1500], "합성되지 않은 문단의 저장 vpos 보존: {v:?}");
+    }
+
+    /// 전 문단이 합성 대상이면 종전대로 연속 사다리를 재계산한다.
+    #[test]
+    fn full_reflow_still_rebuilds_continuous_ladder() {
+        let text_para = |text: &str| Paragraph {
+            text: text.to_string(),
+            char_count: text.chars().count() as u32,
+            ..Default::default()
+        };
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![text_para("가"), text_para("나"), text_para("다")],
+            ..Default::default()
+        });
+        let styles = crate::renderer::style_resolver::resolve_styles_with_variant(
+            &doc.doc_info,
+            96.0,
+            false,
+        );
+        DocumentCore::reflow_zero_height_paragraphs(&mut doc, &styles, 96.0, true, false);
+        let v: Vec<i32> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1))
+            .collect();
+        assert_eq!(v[0], 0);
+        assert!(v[1] > 0 && v[2] > v[1], "연속 사다리: {v:?}");
+    }
 
     #[test]
     fn from_bytes_retains_hml_import_metadata_outside_document_ir() {
