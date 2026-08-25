@@ -32,6 +32,8 @@ const EMBED_TOOLBAR_ENTRIES: EmbedToolbarEntry[] = [
   { command: 'edit:find', glyph: '⌕', label: '찾기', title: '찾기 (Ctrl+F)' },
   { command: 'edit:find-replace', glyph: '⥂', label: '찾아 바꾸기', title: '찾아 바꾸기 (Ctrl+F2)' },
   'separator',
+  { command: 'insert:symbols', glyph: '※', label: '특수문자', title: '문자표 — 특수문자 넣기 (Alt+F10)' },
+  'separator',
   { command: 'view:zoom-out', glyph: '−', label: '축소', title: '축소 (Ctrl+-)' },
   { command: 'view:zoom-in', glyph: '+', label: '확대', title: '확대 (Ctrl++)' },
 ];

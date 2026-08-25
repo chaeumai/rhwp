@@ -19,7 +19,7 @@ function inEmbed(run: () => void): void {
 
 test('임베드에서 텍스트 편집·탐색 명령만 허용된다', () => {
   inEmbed(() => {
-    for (const id of ['edit:undo', 'edit:redo', 'edit:select-all', 'edit:find', 'view:zoom-in']) {
+    for (const id of ['edit:undo', 'edit:redo', 'edit:select-all', 'edit:find', 'view:zoom-in', 'insert:symbols']) {
       assert.equal(isCommandAllowedInEmbed(id), true, `${id} 는 허용돼야 한다`);
     }
   });
