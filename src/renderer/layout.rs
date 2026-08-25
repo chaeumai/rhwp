@@ -2921,6 +2921,29 @@ impl LayoutEngine {
                             let target_node = temp_parent.as_mut().unwrap_or(&mut mp_node);
                             match ctrl {
                                 Control::Shape(_) | Control::Equation(_) => {
+                                    // [파리티 라운드3 I4 대칭] 바탕쪽 도형도 PARA/COLUMN 기준이면
+                                    // 본문 영역 + 저장 vpos 원점 (그림 분기와 같은 규칙; 표본 0 —
+                                    // 표본 스캔 2026-08-26: 바탕쪽 도형 PARA 기준 0건, 그림만 81건).
+                                    let (sh_container, sh_y) = match ctrl {
+                                        Control::Shape(sh)
+                                            if !sh.common().treat_as_char
+                                                && (matches!(
+                                                    sh.common().vert_rel_to,
+                                                    VertRelTo::Para
+                                                ) || matches!(
+                                                    sh.common().horz_rel_to,
+                                                    HorzRelTo::Para | HorzRelTo::Column
+                                                )) =>
+                                        {
+                                            let vpos = para
+                                                .line_segs
+                                                .first()
+                                                .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                                                .unwrap_or(0.0);
+                                            (body_area, body_area.y + vpos)
+                                        }
+                                        _ => (&paper_area, paper_area.y),
+                                    };
                                     self.layout_shape(
                                         tree,
                                         target_node,
@@ -2929,10 +2952,10 @@ impl LayoutEngine {
                                         ci,
                                         section_index,
                                         styles,
-                                        &paper_area,
+                                        sh_container,
                                         body_area,
                                         &paper_area,
-                                        paper_area.y,
+                                        sh_y,
                                         Alignment::Left,
                                         bin_data_content,
                                         &std::collections::HashMap::new(),
