@@ -2128,8 +2128,31 @@ impl LayoutEngine {
         outer_section_index: Option<usize>,
         outer_hf_ref: Option<crate::renderer::render_tree::HeaderFooterImageRef>,
         is_header: bool,
+        list_vert_align: u8,
     ) {
+        // [파리티 라운드3 F1] 머리말/꼬리말 subList 세로 정렬(list_attr bit 21~22:
+        // 0 TOP·1 CENTER·2 BOTTOM). 한컴은 꼬리말 내용 블록(저장 lineseg 높이 합,
+        // 마지막 줄 spacing 제외)을 영역 안에서 그 정렬로 놓는다 — complex sec2
+        // 꼬리말(BOTTOM, 영역 267~282mm, 표 1566HU) 한컴 표 top 276.47mm =
+        // 282 − 5.52. 종전엔 항상 영역 상단(+#445 lh/2)이라 7.1mm 위에 그렸다.
+        let bottom_or_center = !is_header && (list_vert_align == 1 || list_vert_align == 2);
         let mut y_offset = area.y;
+        if bottom_or_center {
+            let mut content_h = 0.0;
+            let mut last_spacing = 0.0;
+            for para in hf_paragraphs {
+                for ls in &para.line_segs {
+                    content_h += hwpunit_to_px(ls.line_height as i32, self.dpi);
+                    last_spacing = hwpunit_to_px(ls.line_spacing as i32, self.dpi);
+                    content_h += last_spacing;
+                }
+            }
+            content_h -= last_spacing;
+            if content_h > 0.0 && content_h < area.height {
+                let slack = area.height - content_h;
+                y_offset += if list_vert_align == 2 { slack } else { slack / 2.0 };
+            }
+        }
         for (i, para) in hf_paragraphs.iter().enumerate() {
             // 테이블 컨트롤이 있으면 테이블 렌더링
             let has_table = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
@@ -2153,6 +2176,7 @@ impl LayoutEngine {
                         // [Issue #924] 머릿말에서는 적용하지 않음 — 표가 header_area 안에 정확히 위치해야 함.
                         // 꼬리말은 Task #445에서 필요하므로 유지.
                         let line_anchor_offset = if !is_header
+                            && !bottom_or_center
                             && matches!(
                                 t.common.text_wrap,
                                 crate::model::shape::TextWrap::TopAndBottom
@@ -3186,6 +3210,7 @@ impl LayoutEngine {
                                 Some(hf_ref.source_section_index),
                                 Some(outer_ref),
                                 true,
+                                ((header.list_attr >> 21) & 0x03) as u8,
                             );
                         }
                     }
@@ -3319,6 +3344,7 @@ impl LayoutEngine {
                                 Some(hf_ref.source_section_index),
                                 Some(outer_ref),
                                 false,
+                                ((footer.list_attr >> 21) & 0x03) as u8,
                             );
                         }
                     }
