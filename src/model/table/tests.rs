@@ -1154,3 +1154,41 @@ fn insert_column_inherits_shape_when_row_has_only_merged_cells() {
         assert_inherited(cell, "insert_column");
     }
 }
+
+// [파리티 라운드3 T4] 머리행에서 시작한 rowspan 블록은 반복 머리행에 포함 —
+// complex p41: header=1 은 `목표값`(r0) 하나뿐이고 `성과지표명`은 header=0 인
+// rs=2 인데 한컴은 r0·r1(1차년도~5차년도)을 함께 반복한다.
+#[test]
+fn test_leading_header_rows_extends_over_rowspan_block() {
+    let mk = |row: u16, col: u16, rs: u16, cs: u16, hdr: bool| Cell {
+        row,
+        col,
+        row_span: rs,
+        col_span: cs,
+        is_header: hdr,
+        ..Default::default()
+    };
+    let t = Table {
+        row_count: 4,
+        col_count: 3,
+        cells: vec![
+            mk(0, 0, 2, 1, false),
+            mk(0, 1, 1, 2, true),
+            mk(1, 1, 1, 1, false),
+            mk(1, 2, 1, 1, false),
+            mk(2, 0, 1, 1, false),
+            mk(2, 1, 1, 1, false),
+            mk(2, 2, 1, 1, false),
+            mk(3, 0, 1, 1, false),
+            mk(3, 1, 1, 1, false),
+            mk(3, 2, 1, 1, false),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(t.leading_header_rows(), vec![0, 1]);
+    let mut t2 = t.clone();
+    for c in &mut t2.cells {
+        c.is_header = false;
+    }
+    assert!(t2.leading_header_rows().is_empty());
+}

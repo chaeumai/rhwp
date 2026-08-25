@@ -374,6 +374,26 @@ impl Table {
         while h < rc && is_header_row[h] {
             h += 1;
         }
+        // [파리티 라운드3 T4] 머리행에서 시작한 rowspan 블록은 끝까지 머리행 블록에
+        // 포함한다 — 한컴은 반복 머리행을 rowspan 경계에서 자르지 않는다. complex
+        // p41 실측: header=1 은 `목표값`(r0, cs=5) 하나뿐이고 `성과지표명`·`기준값`은
+        // header=0 인 rs=2 인데, 한컴 연속쪽은 r0·r1(1차년도~5차년도)을 함께 반복
+        // (rhwp 는 r0 만 반복해 p41 '차년도' 5회 부족).
+        if h > 0 {
+            loop {
+                let ext = self
+                    .cells
+                    .iter()
+                    .filter(|c| (c.row as usize) < h)
+                    .map(|c| c.row as usize + (c.row_span as usize).max(1))
+                    .fold(h, usize::max)
+                    .min(rc);
+                if ext <= h {
+                    break;
+                }
+                h = ext;
+            }
+        }
         (0..h).collect()
     }
 
