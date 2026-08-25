@@ -5198,6 +5198,17 @@ impl LayoutEngine {
                         if jump_to < zone.bottom {
                             jump_to = zone.bottom;
                         }
+                        // [J17] 저장 첫 줄 vpos(쪽 기준)가 더 아래면 그 위치로 (typeset 미러)
+                        if let Some(seg) = paragraphs
+                            .get(item_para)
+                            .and_then(|p| p.line_segs.iter().find(|ls| ls.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0))
+                        {
+                            let target = col_area.y + hwpunit_to_px(seg.vertical_pos, self.dpi);
+                            let line_h = hwpunit_to_px(seg.line_height, self.dpi);
+                            if target > jump_to + 0.5 && target + line_h <= col_area.y + col_area.height + 0.5 {
+                                jump_to = target;
+                            }
+                        }
                         continue;
                     }
                     let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;

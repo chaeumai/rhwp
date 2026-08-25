@@ -13731,6 +13731,18 @@ impl TypesetEngine {
                 let text_precedes = first_line > 0.0 && voff_px + 0.5 >= first_line;
                 if !text_precedes {
                     let _ = st.apply_visible_float_exclusions(post_height.max(first_line));
+                    // [J17] 저장 첫 줄 vpos(쪽 기준)가 점프 지점보다 아래면 거기로 스냅 —
+                    // 한컴은 표·주석 뒤 후속 줄을 저장 위치에 둔다 (550 p76 ② 68237HU=1023px,
+                    // 종전 표 하단 직후에 두어 3줄이 p76 에 들어감; 한컴은 1줄).
+                    if let Some(seg) = para.line_segs.iter().find(|ls| !is_synthetic_line_seg(ls)) {
+                        let base = st.vpos_page_base.unwrap_or(0);
+                        let target = hwpunit_to_px(seg.vertical_pos.saturating_sub(base), self.dpi);
+                        if target > st.current_height + 0.5
+                            && target + first_line <= st.available_height() + 0.5
+                        {
+                            st.current_height = target;
+                        }
+                    }
                 }
             }
             if self.tac_table_line_index(para, table, fmt) == Some(0)
@@ -13739,12 +13751,48 @@ impl TypesetEngine {
             {
                 st.advance_column_or_new_page();
             }
-            st.current_items.push(PageItem::PartialParagraph {
-                para_index: para_idx,
-                start_line: post_table_start,
-                end_line: total_lines,
-            });
-            st.current_height += post_height;
+            // [J17] 자리차지 표 뒤 후속 텍스트는 쪽 하단에 맞춰 줄 단위로 나눈다 — 종전엔 한
+            // 덩어리로 넣어 3줄이 본문 아래로 넘쳤다 (550 p76 ②: 한컴 1줄 + p77 2줄).
+            let split_post_text = is_visible_para_float
+                && signed_vertical_offset > 0
+                && total_lines > post_table_start + 1
+                && st.current_height + post_height > st.available_height() + 0.5;
+            if split_post_text {
+                let mut k = post_table_start;
+                let mut acc = 0.0;
+                while k < total_lines {
+                    let adv = fmt.line_advances_sum(k..k + 1);
+                    if st.current_height + acc + adv > st.available_height() + 0.5 {
+                        break;
+                    }
+                    acc += adv;
+                    k += 1;
+                }
+                if k > post_table_start {
+                    st.current_items.push(PageItem::PartialParagraph {
+                        para_index: para_idx,
+                        start_line: post_table_start,
+                        end_line: k,
+                    });
+                    st.current_height += acc;
+                }
+                if k < total_lines {
+                    st.advance_column_or_new_page();
+                    st.current_items.push(PageItem::PartialParagraph {
+                        para_index: para_idx,
+                        start_line: k,
+                        end_line: total_lines,
+                    });
+                    st.current_height += fmt.line_advances_sum(k..total_lines);
+                }
+            } else {
+                st.current_items.push(PageItem::PartialParagraph {
+                    para_index: para_idx,
+                    start_line: post_table_start,
+                    end_line: total_lines,
+                });
+                st.current_height += post_height;
+            }
         }
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
