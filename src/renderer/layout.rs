@@ -5181,6 +5181,23 @@ impl LayoutEngine {
                     // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 가 다른 후속
                     // 문단은 그대로 표 아래로 밀린다.
                     if zone.owner_para == item_para {
+                        // [파리티 라운드3 J11] 단, 호스트 텍스트가 표 뒤에 오는 문단(voff <
+                        // 첫 줄)은 자기 표 구간도 넘어야 한다 (550 p76 '②' 3줄이 표 위에 겹침).
+                        let precedes = paragraphs.get(item_para).is_some_and(|p| {
+                            p.controls.iter().enumerate().any(|(ci, c)| {
+                                matches!(c, Control::Table(t)
+                                    if !t.common.treat_as_char && is_para_topbottom_float(&t.common))
+                                    && Self::host_text_precedes_table(p, ci, self.dpi)
+                            })
+                        });
+                        if precedes {
+                            continue;
+                        }
+                        // 자기 표 뒤에 오는 호스트 텍스트: 프로브(첫 줄)가 표 top 에 못 미쳐도
+                        // 문단 전체가 표 아래여야 한다 — 무조건 구간 하단으로.
+                        if jump_to < zone.bottom {
+                            jump_to = zone.bottom;
+                        }
                         continue;
                     }
                     let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
@@ -7377,10 +7394,12 @@ impl LayoutEngine {
             return false;
         }
         let voff = hwpunit_to_px(t.common.vertical_offset as i32, dpi);
+        // [J11] 기준은 첫 줄의 글자 높이(vertsize)이지 줄간격 포함 높이가 아니다 — 550 전 사례:
+        // '3. 참여연구과제내역' voff 1580 ≥ 1200 → 위, '② "B" must…' voff 1 → 뒤, [표 4] 1660 ≥ 1100 → 위.
         let first_line = para
             .line_segs
             .first()
-            .map(|ls| hwpunit_to_px(ls.line_height + ls.line_spacing, dpi))
+            .map(|ls| hwpunit_to_px(ls.line_height, dpi))
             .unwrap_or(0.0);
         first_line > 0.0 && voff + 0.5 >= first_line
     }

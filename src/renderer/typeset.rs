@@ -13666,6 +13666,25 @@ impl TypesetEngine {
             is_last_table && tac_table_count <= 1 && has_post_text && !pre_text_exists;
         if should_add_post_text {
             let post_height: f64 = fmt.line_advances_sum(post_table_start..total_lines);
+            // [파리티 라운드3 J11] 자리차지(vert=PARA) 표의 호스트 텍스트가 표 **뒤**에 오는 경우
+            // (voff < 첫 줄 높이 — 표가 줄 자리를 차지)엔 post-text 를 표 아래(배제 구간 밖)에서
+            // 시작한다. 종전엔 표 top 에 얹어 550 서식 8-2 p76 '② "B" must secure…' 3줄이 표
+            // 머리행 위에 겹쳤다(한컴 저장 vpos 68237 = 표·주석 뒤). 제목처럼 표 위에 오는
+            // 경우(voff ≥ 첫 줄, complex p52)는 종전대로 앵커 위치.
+            if is_visible_para_float && signed_vertical_offset > 0 {
+                // 기준 = 첫 줄 글자 높이(layout::host_text_precedes_table 와 동일)
+                let first_line = para
+                    .line_segs
+                    .first()
+                    .map(|ls| hwpunit_to_px(ls.line_height, self.dpi))
+                    .or_else(|| fmt.line_heights.first().copied())
+                    .unwrap_or(0.0);
+                let voff_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+                let text_precedes = first_line > 0.0 && voff_px + 0.5 >= first_line;
+                if !text_precedes {
+                    let _ = st.apply_visible_float_exclusions(post_height.max(first_line));
+                }
+            }
             if self.tac_table_line_index(para, table, fmt) == Some(0)
                 && st.current_height + post_height > st.available_height() + 0.5
                 && !st.current_items.is_empty()
