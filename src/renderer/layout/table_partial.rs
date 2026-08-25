@@ -422,6 +422,14 @@ impl LayoutEngine {
                 {
                     let para_style = styles.para_styles.get(para.para_shape_id as usize);
                     let is_last_para = pi + 1 == split_para_count;
+                    // [파리티 라운드3 T5] 블록 중첩 표 문단은 아래 유닛 합산이 맡는다
+                    // (줄만 세면 빈 앵커 줄 12px 로 잡혀 중첩 표 높이가 빠진다).
+                    if para.controls.iter().any(|c| {
+                        matches!(c, crate::model::control::Control::Table(t)
+                            if !t.common.treat_as_char)
+                    }) {
+                        continue;
+                    }
                     // spacing_before: 셀 첫 문단(pi==0) 제외
                     if start == 0 && end > 0 && pi > 0 {
                         let spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
@@ -448,6 +456,30 @@ impl LayoutEngine {
                     if start < end {
                         total +=
                             self.paragraph_cell_non_inline_controls_flow_height(&para.controls);
+                    }
+                }
+                // [파리티 라운드3 T5] 창 안의 블록 중첩 표 유닛(줄이 아닌 유닛)도 내용
+                // 높이에 넣는다 — 줄만 세면 혼합 셀(문단+중첩 표)의 가운데 정렬이 중첩
+                // 표를 빼고 계산돼 내용이 조각 아래로 밀리고 셀 클립에 잘렸다 (complex
+                // p44 2×4 r0 둘째 줄 '연구인력 유치'·'적극 유치' 소실).
+                if let Some((su, eu)) = cut_units {
+                    let units = self.cell_units(cell, table, styles);
+                    for (ui, u) in units.iter().enumerate() {
+                        if ui < su || ui >= eu || u.empty_spacer {
+                            continue;
+                        }
+                        let has_block_table = cell
+                            .paragraphs
+                            .get(u.para_idx)
+                            .is_some_and(|p| {
+                                p.controls.iter().any(|c| {
+                                    matches!(c, crate::model::control::Control::Table(t)
+                                        if !t.common.treat_as_char)
+                                })
+                            });
+                        if has_block_table {
+                            total += u.height;
+                        }
                     }
                 }
                 total
@@ -520,6 +552,12 @@ impl LayoutEngine {
                     cell_y + pad_top + (inner_height - total_content_height).max(0.0)
                 }
             };
+            if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                eprintln!(
+                    "DIAG_VALIGN_A r{}c{} align={:?} eff={:?} cell_y={:.1} inner_h={:.1} content={:.1} cut={:?} y0={:.1}",
+                    cell.row, cell.col, cell.vertical_align, effective_align, cell_y, inner_height, total_content_height, cut_units, text_y_start
+                );
+            }
 
             // 세로쓰기 셀: 별도 레이아웃 경로 (가로 레이아웃 루프 대신)
             if cell.text_direction != 0 {
@@ -1196,6 +1234,13 @@ impl LayoutEngine {
                                     };
                                     let available_h =
                                         (inner_area.height - (nested_y - inner_area.y)).max(0.0);
+                                    if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                                        eprintln!(
+                                            "DIAG_PNESTY cp={} pre_text={} para_y_before={:.1} para_y={:.1} nested_y={:.1} inner_y={:.1} inner_h={:.1} avail={:.1} ls0_vpos={} nested_h={:.1} r{}c{}",
+                                            cp_idx, has_preceding_text, para_y_before_compose, para_y, nested_y, inner_area.y, inner_area.height, available_h,
+                                            para.line_segs.first().map(|l| l.vertical_pos).unwrap_or(-1), nested_h, cell.row, cell.col,
+                                        );
+                                    }
                                     // TAC(글자처럼 취급) 표: 앞 텍스트 너비만큼 x 오프셋 적용.
                                     // 분할 표 내부에서는 composed 텍스트가 이전 줄까지 포함할 수
                                     // 있으므로, 표가 남은 폭에 들어가지 않으면 셀 좌측 기준으로

@@ -1398,6 +1398,8 @@ impl HeightMeasurer {
                 // (table_layout::cell_is_empty_stored 주석의 complex p30 실측).
                 let empty_stored_cell = crate::renderer::layout::LayoutEngine::cell_is_empty_stored(cell);
                 let relaxed_pad_mirror = (depth > 0 || empty_stored_cell)
+                    // [파리티 라운드3 T5] layout 미러 — 저장 h 가 줄 흐름을 덮을 때만
+                    && (empty_stored_cell || cell_h_px + 0.5 >= text_height)
                     && cell.text_direction == 0
                     && !has_nested_table_in_cell
                     && !cell.paragraphs.is_empty()
@@ -1484,7 +1486,7 @@ impl HeightMeasurer {
                     required_height
                 };
                 // [#2097 진단] 셀별 선언/측정/trailing 분해 — 동작 불변.
-                if std::env::var("RHWP_DIAG_ROWH").is_ok() && depth == 0 {
+                if std::env::var("RHWP_DIAG_ROWH").is_ok() && (depth == 0 || std::env::var("RHWP_DIAG_ROWH_ALL").is_ok()) {
                     let all_stored = !cell.paragraphs.is_empty()
                         && cell
                             .paragraphs
@@ -1828,8 +1830,16 @@ impl HeightMeasurer {
                 let wrap_bottom = self.cell_wrap_objects_bottom_height(&cell.paragraphs);
                 // [Task #2221] 단일행과 동일 — 중첩/TAC 표의 저장 LINE_SEG 텍스트
                 // 셀은 pad 미가산 (layout 2-b relaxed_pad 미러).
-                let relaxed_pad_mirror = (depth > 0
-                    || crate::renderer::layout::LayoutEngine::cell_is_empty_stored(cell))
+                let span_empty_stored =
+                    crate::renderer::layout::LayoutEngine::cell_is_empty_stored(cell);
+                let relaxed_pad_mirror = (depth > 0 || span_empty_stored)
+                    // [파리티 라운드3 T5] layout 미러 — 저장 h 가 줄 흐름을 덮을 때만
+                    && (span_empty_stored
+                        || crate::renderer::layout::LayoutEngine::stored_cell_height_covers(
+                            cell,
+                            text_height,
+                            self.dpi,
+                        ))
                     && cell.text_direction == 0
                     && !cell.paragraphs.is_empty()
                     && cell

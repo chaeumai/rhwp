@@ -347,7 +347,7 @@ pub(crate) struct RowCutResult {
 /// [Task #993] 한 셀의 콘텐츠 유닛 — 합성 줄 1개 또는 중첩 표 atom 1개.
 pub(super) struct CellUnit {
     /// 유닛 높이 (px).
-    height: f64,
+    pub(super) height: f64,
     /// 이 유닛 앞에 vpos 리셋(셀 내부 페이지 분할)이 있는가.
     hard_break_before: bool,
     vpos_gap_before: bool,
@@ -355,8 +355,8 @@ pub(super) struct CellUnit {
     pub(super) para_idx: usize,
     /// 이 유닛이 visible 일 때 기여하는 문단 내 줄 범위 `[vis_start, vis_end)`.
     /// 텍스트 줄 유닛 = `(li, li+1)`, 중첩/빈 atom = `(0, line_count.max(1))`.
-    vis_start: usize,
-    vis_end: usize,
+    pub(super) vis_start: usize,
+    pub(super) vis_end: usize,
     /// [Task #1073] 이 유닛이 중첩 표의 한 행을 표현하면 그 행 인덱스. 텍스트/일반 유닛은 None.
     /// 분할 행에서 컷 → `NestedTableSplit`(중첩행 범위) 매핑에 사용.
     pub(super) nested_row: Option<usize>,
@@ -364,7 +364,7 @@ pub(super) struct CellUnit {
     mixed_nested_trailing: bool,
     mixed_nested_content_height: f64,
     top_and_bottom_flow: bool,
-    empty_spacer: bool,
+    pub(super) empty_spacer: bool,
 }
 
 /// 중첩 표 부분 렌더링을 위한 행 범위 정보
@@ -1713,6 +1713,17 @@ impl LayoutEngine {
     /// 한컴이 저장 시 셀 h 를 콘텐츠에 맞춰 확정했으므로 행 성장 판정에서
     /// 저장 지오메트리를 그대로 신뢰한다 (#2112 계보). 합성 seg(tag bit31)는
     /// 저장으로 치지 않는다 — height_measurer 와 동일 술어.
+    /// [파리티 라운드3 T5] 저장 셀 h(cellSz) 가 줄 흐름 높이를 덮는가 — #2211 의
+    /// "저장 h 는 콘텐츠에 꽉 맞다" 전제가 성립하는 셀에만 pad 미가산을 적용한다.
+    /// 저장 h 가 콘텐츠보다 작으면(최소값·낡은 선언) 한컴은 콘텐츠+pad 로 키운다.
+    pub(crate) fn stored_cell_height_covers(
+        cell: &crate::model::table::Cell,
+        content_px: f64,
+        dpi: f64,
+    ) -> bool {
+        cell.height < 0x80000000 && hwpunit_to_px(cell.height as i32, dpi) + 0.5 >= content_px
+    }
+
     fn cell_has_stored_line_segs(cell: &crate::model::table::Cell) -> bool {
         !cell.paragraphs.is_empty()
             && cell
@@ -1807,7 +1818,12 @@ impl LayoutEngine {
                         styles,
                         inner_width,
                     );
-                    let line_req = if (relaxed_pad && Self::cell_has_stored_line_segs(cell))
+                    // [파리티 라운드3 T5] pad 미가산은 저장 h 가 줄 흐름을 덮을 때만 —
+                    // 저장 h 가 pad 뿐(282HU)인 중첩 셀(complex p44 2×4 r0: 저장 3.8px,
+                    // 줄 27.6px)은 한컴이 콘텐츠+pad(31.4px 실측)로 키운다.
+                    let line_req = if (relaxed_pad
+                        && Self::cell_has_stored_line_segs(cell)
+                        && Self::stored_cell_height_covers(cell, line_based, self.dpi))
                         || Self::cell_is_empty_stored(cell)
                     {
                         line_based
@@ -1912,9 +1928,11 @@ impl LayoutEngine {
                 // 개체 기반 지오메트리는 pad 가산 유지.
                 let (line_based, object_based) =
                     self.calc_cell_paragraphs_content_parts(&cell.paragraphs, styles, inner_width);
-                let line_req = if (relaxed_pad && Self::cell_has_stored_line_segs(cell))
-                        || Self::cell_is_empty_stored(cell)
-                    {
+                let line_req = if (relaxed_pad
+                    && Self::cell_has_stored_line_segs(cell)
+                    && Self::stored_cell_height_covers(cell, line_based, self.dpi))
+                    || Self::cell_is_empty_stored(cell)
+                {
                     line_based
                 } else {
                     line_based + pad_top + pad_bottom
@@ -3566,6 +3584,13 @@ impl LayoutEngine {
                         } else {
                             inner_area.y
                         };
+                        if std::env::var("RHWP_DIAG_MIXED").is_ok() {
+                            eprintln!(
+                                "DIAG_NESTY cp={} tac={} pre_text={} para_y_before={:.1} para_y={:.1} nested_y={:.1} inner_y={:.1} text_y_start={:.1} ls0_vpos={} rows={}",
+                                cp_idx, is_tac_table, has_preceding_text, para_y_before_compose, para_y, nested_y, inner_area.y, text_y_start,
+                                para.line_segs.first().map(|l| l.vertical_pos).unwrap_or(-1), nested_table.row_count,
+                            );
+                        }
                         let nested_ctx = cell_context.as_ref().map(|ctx| {
                             let mut new_ctx = ctx.clone();
                             new_ctx.path.push(CellPathEntry {
