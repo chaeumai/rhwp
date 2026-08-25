@@ -953,7 +953,10 @@ fn write_bullet<W: Write>(
         attrs.push(("checkedChar", &checked_char_s));
     }
     start_tag_attrs(w, "hh:bullet", &attrs)?;
-    // paraHead 뼈대 (파서는 무시하나 OWPML 유효성/한컴 호환 위해 방출).
+    // paraHead — 본문과의 거리(textOffset)·charPrIDRef 는 파서가 읽은 값을 되돌려 쓴다
+    // (종전 50 / u32::MAX 고정 → 저장본에서 글머리표 간격·글꼴이 원본과 달라졌다).
+    let text_offset_s = b.text_distance.to_string();
+    let char_pr_s = b.char_shape_id.to_string();
     empty_tag(
         w,
         "hh:paraHead",
@@ -964,9 +967,9 @@ fn write_bullet<W: Write>(
             ("autoIndent", "1"),
             ("widthAdjust", &b.width_adjust.to_string()),
             ("textOffsetType", "PERCENT"),
-            ("textOffset", "50"),
+            ("textOffset", &text_offset_s),
             ("numFormat", "DIGIT"),
-            ("charPrIDRef", &u32::MAX.to_string()),
+            ("charPrIDRef", &char_pr_s),
             ("checkable", "0"),
         ],
     )?;

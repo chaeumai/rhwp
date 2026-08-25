@@ -445,6 +445,45 @@ fn table_has_detached_para_flow_object(table: &crate::model::table::Table) -> bo
         })
 }
 
+/// 글자처럼 취급 표가 host 문단의 첫 줄이 아닌 저장 LINE_SEG 줄에 있을 때의 세로 이동량(px).
+///
+/// 한컴은 `pic(앵커, 스트림 8자) + tbl(TAC)` 처럼 표 앞에 개체 앵커가 있으면 표를 첫 줄에
+/// 못 놓고(줄 폭 초과) 둘째 줄로 내리며, 그 결과가 `lineseg[1].textpos == 8` 로 저장된다.
+/// 텍스트가 없어 스트림 위치를 확정할 수 있는 문단에서만(선행 컨트롤 전부 확장 개체)
+/// 표의 스트림 위치와 textpos 가 일치하는 후행 줄을 찾아 첫 줄과의 vpos 차이를 돌려준다.
+fn tac_table_later_lineseg_shift(para: &Paragraph, control_index: usize, dpi: f64) -> f64 {
+    if para.line_segs.len() < 2 || para_has_visible_text(para) {
+        return 0.0;
+    }
+    // 선행 컨트롤은 전부 줄을 차지하지 않는 앵커(비 TAC 개체)여야 한다. 선행 TAC 표/개체가
+    // 있으면 기존 다중 TAC 경로(다음 TAC 는 vpos 차이만큼 전진)가 이미 줄을 내리므로
+    // 여기서 또 더하면 이중 이동이 된다(complex-full p30 흐름도 2행 회귀).
+    let mut stream_pos: u32 = 0;
+    for ctrl in para.controls.iter().take(control_index) {
+        let is_anchor_object = match ctrl {
+            Control::Picture(pic) => !pic.common.treat_as_char,
+            Control::Shape(shape) => !shape.common().treat_as_char,
+            Control::Table(table) => !table.common.treat_as_char,
+            Control::Equation(eq) => !eq.common.treat_as_char,
+            _ => false,
+        };
+        if !is_anchor_object {
+            return 0.0;
+        }
+        stream_pos += 8;
+    }
+    if stream_pos == 0 {
+        return 0.0;
+    }
+    let first = &para.line_segs[0];
+    para.line_segs
+        .iter()
+        .skip(1)
+        .find(|seg| seg.text_start == stream_pos && seg.vertical_pos > first.vertical_pos)
+        .map(|seg| hwpunit_to_px(seg.vertical_pos - first.vertical_pos, dpi))
+        .unwrap_or(0.0)
+}
+
 type ParaFloatLanes = std::collections::HashMap<usize, FloatLaneSet>;
 
 #[derive(Debug, Clone, Copy)]
@@ -6155,6 +6194,15 @@ impl LayoutEngine {
                 } else {
                     0.0
                 };
+            // 텍스트 없는 host 문단에서 글자처럼 취급 표가 저장 LINE_SEG 상 후행 줄에
+            // 놓인 경우(선행 개체 앵커 뒤 textpos=8 — 한컴은 앵커 줄을 비우고 둘째 줄에
+            // 표를 놓는다) 그 줄의 vpos 차이만큼 표를 내린다. complex-full p1 표지 표.
+            let tac_lineseg_line_shift =
+                if is_tac && inline_pos.is_none() && tac_detached_line_shift <= 0.0 {
+                    tac_table_later_lineseg_shift(para, control_index, self.dpi)
+                } else {
+                    0.0
+                };
             let table_visual_height = mt
                 .map(|m| m.total_height)
                 .filter(|h| *h > 0.0)
@@ -6347,6 +6395,8 @@ impl LayoutEngine {
                     anchor_y
                 } else if tac_detached_line_shift > 0.0 {
                     y_offset + tac_detached_line_shift
+                } else if tac_lineseg_line_shift > 0.0 {
+                    y_offset + tac_lineseg_line_shift
                 } else {
                     y_offset
                 };

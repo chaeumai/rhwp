@@ -1767,11 +1767,23 @@ fn parse_bullet_hwpx(
         }
     }
 
-    // 자식 <hh:paraHead>, <hh:image> 등 skip
+    // 자식 <hh:paraHead> — 문단 머리 정보(표 41: 본문과의 거리·charPr·너비 보정).
+    // 종전엔 통째로 건너뛰어 HWPX 글머리표의 `textOffset`/`charPrIDRef` 가 0 으로 남았고,
+    // 렌더가 본문과의 거리를 못 넣어 글머리표 뒤 간격이 한컴보다 좁았다(complex-full p4).
+    // <hh:image> 등 나머지 자식은 그대로 skip.
     if !is_empty_event(e) {
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref ee)) | Ok(Event::Empty(ref ee))
+                    if local_name(ee.name().as_ref()) == b"paraHead" =>
+                {
+                    let (_, head, _, _) = parse_numbering_para_head_attrs(ee);
+                    bullet.attr = head.attr;
+                    bullet.width_adjust = head.width_adjust;
+                    bullet.text_distance = head.text_distance;
+                    bullet.char_shape_id = head.char_shape_id;
+                }
                 Ok(Event::End(ref ee)) => {
                     if local_name(ee.name().as_ref()) == b"bullet" {
                         break;
@@ -2116,6 +2128,29 @@ mod tests {
                 (tags::HWPTAG_TRACKCHANGE, 1, 1032),
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_hwpx_bullet_para_head_text_offset_and_char_pr() {
+        // complex-full p4: 글머리표 `-`(20%, charPr 117) — 종전엔 <hh:paraHead> 를 건너뛰어
+        // text_distance/char_shape_id 가 0 으로 남았다.
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:bullets itemCnt="2">
+      <hh:bullet id="1" char="-" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="20" numFormat="DIGIT" charPrIDRef="117" checkable="0"/></hh:bullet>
+      <hh:bullet id="2" char="●" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="0" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/></hh:bullet>
+    </hh:bullets>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        assert_eq!(doc_info.bullets.len(), 2);
+        assert_eq!(doc_info.bullets[0].bullet_char, '-');
+        assert_eq!(doc_info.bullets[0].text_distance, 20);
+        assert_eq!(doc_info.bullets[0].char_shape_id, 117);
+        assert_eq!(doc_info.bullets[1].text_distance, 0);
+        assert_eq!(doc_info.bullets[1].char_shape_id, u32::MAX);
     }
 
     #[test]

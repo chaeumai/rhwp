@@ -93,6 +93,48 @@ fn numbering_marker_text_style(
     }
 }
 
+/// 글머리표 마커의 렌더 스타일과 점유 폭(본문 시작까지).
+///
+/// 한컴은 글머리표를 글머리표 정의의 charPr(있으면)로 그리고, 본문은
+/// `글머리 폭 + 본문과의 거리` 에서 시작한다. 본문과의 거리(`text_distance`, %)는
+/// 머리 글자 크기에 대한 비율이다 — complex-full p4 실측: Wingdings ¤(9pt, 30%)
+/// 전각 3.18mm + 0.95mm, `-`(8pt, 20%) 1.47mm + 0.56mm 가 한컴 PDF 와 0.05mm 안에서
+/// 일치. 종전에는 거리 대신 공백 한 칸을 붙여 1레벨 0.7mm·2레벨 0.4mm 모자랐다.
+/// 번호(개요/번호) 머리는 기존 동작(공백 부착) 유지.
+fn numbering_marker_layout(
+    styles: &ResolvedStyleSet,
+    para: Option<&Paragraph>,
+    first_run: Option<&ComposedTextRun>,
+    num_text: &str,
+) -> (TextStyle, f64) {
+    let base_style = numbering_marker_text_style(styles, para, first_run);
+    let bullet = para
+        .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+        .filter(|ps| ps.head_type == HeadType::Bullet && ps.numbering_id > 0)
+        .and_then(|ps| styles.bullets.get((ps.numbering_id - 1) as usize));
+    let Some(bullet) = bullet else {
+        let w = estimate_text_width(num_text, &base_style);
+        return (base_style, w);
+    };
+    let style = if styles.char_styles.get(bullet.char_shape_id as usize).is_some() {
+        let lang = num_text
+            .chars()
+            .next()
+            .map(super::super::style_resolver::detect_lang_category)
+            .unwrap_or(0);
+        resolved_to_text_style(styles, bullet.char_shape_id, lang)
+    } else {
+        base_style
+    };
+    let glyph_w = estimate_text_width(num_text, &style);
+    let gap = if bullet.text_distance > 0 {
+        style.font_size * f64::from(bullet.text_distance) / 100.0
+    } else {
+        0.0
+    };
+    (style, glyph_w + gap)
+}
+
 fn para_float_horz_intersects_column(
     common: &CommonObjAttr,
     width_hu: i32,
@@ -2584,12 +2626,13 @@ impl LayoutEngine {
         // 개요 번호/글머리표 마커 폭 사전 계산 (첫 줄 가용폭 차감용)
         let numbering_width = if start_line == 0 {
             if let Some(ref num_text) = composed.numbering_text {
-                let num_style = numbering_marker_text_style(
+                numbering_marker_layout(
                     styles,
                     para,
                     composed.lines.first().and_then(|l| l.runs.first()),
-                );
-                estimate_text_width(num_text, &num_style)
+                    num_text,
+                )
+                .1
             } else {
                 0.0
             }
@@ -3320,6 +3363,34 @@ impl LayoutEngine {
                 total_text_width += missing_tac_width;
             }
             let is_last_line_of_para = line_idx == end - 1 && end == composed.lines.len();
+            // 줄 끝 위치(pos == line_end)의 TAC 개체: 아래 렌더 루프(`allow_end_tac`)는
+            // 문단 마지막 줄/강제 줄바꿈 줄에서 이를 이 줄에 그리는데, 정렬 폭에는
+            // 빠져 있어 오른쪽·가운데 정렬이 텍스트만으로 계산됐다(complex-full p14:
+            // 오른쪽 정렬 "  "+전면 폭 그림이 열 밖으로 밀림). 렌더와 같은 조건으로 폭에 더한다.
+            {
+                let line_end = composed_line_char_end(composed, line_idx);
+                let next_line_starts_at_end = composed
+                    .lines
+                    .get(line_idx + 1)
+                    .is_some_and(|next| next.char_start == line_end);
+                let allow_end_tac = (line_idx + 1 >= composed.lines.len()
+                    || comp_line.has_line_break)
+                    && !next_line_starts_at_end
+                    && line_end > comp_line.char_start;
+                if allow_end_tac {
+                    let end_tac_width: f64 = tac_offsets_px
+                        .iter()
+                        .filter(|(pos, _, ci)| {
+                            *pos == line_end
+                                && !line_tac_offsets_for_width
+                                    .iter()
+                                    .any(|(p, _, c)| p == pos && c == ci)
+                        })
+                        .map(|(_, w, _)| *w)
+                        .sum();
+                    total_text_width += end_tac_width;
+                }
+            }
 
             // 정렬별 간격 분배 계산
             let has_forced_break = comp_line.has_line_break;
@@ -3473,9 +3544,12 @@ impl LayoutEngine {
             // 개요 번호/글머리표: 첫 줄에서 별도 TextRunNode로 렌더링 (char_start: None)
             if line_idx == start_line && start_line == 0 {
                 if let Some(ref num_text) = composed.numbering_text {
-                    let num_style =
-                        numbering_marker_text_style(styles, para, comp_line.runs.first());
-                    let num_width = estimate_text_width(num_text, &num_style);
+                    let (num_style, num_width) = numbering_marker_layout(
+                        styles,
+                        para,
+                        comp_line.runs.first(),
+                        num_text,
+                    );
                     let num_id = tree.next_id();
                     let num_node = RenderNode::new(
                         num_id,
@@ -6172,12 +6246,9 @@ impl LayoutEngine {
                 // PUA 문자(0xF000~0xF0FF)를 표준 Unicode로 매핑
                 // HWP는 Symbol 폰트 문자를 PUA(0xF000+code)로 저장
                 let bullet_ch = map_pua_bullet_char(bullet.bullet_char);
-                // 글머리 기호 + 본문과의 거리(text_distance)에 따른 간격
-                if bullet.text_distance > 0 {
-                    format!("{} ", bullet_ch)
-                } else {
-                    format!("{}", bullet_ch)
-                }
+                // 본문과의 거리(text_distance)는 공백 문자가 아니라
+                // `numbering_marker_layout` 이 머리 글자 크기 비율로 가산한다.
+                format!("{}", bullet_ch)
             }
         };
 
@@ -6760,5 +6831,62 @@ mod pua_mapping_tests {
         assert_eq!(map_pua_bullet_char('\u{F0090}'), '\u{F0090}');
         assert_eq!(map_pua_bullet_char('\u{F0000}'), '\u{F0000}');
         assert_eq!(map_pua_bullet_char('\u{F00CF}'), '\u{F00CF}');
+    }
+}
+
+#[cfg(test)]
+mod bullet_marker_layout_tests {
+    use super::numbering_marker_layout;
+    use crate::model::paragraph::Paragraph;
+    use crate::model::style::{Bullet, HeadType};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
+
+    fn styles_with_bullet(text_distance: i16, char_shape_id: u32) -> ResolvedStyleSet {
+        ResolvedStyleSet {
+            hwp3_variant: false,
+            char_styles: vec![
+                ResolvedCharStyle {
+                    font_size: 13.333,
+                    ..Default::default()
+                },
+                ResolvedCharStyle {
+                    font_size: 12.0,
+                    ..Default::default()
+                },
+            ],
+            para_styles: vec![ResolvedParaStyle {
+                head_type: HeadType::Bullet,
+                numbering_id: 1,
+                ..Default::default()
+            }],
+            bullets: vec![Bullet {
+                bullet_char: '●',
+                text_distance,
+                char_shape_id,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bullet_gap_is_text_distance_percent_of_head_font_size() {
+        // complex-full p4: 30% × 머리 글자(9pt=12px) = 3.6px 를 글리프 폭 뒤에 더한다.
+        let styles = styles_with_bullet(30, 1);
+        let para = Paragraph::default();
+        let (style, width) = numbering_marker_layout(&styles, Some(&para), None, "●");
+        assert!((style.font_size - 12.0).abs() < 0.01, "head charPr size, got {}", style.font_size);
+        let (_, width_no_gap) = numbering_marker_layout(&styles_with_bullet(0, 1), Some(&para), None, "●");
+        assert!((width - width_no_gap - 3.6).abs() < 0.01, "gap 3.6px expected, got {}", width - width_no_gap);
+    }
+
+    #[test]
+    fn bullet_without_char_pr_falls_back_to_body_style() {
+        let styles = styles_with_bullet(20, u32::MAX);
+        let para = Paragraph::default();
+        let (style, width) = numbering_marker_layout(&styles, Some(&para), None, "●");
+        assert!((style.font_size - 13.333).abs() < 0.01);
+        let (_, width_no_gap) = numbering_marker_layout(&styles_with_bullet(0, u32::MAX), Some(&para), None, "●");
+        assert!((width - width_no_gap - 13.333 * 0.2).abs() < 0.01);
     }
 }

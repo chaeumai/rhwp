@@ -2269,3 +2269,76 @@ fn page_bg_image_only_on_section_first_page() {
     assert!(!image_rest, "구역 첫 쪽이 아니면 배경 이미지가 없어야 한다");
     assert!(color_rest, "이미지가 억제돼도 색 채우기는 유지되어야 한다");
 }
+
+#[test]
+fn tac_table_later_lineseg_shift_follows_stored_second_line() {
+    // complex-full p1 표지 표: host 문단 = [뒤에 그림(비TAC) 앵커, TAC 표], 텍스트 없음,
+    // 저장 LINE_SEG = [textpos 0 @41155, textpos 8 @43555]. 한컴은 표를 둘째 줄에 놓는다.
+    use crate::model::image::Picture;
+    use crate::model::shape::CommonObjAttr;
+    use crate::model::table::Table;
+    let seg = |text_start: u32, vpos: i32| LineSeg {
+        text_start,
+        vertical_pos: vpos,
+        line_height: 16855,
+        text_height: 1500,
+        baseline_distance: 1275,
+        line_spacing: 900,
+        column_start: 0,
+        segment_width: 48188,
+        ..Default::default()
+    };
+    let tac_table = Control::Table(Box::new(Table {
+        common: CommonObjAttr {
+            treat_as_char: true,
+            width: 47930,
+            height: 16575,
+            ..Default::default()
+        },
+        ..Default::default()
+    }));
+    let behind_pic = Control::Picture(Box::new(Picture {
+        common: CommonObjAttr {
+            treat_as_char: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    }));
+    let para = Paragraph {
+        text: String::new(),
+        controls: vec![behind_pic.clone(), tac_table.clone()],
+        line_segs: vec![seg(0, 41155), seg(8, 43555)],
+        ..Default::default()
+    };
+    let shift = tac_table_later_lineseg_shift(&para, 1, DEFAULT_DPI);
+    assert!(
+        (shift - hwpunit_to_px(2400, DEFAULT_DPI)).abs() < 0.01,
+        "expected one stored line (2400HU) shift, got {shift}"
+    );
+
+    // 표가 첫 컨트롤이면(스트림 위치 0) 이동 없음
+    let para_first = Paragraph {
+        controls: vec![tac_table.clone()],
+        line_segs: vec![seg(0, 41155), seg(8, 43555)],
+        ..Default::default()
+    };
+    assert_eq!(tac_table_later_lineseg_shift(&para_first, 0, DEFAULT_DPI), 0.0);
+
+    // 선행 TAC 표(복수 TAC 문단, complex-full p30 흐름도)는 기존 다중 TAC 경로가 줄을
+    // 내리므로 여기서는 이동하지 않는다
+    let para_two_tac = Paragraph {
+        controls: vec![tac_table.clone(), tac_table.clone()],
+        line_segs: vec![seg(0, 19709), seg(8, 28995)],
+        ..Default::default()
+    };
+    assert_eq!(tac_table_later_lineseg_shift(&para_two_tac, 1, DEFAULT_DPI), 0.0);
+
+    // 가시 텍스트가 있으면 스트림 위치를 확정할 수 없어 적용하지 않는다
+    let para_text = Paragraph {
+        text: "가".to_string(),
+        controls: vec![behind_pic, tac_table],
+        line_segs: vec![seg(0, 41155), seg(8, 43555)],
+        ..Default::default()
+    };
+    assert_eq!(tac_table_later_lineseg_shift(&para_text, 1, DEFAULT_DPI), 0.0);
+}
