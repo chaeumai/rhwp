@@ -69,6 +69,7 @@ fn test_serialize_hwp_cfb_streams() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 
@@ -113,6 +114,7 @@ fn test_serialize_hwp_compressed() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 
@@ -214,6 +216,7 @@ fn test_full_roundtrip_uncompressed() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 
@@ -293,6 +296,7 @@ fn test_full_roundtrip_compressed() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 
@@ -1685,6 +1689,7 @@ fn test_ole_storage_size_prefix_restored() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 
@@ -1771,6 +1776,7 @@ fn test_compressed_ole_storage_payload_is_deflated() {
         extra_streams: Vec::new(),
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 

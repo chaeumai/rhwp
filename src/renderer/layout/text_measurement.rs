@@ -1485,11 +1485,128 @@ fn quantize_hwp_px(px: f64) -> f64 {
     hwp as f64 / 75.0
 }
 
+// ── [parity-round3 H2] KoPub 설치 환경 힌트 ─────────────────────────────
+//
+// upstream(#2195) 의 KoPub 폴백은 "KoPub 미설치 PC 에서 한글이 바탕으로 치환해 전각
+// 1.0em 으로 조판" 한 오라클(86712) 기준이다. 반면 KoPub 이 설치된 PC 에서 저장된
+// 문서(complex-full: 한컴 PDF 에 KoPubDotumLight 임베드)는 한글 0.872em 비례폭으로
+// 조판돼 있어, 전각 폴백으로 재계산하면 저장 lineseg(horzsize) 보다 10% 넘쳐 셀
+// 밖으로 글자가 튀어나간다(lab 이슈 complex-full p4). 어느 환경이었는지는 파일의
+// 저장 lineseg 로만 알 수 있으므로 문서 로드 시 1회 판정해 힌트로 둔다.
+// 측정 함수는 컨텍스트를 갖지 않아 thread_local 로 전달한다(WASM 단일 스레드,
+// CLI 는 문서 1건/프로세스; 테스트는 기본값 false 로 격리).
+thread_local! {
+    static KOPUB_PROPORTIONAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// KoPub 계열 글꼴을 설치 환경(비례폭 실측 메트릭)으로 측정할지 설정한다.
+/// `DocumentCore` 가 문서 로드·재조판·렌더 진입 때 `Document::kopub_proportional` 로 동기화한다.
+pub fn set_kopub_proportional(enabled: bool) {
+    KOPUB_PROPORTIONAL.with(|c| c.set(enabled));
+}
+
+pub fn kopub_proportional() -> bool {
+    KOPUB_PROPORTIONAL.with(|c| c.get())
+}
+
+fn is_kopub_dotum_family(name: &str) -> bool {
+    let primary = name.split(',').next().unwrap_or(name).trim();
+    primary.contains("KoPub돋움체")
+        || primary.contains("KoPubWorld돋움체")
+        || primary.to_lowercase().contains("kopub dotum")
+        || primary.to_lowercase().contains("kopubworld dotum")
+}
+
+/// 저장 LINE_SEG 증거로 "KoPub 설치 환경에서 조판된 문서" 인지 판정한다.
+///
+/// 단일 글자 모양의 KoPub돋움체 문단(본문·셀 포함)에서 마지막이 아닌 줄(꽉 찬 줄)마다
+/// `horzsize / (전각 1.0em 모델 폭)` 을 구해, 표본 5줄 이상이고 중앙값이 0.95 미만이면
+/// 전각으로는 저장 폭에 들어갈 수 없는 문서 → 비례폭(true). 실측: complex-full 335줄
+/// 중앙값 0.902(비례 모델 1.015), 86712(upstream 오라클)는 표본 0 → false 유지.
+/// 바탕체는 실폭 0.936em 이라 전각과 구분이 약해 판정 표본에서 제외하고, 결과는
+/// 같은 PC 에 함께 설치되는 패키지이므로 두 계열에 같이 적용한다.
+pub fn detect_kopub_proportional(
+    document: &crate::model::document::Document,
+    styles: &ResolvedStyleSet,
+) -> bool {
+    use crate::model::control::Control;
+    use crate::model::paragraph::Paragraph;
+
+    fn visit(paras: &[Paragraph], styles: &ResolvedStyleSet, ratios: &mut Vec<f64>) {
+        for para in paras {
+            for ctrl in &para.controls {
+                if let Control::Table(t) = ctrl {
+                    for cell in &t.cells {
+                        visit(&cell.paragraphs, styles, ratios);
+                    }
+                }
+            }
+            if para.line_segs.len() < 2 || para.char_shapes.is_empty() {
+                continue;
+            }
+            // 단일 글자 모양(첫 ref 하나) + KoPub돋움체
+            let first = para.char_shapes[0].char_shape_id;
+            if para.char_shapes.iter().any(|r| r.char_shape_id != first) {
+                continue;
+            }
+            let Some(cs) = styles.char_styles.get(first as usize) else {
+                continue;
+            };
+            if !is_kopub_dotum_family(cs.font_family_for_lang(0)) {
+                continue;
+            }
+            let em = cs.font_size;
+            if em <= 0.0 {
+                continue;
+            }
+            let ratio = cs.ratio_for_lang(0).max(0.01);
+            let spacing = cs.letter_spacing_for_lang(0);
+            let chars: Vec<char> = para.text.chars().collect();
+            let offsets = &para.char_offsets;
+            let char_idx_at = |utf16: u32| -> usize {
+                offsets.partition_point(|&o| o < utf16)
+            };
+            for pair in para.line_segs.windows(2) {
+                let (a, b) = (char_idx_at(pair[0].text_start), char_idx_at(pair[1].text_start));
+                if b <= a || b > chars.len() {
+                    continue;
+                }
+                let seg = &chars[a..b];
+                let n_h = seg.iter().filter(|c| ('가'..='힣').contains(c)).count();
+                if n_h < 12 {
+                    continue;
+                }
+                let n_o = seg.len() - n_h;
+                let full = (n_h as f64) * (em * ratio + spacing) + (n_o as f64) * em * 0.4;
+                let stored = hwpunit_to_px(pair[0].segment_width, super::super::DEFAULT_DPI);
+                if full > 0.0 && stored > 0.0 {
+                    ratios.push(stored / full);
+                }
+            }
+        }
+    }
+
+    let mut ratios = Vec::new();
+    for section in &document.sections {
+        visit(&section.paragraphs, styles, &mut ratios);
+    }
+    if ratios.len() < 5 {
+        return false;
+    }
+    ratios.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    ratios[ratios.len() / 2] < 0.95
+}
+
 fn kopub_char_width(primary_name: &str, c: char, font_size: f64) -> Option<f64> {
     let lower = primary_name.to_lowercase();
     let is_dotum = primary_name.contains("KoPub돋움체") || lower.contains("kopub dotum");
     let is_batang = primary_name.contains("KoPub바탕체") || lower.contains("kopub batang");
     if !is_dotum && !is_batang {
+        return None;
+    }
+    // [parity-round3 H2] KoPub 설치 환경 문서 — 폴백 대신 KoPubWorld 실측 메트릭 DB
+    // (`font_metrics_data`, 별칭 KoPub돋움체→KoPubWorldDotum) 경로로 넘긴다.
+    if kopub_proportional() {
         return None;
     }
 
@@ -2254,6 +2371,24 @@ mod tests {
         // 핀은 r27 근거설명 25문단 -11줄 과소의 성분이었다.
         let w = m.estimate_text_width("가나", &style);
         assert_eq!(w, 28.0);
+    }
+
+    /// [parity-round3 H2] KoPub 설치 환경 힌트가 켜지면 KoPubWorld 실측(한글 0.872em).
+    #[test]
+    fn test_kopub_dotum_proportional_hint_uses_kopubworld_metrics() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: "KoPub돋움체 Light".to_string(),
+            font_size: 14.0,
+            ..Default::default()
+        };
+        set_kopub_proportional(true);
+        let w = m.estimate_text_width("가나", &style);
+        set_kopub_proportional(false);
+        // 0.872em × 14px × 2 = 24.4 → 측정기 정수 반올림 24 (전각 폴백 28 과 구분)
+        assert!((w - 24.0).abs() < 0.6, "got {}", w);
+        // 힌트 해제 뒤엔 upstream 전각 폴백 복귀
+        assert_eq!(m.estimate_text_width("가나", &style), 28.0);
     }
 
     #[test]

@@ -511,6 +511,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         extra_streams: contract.streams,
         hwpx_aux_entries,
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant: false,
     };
 

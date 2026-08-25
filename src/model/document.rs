@@ -53,6 +53,12 @@ pub struct Document {
     /// 변환본의 ParaShape spacing/margin 은 HWP3 원본의 2배 단위로 저장되어
     /// 한컴 viewer 와 일치하려면 typeset 단계에서 1/2 보정 필요.
     pub is_hwp3_variant: bool,
+    /// [parity-round3 H2] KoPub 계열 글꼴이 **설치된** 한글 PC 에서 조판된 문서 여부
+    /// (저장 LINE_SEG 의 horzsize 가 전각 1.0em 모델보다 비례폭 모델과 맞으면 true —
+    /// `renderer::layout::text_measurement::detect_kopub_proportional`). 로드 시 1회
+    /// 판정하는 파생값이며 직렬화되지 않는다. false 면 upstream 의 "KoPub 미설치 →
+    /// 바탕 전각 치환" 폴백(#2195) 을 그대로 쓴다.
+    pub kopub_proportional: bool,
     /// [Issue #1770] rhwp 가 HWPX 에서 변환한 HWP5 여부 (`/RhwpHwpxOrigin` 마커
     /// 스트림 감지, 결정론). 변환은 LINE_SEG 를 verbatim 직렬화하므로 IR 은 HWPX
     /// 시멘틱 그대로다 — pagination/렌더의 `is_hwpx_source` 분기(RowBreak 분할

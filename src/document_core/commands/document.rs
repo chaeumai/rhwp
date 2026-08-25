@@ -65,6 +65,12 @@ impl DocumentCore {
             DEFAULT_DPI,
             document.is_hwp3_variant,
         );
+        // [parity-round3 H2] KoPub 설치 환경 판정(저장 lineseg 증거) — 측정기 힌트 동기화.
+        document.kopub_proportional =
+            crate::renderer::layout::text_measurement::detect_kopub_proportional(&document, &styles);
+        crate::renderer::layout::text_measurement::set_kopub_proportional(
+            document.kopub_proportional,
+        );
 
         let hwp5_origin_hwpx = matches!(source_format, crate::parser::FileFormat::Hwpx)
             && document

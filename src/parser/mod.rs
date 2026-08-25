@@ -261,6 +261,7 @@ fn parse_hwp_with_cfb(
         extra_streams,
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
         is_hwpx_variant,
     };
 
@@ -551,6 +552,7 @@ fn parse_hwp_with_lenient(
         is_hwpx_variant: false,
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        kopub_proportional: false,
     };
 
     assign_auto_numbers(&mut doc);

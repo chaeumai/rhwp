@@ -2690,6 +2690,10 @@ impl DocumentCore {
     /// 측정 통일(B). `paginate_pass` 의 `force_break_before` 훅과 `LayoutOverflow` 의
     /// section_index/is_first_in_column 계측은 측정 통일 작업의 진단·후속용으로 유지한다.
     pub(crate) fn paginate(&mut self) {
+        // [parity-round3 H2] 조판 측정 전에 KoPub 설치 환경 힌트를 이 문서 값으로 동기화.
+        crate::renderer::layout::text_measurement::set_kopub_proportional(
+            self.document.kopub_proportional,
+        );
         let sec_count = self.document.sections.len().max(1);
         let empty_breaks: Vec<std::collections::HashSet<usize>> =
             vec![std::collections::HashSet::new(); sec_count];
@@ -4266,6 +4270,9 @@ impl DocumentCore {
             .set_show_control_codes(self.show_control_codes);
         self.layout_engine
             .set_hwp3_variant(self.document.is_hwp3_variant);
+        crate::renderer::layout::text_measurement::set_kopub_proportional(
+            self.document.kopub_proportional,
+        );
         self.layout_engine.set_hwp3_origin_flow_spacing_before(
             uses_hwp3_origin_flow_spacing_before(&self.document),
         );
