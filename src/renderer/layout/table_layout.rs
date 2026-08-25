@@ -6609,6 +6609,7 @@ impl LayoutEngine {
                             start,
                             avail_height,
                             rewind_internal_hard_break_orphan,
+                            Self::lone_line_rewind_allowed(cell, styles, &units, j),
                             &mut j,
                             &mut h,
                         );
@@ -6775,6 +6776,7 @@ impl LayoutEngine {
                         start,
                         avail_height,
                         false,
+                        Self::lone_line_rewind_allowed(cell, styles, &units, j),
                         &mut j,
                         &mut h,
                     );
@@ -6954,6 +6956,7 @@ impl LayoutEngine {
                         start,
                         cell_budget,
                         true,
+                        Self::lone_line_rewind_allowed(cell, styles, &units, j),
                         &mut j,
                         &mut h,
                     );
@@ -7020,12 +7023,28 @@ impl LayoutEngine {
         }
     }
 
+    /// [파리티 라운드3 J8] 컷 직전 유닛이 속한 문단의 widowOrphan 설정 — 외톨이줄 되감기 허용 여부.
+    fn lone_line_rewind_allowed(
+        cell: &crate::model::table::Cell,
+        styles: &ResolvedStyleSet,
+        units: &[CellUnit],
+        j: usize,
+    ) -> bool {
+        j.checked_sub(1)
+            .and_then(|k| units.get(k))
+            .and_then(|u| cell.paragraphs.get(u.para_idx))
+            .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+            .map(|ps| ps.widow_orphan)
+            .unwrap_or(true)
+    }
+
     fn rewind_rowbreak_orphan_before_hard_break(
         table: &crate::model::table::Table,
         units: &[CellUnit],
         start: usize,
         avail_height: f64,
         force_rewind: bool,
+        lone_line_rewind: bool,
         j: &mut usize,
         h: &mut f64,
     ) {
@@ -7040,6 +7059,13 @@ impl LayoutEngine {
         let hard_break_unit = &units[*j];
         let prev = &units[*j - 1];
         if prev.para_idx == hard_break_unit.para_idx {
+            // [파리티 라운드3 J8] 저장 리셋(hb)이 문단 둘째 줄에 있으면 한컴이 첫 줄을 앞 쪽에
+            // 둔 것이 저장 증거다. 문단의 외톨이줄 보호(widowOrphan)가 꺼져 있으면 되감지
+            // 않는다 — 550 p29: "1) 도서 등 문헌구입비…" 첫 줄이 한컴 p29 끝에 있는데
+            // 되감겨 p30 으로 밀리고 p29 Δ−33/p30 +26. (550 문단 708개 전부 widowOrphan=0)
+            if !lone_line_rewind {
+                return;
+            }
             // [파리티 라운드2 T4] #1116 의 취지는 "같은 문단 줄 **하나만** 조각에
             // 고립"을 막는 것 — 같은 문단 줄이 이미 여러 개 담겨 있으면 저장
             // lineseg 가 그 배치를 기록한 것이므로 되감지 않는다 (550 r3c2
@@ -8517,6 +8543,7 @@ mod row_cut_tests {
             0,
             100.0,
             false,
+            true,
             &mut j,
             &mut h,
         );
@@ -8530,6 +8557,7 @@ mod row_cut_tests {
             0,
             76.0,
             false,
+            true,
             &mut j2,
             &mut h2,
         );
