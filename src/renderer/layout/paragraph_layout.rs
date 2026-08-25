@@ -126,13 +126,30 @@ fn numbering_marker_layout(
     } else {
         base_style
     };
-    let glyph_w = estimate_text_width(num_text, &style);
+    let glyph_w = if num_text == IMAGE_BULLET_PLACEHOLDER {
+        // [파리티 라운드3 J2] 이미지 글머리표는 머리 글자 크기의 정사각형
+        style.font_size
+    } else {
+        estimate_text_width(num_text, &style)
+    };
     let gap = if bullet.text_distance > 0 {
         style.font_size * f64::from(bullet.text_distance) / 100.0
     } else {
         0.0
     };
     (style, glyph_w + gap)
+}
+
+/// [파리티 라운드3 J2] 이미지 글머리표 자리표시자 (numbering_text).
+pub(crate) const IMAGE_BULLET_PLACEHOLDER: &str = "\u{FFFC}";
+
+/// [파리티 라운드3 J2] 문단의 글머리표가 이미지면 그 BinData ID.
+fn image_bullet_bin_id(styles: &ResolvedStyleSet, para: Option<&Paragraph>) -> Option<u16> {
+    para.and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+        .filter(|ps| ps.head_type == HeadType::Bullet && ps.numbering_id > 0)
+        .and_then(|ps| styles.bullets.get((ps.numbering_id - 1) as usize))
+        .filter(|b| b.image_bullet != 0 && b.image_bin_data_id != 0)
+        .map(|b| b.image_bin_data_id)
 }
 
 fn para_float_horz_intersects_column(
@@ -2562,7 +2579,13 @@ impl LayoutEngine {
         // column-top 이 아닌 것처럼 spacing_before 를 전량 적용한다.
         let keep_continuation_spacing_before =
             self.keep_continuation_column_top_spacing_before.get();
-        if start_line == 0 && spacing_before > 0.0 {
+        // [파리티 라운드3 J4] 자리차지 표 아래로 점프한 문단은 spacing_before 미소비
+        let float_jump_suppress = start_line == 0
+            && spacing_before > 0.0
+            && self.float_jump_suppress_active.replace(false);
+        if start_line == 0 && spacing_before > 0.0 && float_jump_suppress {
+            // 한컴 저장 vpos = 표 하단 + outMargin (complex sec10 pi7·pi10)
+        } else if start_line == 0 && spacing_before > 0.0 {
             if !is_column_top || keep_continuation_spacing_before {
                 y += spacing_before;
             } else if para_index == 0 && !suppress_column_top_vpos_fallback {
@@ -3551,28 +3574,53 @@ impl LayoutEngine {
                         num_text,
                     );
                     let num_id = tree.next_id();
-                    let num_node = RenderNode::new(
-                        num_id,
-                        RenderNodeType::TextRun(TextRunNode {
-                            text: num_text.clone(),
-                            style: num_style,
-                            char_shape_id: None,
-                            para_shape_id: Some(composed.para_style_id),
-                            section_index: Some(section_index),
-                            para_index: Some(para_index),
-                            char_start: None, // 문서 좌표에 포함되지 않음
-                            cell_context: cell_ctx.clone(),
-                            is_para_end: false,
-                            is_line_break_end: false,
-                            rotation: 0.0,
-                            is_vertical: false,
-                            char_overlap: None,
-                            border_fill_id: 0,
-                            baseline,
-                            field_marker: FieldMarkerType::None,
-                        }),
-                        BoundingBox::new(x, y, num_width, line_height),
-                    );
+                    let image_bullet = if num_text == IMAGE_BULLET_PLACEHOLDER {
+                        image_bullet_bin_id(styles, para)
+                    } else {
+                        None
+                    };
+                    let num_node = if let Some(bin_id) = image_bullet {
+                        // [파리티 라운드3 J2] 이미지 글머리표: 머리 글자 크기 정사각형을
+                        // 줄 안에 세로 가운데로 (한컴 제목 ■ 아이콘 실측 — 글자 높이와 같음).
+                        let size = num_style.font_size;
+                        let img_y = y + ((line_height - size) / 2.0).max(0.0);
+                        let image_data = bin_data_content
+                            .and_then(|bdc| find_bin_data(bdc, bin_id, self.is_hwpx_source.get()))
+                            .map(|c| c.data.load());
+                        RenderNode::new(
+                            num_id,
+                            RenderNodeType::Image(ImageNode {
+                                section_index: Some(section_index),
+                                para_index: Some(para_index),
+                                cell_context: cell_ctx.clone(),
+                                ..ImageNode::new(bin_id, image_data)
+                            }),
+                            BoundingBox::new(x, img_y, size, size),
+                        )
+                    } else {
+                        RenderNode::new(
+                            num_id,
+                            RenderNodeType::TextRun(TextRunNode {
+                                text: num_text.clone(),
+                                style: num_style,
+                                char_shape_id: None,
+                                para_shape_id: Some(composed.para_style_id),
+                                section_index: Some(section_index),
+                                para_index: Some(para_index),
+                                char_start: None, // 문서 좌표에 포함되지 않음
+                                cell_context: cell_ctx.clone(),
+                                is_para_end: false,
+                                is_line_break_end: false,
+                                rotation: 0.0,
+                                is_vertical: false,
+                                char_overlap: None,
+                                border_fill_id: 0,
+                                baseline,
+                                field_marker: FieldMarkerType::None,
+                            }),
+                            BoundingBox::new(x, y, num_width, line_height),
+                        )
+                    };
                     line_node.children.push(num_node);
                     x += num_width;
                 }
@@ -6239,6 +6287,14 @@ impl LayoutEngine {
                     return None;
                 }
                 let bullet = styles.bullets.get((bullet_id - 1) as usize)?;
+                // [파리티 라운드3 J2] 이미지 글머리표 — 자리표시자 U+FFFC 를 마커 텍스트로
+                // 두고 렌더가 ImageNode 로 바꿔 그린다 (폭은 numbering_marker_layout).
+                if bullet.image_bullet != 0 && bullet.image_bin_data_id != 0 {
+                    let comp = composed?;
+                    let mut modified = comp.clone();
+                    modified.numbering_text = Some(IMAGE_BULLET_PLACEHOLDER.to_string());
+                    return Some(modified);
+                }
                 // U+FFFF는 이미지 글머리표 표시자 — 문자 렌더링 불가, 건너뜀
                 if bullet.bullet_char == '\u{FFFF}' {
                     return None;

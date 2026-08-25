@@ -366,6 +366,9 @@ pub struct Bullet {
     pub image_data: [u8; 4],
     /// 체크 글머리표 문자
     pub check_bullet_char: char,
+    /// [파리티 라운드3 J2] 이미지 글머리표의 BinData ID — HWPX `<hc:img binaryItemIDRef="imageN">`
+    /// 의 N(그림 컨트롤과 같은 규약), HWP5 는 image_data 의 ID 바이트. 0 = 없음.
+    pub image_bin_data_id: u16,
 }
 
 /// 텍스트 정렬 방식

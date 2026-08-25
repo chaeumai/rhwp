@@ -2029,9 +2029,10 @@ impl TypesetState {
         self.reset_vpos_cursor();
     }
 
-    fn apply_visible_float_exclusions(&mut self, probe_height: f64) {
+    /// 반환: 배제 구간 아래로 점프했는가.
+    fn apply_visible_float_exclusions(&mut self, probe_height: f64) -> bool {
         if self.visible_float_exclusions.is_empty() {
-            return;
+            return false;
         }
 
         let use_overlap_probe = self.is_hwpx_source && probe_height > 0.0;
@@ -2050,7 +2051,9 @@ impl TypesetState {
 
         if jump_to > self.current_height + 0.5 {
             self.current_height = jump_to;
+            return true;
         }
+        false
     }
 
     fn new_page_content(&self, column_contents: Vec<ColumnContent>) -> PageContent {
@@ -2072,7 +2075,7 @@ impl TypesetState {
 }
 
 /// 문단 format() 결과: 문단의 실제 렌더링 높이 정보
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FormattedParagraph {
     /// 총 높이 (spacing 포함)
     total_height: f64,
@@ -3238,6 +3241,7 @@ impl TypesetEngine {
                 // 쪽나누기/ColumnDef 효과는 위에서 적용하되, PDF 기준으로는 별도 빈 줄을
                 // 렌더하거나 본문 흐름 높이를 소비하지 않는다.
                 st.hidden_empty_paras.insert(para_idx);
+                if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=1 pi={}", para_idx); }
                 continue;
             }
 
@@ -3505,6 +3509,7 @@ impl TypesetEngine {
                 };
             if empty_tail_bridge_to_reset {
                 st.hidden_empty_paras.insert(para_idx);
+                if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=2 pi={}", para_idx); }
                 st.current_items.push(PageItem::FullParagraph {
                     para_index: para_idx,
                 });
@@ -3530,6 +3535,7 @@ impl TypesetEngine {
                         });
                     if page_bottom_empty_reset_bridge {
                         st.hidden_empty_paras.insert(para_idx);
+                        if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=3 pi={}", para_idx); }
                         if !st.current_items.is_empty() {
                             st.current_items.push(PageItem::FullParagraph {
                                 para_index: para_idx,
@@ -3612,6 +3618,7 @@ impl TypesetEngine {
                         //   시멘틱). 페이지를 advance 하지 않으므로 단독 빈 페이지 회귀(synam-001
                         //   등)는 발생하지 않는다.
                         st.hidden_empty_paras.insert(para_idx);
+                        if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=4 pi={}", para_idx); }
                         st.current_items.push(PageItem::FullParagraph {
                             para_index: para_idx,
                         });
@@ -3657,6 +3664,7 @@ impl TypesetEngine {
                         // 흡수(위 주석)하므로, drop 대신 현재 페이지에 0-높이로 흡수 기록한다.
                         // 페이지를 advance 하지 않으므로 단독 page 회귀(sample18 등)는 없다.
                         st.hidden_empty_paras.insert(para_idx);
+                        if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=5 pi={}", para_idx); }
                         st.current_items.push(PageItem::FullParagraph {
                             para_index: para_idx,
                         });
@@ -11369,16 +11377,36 @@ impl TypesetEngine {
         } else {
             layout_drift_safety_px
         };
+        // [파리티 라운드3 J4] 프로브에 spacing_before 를 포함 — 첫 줄 잉크는 앞 간격 뒤에
+        // 시작하므로 앞 간격을 빼고 재면 표 바로 위 틈에 문단이 끼어든다 (complex p52
+        // pi7 1pt 빈 문단: 한컴 저장 vpos 는 표 아래 619.4px, 우리는 표 위 377.3).
         let exclusion_probe_height = if st.is_hwpx_source {
             fmt.line_heights
                 .first()
                 .zip(fmt.line_spacings.first())
                 .map(|(lh, ls)| lh + ls)
                 .unwrap_or(fmt.height_for_fit)
+                + fmt.spacing_before.max(0.0)
         } else {
             0.0
         };
-        st.apply_visible_float_exclusions(exclusion_probe_height);
+        let float_jumped = st.apply_visible_float_exclusions(exclusion_probe_height);
+        // [파리티 라운드3 J4] 자리차지 표 아래로 점프한 문단은 spacing_before 를 소비하지
+        // 않는다 — 한컴 저장 vpos 는 표 하단 + outMargin 에 줄을 둔다 (complex sec10 빈
+        // 문단 17/17, 보통 문맥의 빈 문단은 14/14 적용). 단 상단 취급과 같다.
+        let fmt_adj;
+        let fmt = if float_jumped && fmt.spacing_before > 0.0 {
+            let sb = fmt.spacing_before;
+            fmt_adj = FormattedParagraph {
+                total_height: (fmt.total_height - sb).max(0.0),
+                height_for_fit: (fmt.height_for_fit - sb).max(0.0),
+                spacing_before: 0.0,
+                ..fmt.clone()
+            };
+            &fmt_adj
+        } else {
+            fmt
+        };
         // [Task #1725] tail-before-vpos-reset 문단은 각주 안전마진(보수 버퍼 40px)만 1회 되돌려
         // 본문에 유지한다. 한글 LINESEG 는 이 tail 문단을 본문(각주 위)에 배치하는데, rhwp 각주
         // 예약의 보수 버퍼가 tail 을 수 px 밀어 near-empty 페이지 over-pagination(국제고속선기준
@@ -11428,6 +11456,7 @@ impl TypesetEngine {
                 const EMPTY_GUIDE_RESET_GAP_HU: i32 = 2000;
                 if curr > next + EMPTY_GUIDE_RESET_GAP_HU {
                     st.hidden_empty_paras.insert(para_idx);
+                    if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=6 pi={}", para_idx); }
                     return;
                 }
             }
@@ -11474,6 +11503,7 @@ impl TypesetEngine {
             {
                 st.hidden_empty_lines += 1;
                 st.hidden_empty_paras.insert(para_idx);
+                if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=7 pi={}", para_idx); }
                 // height=0 으로 page 진행 — fit 분기에서 추가 처리하지 않음
                 st.current_items.push(PageItem::FullParagraph {
                     para_index: para_idx,
@@ -11516,6 +11546,7 @@ impl TypesetEngine {
                     .unwrap_or(false);
                 if prior_trailing_drift && previous_item_is_empty_para {
                     st.hidden_empty_paras.insert(para_idx);
+                    if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() { eprintln!("DIAG_HIDE site=8 pi={}", para_idx); }
                     return;
                 }
                 if fit_fail_within_safety || fit_fail_only_after_footnote_reserve {
@@ -12565,7 +12596,7 @@ impl TypesetEngine {
         // 소비한다 — 종전에는 텍스트 경로(typeset_paragraph)만 소비해, 후속 표
         // 문단의 블록 표 fit 이 존 위에 겹쳐 배치됐다 (19439117: 870px 서식 표
         // 존 [31..902] 위에 866px 표가 y≈36 에 통배치 → 1쪽, 한글 2쪽).
-        st.apply_visible_float_exclusions(0.0);
+        let _ = st.apply_visible_float_exclusions(0.0);
 
         // 호스트 문단 format (TAC 표의 높이 보정용)
         let host_col_w = st

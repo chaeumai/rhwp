@@ -1784,6 +1784,22 @@ fn parse_bullet_hwpx(
                     bullet.text_distance = head.text_distance;
                     bullet.char_shape_id = head.char_shape_id;
                 }
+                // [파리티 라운드3 J2] 이미지 글머리표 `<hc:img binaryItemIDRef="imageN"/>` —
+                // 그림 컨트롤과 같은 규약으로 N 을 BinData ID 로 쓴다 (complex-full 제목의 ■ 아이콘).
+                Ok(Event::Start(ref ee)) | Ok(Event::Empty(ref ee))
+                    if matches!(local_name(ee.name().as_ref()), b"img" | b"image") =>
+                {
+                    for attr in ee.attributes().flatten() {
+                        if attr.key.as_ref() == b"binaryItemIDRef" {
+                            let val = attr_str(&attr);
+                            let num: String = val.chars().filter(|c| c.is_ascii_digit()).collect();
+                            bullet.image_bin_data_id = num.parse().unwrap_or(0);
+                            if bullet.image_bin_data_id != 0 {
+                                bullet.image_bullet = 1;
+                            }
+                        }
+                    }
+                }
                 Ok(Event::End(ref ee)) => {
                     if local_name(ee.name().as_ref()) == b"bullet" {
                         break;

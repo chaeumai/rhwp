@@ -1370,6 +1370,12 @@ pub struct LayoutEngine {
     /// 이 문단은 셀-상단(is_column_top)이고 셀-상대 인덱스>0 이지만, 한컴은 앞 간격
     /// (spacing_before)을 유지하므로 column-top 트림을 우회해 전량 적용한다.
     keep_continuation_column_top_spacing_before: std::cell::Cell<bool>,
+    /// [파리티 라운드3 J4] 직전 항목 배치에서 자리차지 표 배제 구간 아래로 점프한 문단 —
+    /// 첫 줄의 spacing_before 를 소비하지 않는다 (typeset 의 float_jumped 미러).
+    /// layout_column_item 진입마다 false 로 리셋, 점프 분기에서만 true.
+    suppress_spacing_before_after_float_jump: std::cell::Cell<bool>,
+    /// 위 플래그를 현재 항목 배치 동안 유지하는 사본 (첫 spacing_before 적용 지점에서 소비).
+    float_jump_suppress_active: std::cell::Cell<bool>,
     /// HWPX `Preview/PrvImage.png` 원본. HMapsi OLE처럼 일반 preview stream이 없는
     /// legacy 객체의 제한적 첫 페이지 fallback에 사용한다.
     hwpx_page_preview: std::cell::RefCell<Option<PagePreviewImage>>,
@@ -1459,6 +1465,8 @@ impl LayoutEngine {
             is_hwp3_variant: std::cell::Cell::new(false),
             use_hwp3_origin_flow_spacing_before: std::cell::Cell::new(false),
             keep_continuation_column_top_spacing_before: std::cell::Cell::new(false),
+            suppress_spacing_before_after_float_jump: std::cell::Cell::new(false),
+            float_jump_suppress_active: std::cell::Cell::new(false),
             is_hwpx_source: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -5109,6 +5117,26 @@ impl LayoutEngine {
                         _ => 0.0,
                     }
                 };
+                // [파리티 라운드3 J4] typeset 프로브와 동일 — 잉크는 spacing_before 뒤에
+                // 시작한다 (complex p52 pi7: 1pt 빈 문단이 표 위 1.6px 틈에 끼던 것).
+                let item_probe_height = if item_probe_height > 0.0 {
+                    let sb = match item {
+                        PageItem::FullParagraph { para_index }
+                        | PageItem::PartialParagraph {
+                            para_index,
+                            start_line: 0,
+                            ..
+                        } => paragraphs
+                            .get(*para_index)
+                            .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+                            .map(|ps| ps.spacing_before.max(0.0))
+                            .unwrap_or(0.0),
+                        _ => 0.0,
+                    };
+                    item_probe_height + sb
+                } else {
+                    item_probe_height
+                };
                 let mut jump_to = y_offset;
                 for zone in &visible_float_exclusions {
                     // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
@@ -5129,6 +5157,8 @@ impl LayoutEngine {
                     let delta = jump_to - y_offset;
                     y_offset = jump_to;
                     hcursor.shift_vpos_base_for_rendered_delta(delta);
+                    // [파리티 라운드3 J4] 점프한 문단은 spacing_before 미소비 (typeset 미러)
+                    self.suppress_spacing_before_after_float_jump.set(true);
                 }
             }
 
@@ -5555,6 +5585,11 @@ impl LayoutEngine {
             wrap_around_paras,
             wrap_anchors,
         };
+        if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() {
+            eprintln!("DIAG_ITEM sec={} item={:?} y={:.1}", ctx.page_content.section_index, item, y_offset);
+        }
+        let float_jump_suppress = self.suppress_spacing_before_after_float_jump.replace(false);
+        self.float_jump_suppress_active.set(float_jump_suppress);
         match item {
             PageItem::FullParagraph { para_index } => {
                 // 빈 줄 감추기: 높이 0 처리된 문단은 문단부호만 렌더링하고 y_offset 변경 없음
@@ -6872,6 +6907,20 @@ impl LayoutEngine {
                     )
                 }) == Some(control_index);
             // ── 표 위 간격 ──
+            // [파리티 라운드3 J3] 비-TAC 호스트 문단의 spacing_before 를 여기서 더한 양 —
+            // 아래 호스트 텍스트 렌더(layout_partial_paragraph → layout_composed_paragraph)
+            // 가 start_line 0 에서 spacing_before 를 또 더하므로 그만큼 빼서 넘긴다
+            // (complex p52 제목 366.6 → 355.9, 한컴 356.1; 종전엔 제목이 표 머리행에 겹침).
+            let mut host_spacing_before_added = 0.0f64;
+            // [파리티 라운드3 J3] typeset 이 호스트 텍스트를 PartialParagraph 로 따로
+            // 낸 문단(자리차지 float, voff>0)은 그 아이템이 spacing_before 를 더한다 —
+            // 표 아이템에서도 더하면 이중(complex p52 제목 +10.7px, 한컴 저장 vpos 356.1
+            // = 표 아이템 y 355.9).
+            let host_text_pre_emitted = page_content.column_contents.iter().any(|cc| {
+                cc.items.iter().any(|it| {
+                    matches!(it, PageItem::PartialParagraph { para_index: pi, .. } if *pi == para_index)
+                })
+            });
             {
                 let comp = composed.get(para_index);
                 let ps_id = comp
@@ -6900,15 +6949,20 @@ impl LayoutEngine {
                             y_offset += outer_margin_top_px;
                         }
                     }
-                } else if !is_current_empty_para_float {
+                } else if !is_current_empty_para_float && !host_text_pre_emitted {
                     if let Some(ps) = styles.para_styles.get(ps_id) {
                         if ps.spacing_before > 0.0 && !is_column_top {
                             y_offset += ps.spacing_before;
+                            host_spacing_before_added = ps.spacing_before;
                         }
                     }
                 }
             }
             // ── 호스트 문단 텍스트 렌더링 ──
+            if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() {
+                eprintln!("DIAG_TBLFLOW sec={} pi={} A(before host text) y={:.1} is_tac={} empty_float={} visible_float={}",
+                    page_content.section_index, para_index, y_offset, is_tac, is_current_empty_para_float, is_current_visible_para_float);
+            }
             let text_already_laid_out = page_content.column_contents.iter().any(|cc| {
                 cc.items.iter().any(|it| {
                     matches!(it, PageItem::PartialParagraph { para_index: pi, .. } if *pi == para_index)
@@ -6945,6 +6999,11 @@ impl LayoutEngine {
                                     .map(|i| i + 1)
                                     .unwrap_or(comp.lines.len());
                                 para_start_y.insert(para_index, y_offset);
+                                let host_text_y = if start_line == 0 {
+                                    y_offset - host_spacing_before_added
+                                } else {
+                                    y_offset
+                                };
                                 let _text_y_end = self.layout_partial_paragraph(
                                     tree,
                                     col_node,
@@ -6952,7 +7011,7 @@ impl LayoutEngine {
                                     Some(comp),
                                     styles,
                                     col_area,
-                                    y_offset,
+                                    host_text_y,
                                     start_line,
                                     text_end_line,
                                     page_content.section_index,
@@ -6992,6 +7051,10 @@ impl LayoutEngine {
             y_offset = table_ctl_out.y_offset;
             let tac_seg_applied = table_ctl_out.tac_seg_applied;
             let para_float_lane_info = table_ctl_out.para_float_lane_info;
+            if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() {
+                eprintln!("DIAG_TBLFLOW sec={} pi={} B(after table block) y={:.1} tac_seg_applied={} lane={:?}",
+                    page_content.section_index, para_index, y_offset, tac_seg_applied, para_float_lane_info);
+            }
             if let Some(ret) = table_ctl_out.early_return {
                 return ret;
             }
@@ -7049,10 +7112,17 @@ impl LayoutEngine {
                     .unwrap_or(false);
                 let suppress_empty_anchor_spacing =
                     is_current_empty_para_float && !next_is_empty_topbottom_table_anchor;
+                // [파리티 라운드3 J3] 호스트 텍스트가 표 위에 그려진 문단(voff ≥ 첫 줄
+                // 높이)은 그 줄이 이미 소비됐으므로 표 뒤에 line_height 폴백을 다시
+                // 더하지 않는다 — complex p52 제목(1400HU, spacing 0) 이 표마다 +18.7px
+                // 씩 누적돼 p52 마지막 표가 p53 으로 밀렸다 (한컴: 표 하단 + next 200
+                // + outMargin bottom + 다음 문단 prev 800 = 제목 줄 top, 실측 0.6px).
+                let host_text_above_table = !is_tac
+                    && Self::host_text_precedes_table(para, control_index, self.dpi);
                 if let Some(seg) = para.line_segs.last() {
                     let gap = if suppress_empty_anchor_spacing {
                         0
-                    } else if is_current_empty_para_float {
+                    } else if is_current_empty_para_float || host_text_above_table {
                         seg.line_spacing.max(0)
                     } else if seg.line_spacing > 0 {
                         seg.line_spacing
@@ -7063,6 +7133,10 @@ impl LayoutEngine {
                         y_offset += hwpunit_to_px(gap, self.dpi);
                     }
                 }
+            }
+            if std::env::var("RHWP_DIAG_TBLFLOW").is_ok() {
+                eprintln!("DIAG_TBLFLOW sec={} pi={} C(after spacing) y={:.1}",
+                    page_content.section_index, para_index, y_offset);
             }
             if let Some((x_start, x_end, raw_top, lane_top, global_y_before)) = para_float_lane_info
             {
@@ -7245,6 +7319,34 @@ impl LayoutEngine {
     ///
     /// table_content_offset: 분할 표에서 이전 페이지에 표시된 행 높이 합 (px)
     #[allow(clippy::too_many_arguments)]
+    /// [파리티 라운드3 J1/J3] 비-TAC TopAndBottom+PARA 표의 호스트 문단 텍스트가 표
+    /// **위**에 놓이는가 — 표 vertOffset 이 첫 줄(line_height+spacing) 이상이면 한컴은
+    /// 텍스트 줄을 먼저 두고 그 아래에 표를 놓는다 (complex p52 제목 voff 2230HU ≥
+    /// 1040HU). voff 가 줄보다 작으면(대개 0) 표가 줄 자리를 차지하고 텍스트는 표
+    /// 뒤로 간다(#1686 pr-1674).
+    pub(crate) fn host_text_precedes_table(
+        para: &Paragraph,
+        control_index: usize,
+        dpi: f64,
+    ) -> bool {
+        let Some(Control::Table(t)) = para.controls.get(control_index) else {
+            return false;
+        };
+        if t.common.treat_as_char
+            || !is_para_topbottom_float(&t.common)
+            || !para_has_non_whitespace_text(para)
+        {
+            return false;
+        }
+        let voff = hwpunit_to_px(t.common.vertical_offset as i32, dpi);
+        let first_line = para
+            .line_segs
+            .first()
+            .map(|ls| hwpunit_to_px(ls.line_height + ls.line_spacing, dpi))
+            .unwrap_or(0.0);
+        first_line > 0.0 && voff + 0.5 >= first_line
+    }
+
     /// PartialTable PageItem 레이아웃 (layout_column_item에서 분리)
     #[allow(clippy::too_many_arguments)]
     fn layout_partial_table_item(
@@ -7295,20 +7397,7 @@ impl LayoutEngine {
                             // 둔다 (complex p52 '중점 주제의 적합성' voff 2230HU, 줄
                             // 1040HU — 한컴 830.1px 제목 → 852.9px 표). 그 경우 첫 조각
                             // 경로가 그린다.
-                            && {
-                                let voff = hwpunit_to_px(
-                                    t.common.vertical_offset as i32,
-                                    self.dpi,
-                                );
-                                let first_line = para
-                                    .line_segs
-                                    .first()
-                                    .map(|ls| {
-                                        hwpunit_to_px(ls.line_height + ls.line_spacing, self.dpi)
-                                    })
-                                    .unwrap_or(0.0);
-                                first_line <= 0.0 || voff + 0.5 < first_line
-                            } =>
+                            && !Self::host_text_precedes_table(para, control_index, self.dpi) =>
                     {
                         Some(t.row_count as usize)
                     }

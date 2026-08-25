@@ -847,6 +847,11 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
     let check_char_u16 = r.read_u16().unwrap_or(0);
     let check_bullet_char = char::from_u32(check_char_u16 as u32).unwrap_or('\0');
 
+    let image_bin_data_id = if image_bullet != 0 {
+        image_data[3] as u16
+    } else {
+        0
+    };
     Ok(Bullet {
         raw_data: None,
         attr,
@@ -857,6 +862,7 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
         image_bullet,
         image_data,
         check_bullet_char,
+        image_bin_data_id,
     })
 }
 
