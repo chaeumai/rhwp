@@ -382,6 +382,12 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).getStructureSignature());
   }
 
+  /** 한채움 fork: 최상위 문단 앵커 일괄(JSON 문자열, getParagraphAnchors 계약). */
+  getParagraphAnchorsJson(): string {
+    if (!this.doc) throw new Error('document not loaded');
+    return (this.doc as any).getParagraphAnchors();
+  }
+
   flushDeferredPagination(): { ok: boolean; pageCount?: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as { flushDeferredPagination?: () => string };

@@ -24785,3 +24785,49 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         assert_eq!(doc.page_count(), 115, "{label}: page count");
     }
 }
+
+/// 한채움 fork: getParagraphAnchors 는 문단마다 getCursorRect(s,p,0) 과 같고, 문단 수만큼
+/// 빠짐없이 문서 순서로 나온다 (서식 묶음 나누기 2단계 계약 §2·§4).
+#[test]
+fn test_paragraph_anchors_match_cursor_rect() {
+    use crate::document_core::helpers::json_f64;
+    let bytes = std::fs::read("samples/2025년 기부·답례품 실적 지자체 보고서_양식.hwpx")
+        .expect("샘플 읽기 실패");
+    let doc = HwpDocument::from_bytes(&bytes).unwrap();
+    let anchors = doc.paragraph_anchors_native();
+    let expected: usize = doc.document.sections.iter().map(|s| s.paragraphs.len()).sum();
+    assert_eq!(anchors.len(), expected, "문단 수만큼 앵커");
+    assert!(anchors.iter().any(|a| a.kind == "table"), "표 문단이 하나는 있어야 한다");
+    let mut prev: Option<(usize, usize)> = None;
+    for a in &anchors {
+        if let Some((ps, pp)) = prev {
+            assert!((a.section, a.paragraph) > (ps, pp), "문서 순서");
+        }
+        prev = Some((a.section, a.paragraph));
+        let rect = doc.get_cursor_rect_native(a.section, a.paragraph, 0);
+        match (a.kind, rect) {
+            // 표 문단은 표 상단 — 커서 줄(표 뒤)보다 위거나 같은 쪽, 그리고 표가 놓인 첫 쪽.
+            ("table", Ok(json)) => {
+                let cursor_page = json_f64(&json, "pageIndex").unwrap() as i64;
+                assert!(a.page_index >= 0 && a.page_index <= cursor_page, "표 앵커 쪽 {} > 커서 쪽 {}", a.page_index, cursor_page);
+                if a.page_index == cursor_page {
+                    assert!(a.y <= json_f64(&json, "y").unwrap() + 1e-9, "표 상단이 커서 줄보다 아래");
+                }
+                assert!(a.height > 0.0);
+            }
+            ("table", Err(_)) => assert!(a.page_index >= -1),
+            (_, Ok(json)) => {
+                assert_eq!(a.page_index, json_f64(&json, "pageIndex").unwrap() as i64);
+                assert!((a.y - json_f64(&json, "y").unwrap()).abs() < 1e-9);
+                assert!((a.height - json_f64(&json, "height").unwrap()).abs() < 1e-9);
+                assert!(a.page_index >= 0 && (a.page_index as u32) < doc.page_count());
+            }
+            (_, Err(_)) => assert_eq!(a.page_index, -1),
+        }
+    }
+    // JSON 직렬화가 같은 개수·같은 키를 낸다.
+    let json: serde_json::Value = serde_json::from_str(&doc.get_paragraph_anchors()).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), expected);
+    assert!(arr[0].get("kind").is_some() && arr[0].get("pageIndex").is_some());
+}

@@ -46,6 +46,22 @@ export interface EmbedRpcHandlers {
    * 막히지 않는 경로(직접 타이핑·붙여넣기·IME)라 별도 잠금이 필요하다.
    */
   setInputLocked(locked: boolean): Promise<{ locked: boolean }>;
+  /**
+   * 한채움 fork (paragraphAnchors): 모든 최상위 문단의 첫 줄 위치를 문서 순서로.
+   * 문단마다 getCursorRect(section, paragraph, 0) 과 같은 값이며 좌표 단위는 getPageSvg 와
+   * 같다. 조판되지 않은 문단은 pageIndex -1. 문서가 없으면 오류.
+   */
+  getParagraphAnchors(): Promise<ParagraphAnchor[]>;
+}
+
+export interface ParagraphAnchor {
+  section: number;
+  paragraph: number;
+  pageIndex: number;
+  x: number;
+  y: number;
+  height: number;
+  kind: 'table' | 'text' | 'empty' | 'object';
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -154,6 +170,7 @@ export async function routeEmbedRequest(
     case 'applyEdits': return handlers.applyEdits(asEdits(params.edits));
     case 'revertLastBatch': return handlers.revertLastBatch();
     case 'setInputLocked': return handlers.setInputLocked(params.locked === true);
+    case 'getParagraphAnchors': return handlers.getParagraphAnchors();
     default: throw new Error(`Unknown method: ${method}`);
   }
 }
