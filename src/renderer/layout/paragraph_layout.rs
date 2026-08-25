@@ -2453,6 +2453,22 @@ impl LayoutEngine {
         }
     }
 
+    /// [파리티 라운드3 J5] 인라인 탭(ext[0] 폭·ext[2] 종류)은 HWP5 `tab_extended` 의 실측
+    /// 전진값이지만, HWPX `<hp:tab width type>` 은 문단 tabPr 과 어긋날 때 한컴이 tabPr 을
+    /// 따른다 (jbnu-002 머리말: 인라인 LEFT 4000HU vs tabPr CENTER 19216 — 한컴 제목 중심
+    /// 19200HU 실측). HWPX 이고 사용자 탭 정지가 있으면 정지 경로(find_next_tab_stop)를 쓴다.
+    fn effective_inline_tabs(
+        &self,
+        composed: &ComposedParagraph,
+        tab_stops: &[TabStop],
+    ) -> Vec<[u16; 7]> {
+        if self.is_hwpx_source.get() && !tab_stops.is_empty() {
+            Vec::new()
+        } else {
+            composed.tab_extended.clone()
+        }
+    }
+
     pub(crate) fn layout_composed_paragraph(
         &self,
         tree: &mut PageRenderTree,
@@ -3420,8 +3436,12 @@ impl LayoutEngine {
             // 머리말/꼬리말은 내부 문단 인덱스를 `usize::MAX - i`로 넘긴다.
             // HWP3 머리말 단일 줄 Justify도 한컴처럼 머리말 폭까지 공간을 벌려야 한다.
             let is_header_footer_para = para_index >= usize::MAX - 1024;
+            // [파리티 라운드3 J5] 탭이 있는 머리말/꼬리말 줄은 탭 정렬(가운데/오른쪽 탭)이
+            // 배치를 정하므로 마지막 줄 양쪽정렬 예외를 적용하지 않는다 — jbnu-002 머리말
+            // "\t제목\t쪽번호" 가 단어 단위로 벌어지던 것(한컴: 제목 가운데 탭에 정렬).
+            let hf_line_has_tabs = comp_line.runs.iter().any(|r| r.text.contains('\t'));
             let needs_justify = alignment == Alignment::Justify
-                && (!is_last_line_of_para || is_header_footer_para)
+                && (!is_last_line_of_para || (is_header_footer_para && !hf_line_has_tabs))
                 && !has_forced_break;
             let needs_distribute = alignment == Alignment::Distribute
                 || (alignment == Alignment::Split && !is_last_line_of_para && !has_forced_break);
@@ -3483,7 +3503,7 @@ impl LayoutEngine {
                         ts.auto_tab_right = auto_tab_right;
                         ts.available_width = available_width;
                         ts.text_start_offset = effective_margin_left;
-                        ts.inline_tabs = composed.tab_extended.clone();
+                        ts.inline_tabs = self.effective_inline_tabs(composed, &tab_stops);
                         ts.extra_char_spacing = extra_char_sp;
                         if r.char_overlap.is_some() {
                             let fs = if ts.font_size > 0.0 {
@@ -4262,7 +4282,7 @@ impl LayoutEngine {
             text_style.auto_tab_right = auto_tab_right;
             text_style.available_width = available_width;
             text_style.text_start_offset = effective_margin_left;
-            text_style.inline_tabs = composed.tab_extended.clone();
+            text_style.inline_tabs = self.effective_inline_tabs(composed, tab_stops);
             if pending_right_leader_digit_render {
                 if run.text.trim().is_empty() {
                     pending_right_leader_digit_render = true;
@@ -5667,7 +5687,7 @@ impl LayoutEngine {
             ts.auto_tab_right = auto_tab_right;
             ts.available_width = available_width;
             ts.text_start_offset = effective_margin_left;
-            ts.inline_tabs = composed.tab_extended.clone();
+            ts.inline_tabs = self.effective_inline_tabs(composed, &tab_stops);
             if pending_right_leader_digit_est {
                 if run.text.trim().is_empty() {
                     pending_right_leader_digit_est = true;

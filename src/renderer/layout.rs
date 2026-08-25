@@ -2447,6 +2447,9 @@ impl LayoutEngine {
     fn page_auto_number_placeholder_positions(&self, para: &Paragraph) -> Vec<usize> {
         let ctrl_positions = crate::document_core::helpers::find_control_text_positions(para);
         let text_chars: Vec<char> = para.text.chars().collect();
+        if std::env::var("RHWP_DIAG_HF").is_ok() {
+            eprintln!("DIAG_HF text={:?} ctrl_positions={:?} controls={}", para.text, ctrl_positions, para.controls.len());
+        }
         let mut positions = Vec::new();
         let mut search_from = 0usize;
 
@@ -2466,7 +2469,18 @@ impl LayoutEngine {
                         .map_or(false, |ch| Self::is_auto_number_placeholder_char(*ch))
             });
 
-            let pos = direct_pos.or_else(|| {
+            // [파리티 라운드3 J5] HWPX 는 autoNum 컨트롤 위치가 텍스트 끝(placeholder 공백
+            // 바로 뒤)으로 오므로 직전 공백을 먼저 본다 — 종전 폴백은 문단 첫 공백(선행
+            // 가운데 탭 '\t')을 잡아 쪽번호가 제목 앞에 붙고 탭이 사라졌다 (jbnu-002 머리말).
+            let before_ctrl_pos = ctrl_positions.get(ctrl_idx).and_then(|&p| {
+                let q = p.checked_sub(1)?;
+                (q >= search_from
+                    && text_chars
+                        .get(q)
+                        .map_or(false, |ch| *ch == ' ' || *ch == '\u{0015}'))
+                .then_some(q)
+            });
+            let pos = direct_pos.or(before_ctrl_pos).or_else(|| {
                 Self::find_auto_number_placeholder_char(para, &text_chars, search_from)
             });
 
@@ -2480,7 +2494,8 @@ impl LayoutEngine {
     }
 
     fn is_auto_number_placeholder_char(ch: char) -> bool {
-        ch == '\u{0015}' || ch.is_whitespace()
+        // [파리티 라운드3 J5] 탭은 자리표시자가 아니다 (머리말 가운데/오른쪽 탭 보존)
+        ch == '\u{0015}' || (ch.is_whitespace() && ch != '\t')
     }
 
     fn is_auto_number_placeholder_at(para: &Paragraph, text_chars: &[char], idx: usize) -> bool {
