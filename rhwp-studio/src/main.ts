@@ -55,6 +55,7 @@ import {
 import { installEmbedRuntime } from '@/embed/runtime';
 import { applyEdits, buildOutline, readCheckStates, readPaths } from '@/embed/authoring';
 import { setEmbedInputLocked } from '@/embed/input-lock';
+import type { ParagraphAnchor } from '@/embed/rpc-router';
 import { AUTOSAVE_ENABLED, isEmbedded, isRestrictedSurface, shouldPromptLocalFonts, shouldPromptValidationWarnings, surfaceProfile } from '@/embed/host-policy';
 import { createEmbedToolbar, type EmbedToolbar } from '@/embed/embed-toolbar';
 import { installPdfPreviewTab } from '@/ui/pdf-preview-tab';
@@ -1488,6 +1489,15 @@ installEmbedRuntime({
     async setInputLocked(locked) {
       await initPromise;
       return { locked: setEmbedInputLocked(locked) };
+    },
+    async getParagraphAnchors() {
+      await initPromise;
+      if (wasm.pageCount === 0) {
+        throw new Error('document not loaded');
+      }
+      // 미뤄 둔 페이지네이션이 있으면 앵커가 낡은 쪽을 가리킨다 — export 와 같은 경계로 턴다.
+      flushDeferredPaginationBeforeEmbedOutput('paragraph-anchors');
+      return JSON.parse(wasm.getParagraphAnchorsJson()) as ParagraphAnchor[];
     },
   },
 });

@@ -2170,6 +2170,16 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 한채움 fork: 모든 최상위 문단의 첫 줄 앵커를 한 번에 반환한다 (서식 묶음 나누기).
+    ///
+    /// 반환: JSON `[{"section":N,"paragraph":N,"pageIndex":N,"x":F,"y":F,"height":F,"kind":"text|table|empty|object"}]`
+    /// 문단마다 `getCursorRect(section, paragraph, 0)` 과 같은 값이다. 조판되지 않은 문단은
+    /// `pageIndex:-1`. 좌표 단위는 `renderPageSvg` 와 같다.
+    #[wasm_bindgen(js_name = getParagraphAnchors)]
+    pub fn get_paragraph_anchors(&self) -> String {
+        self.paragraph_anchors_json_native()
+    }
+
     /// 줄 경계 offset을 특정 시각 줄 기준으로 해석한 커서 좌표를 반환한다.
     ///
     /// `at_end=false`이면 lineIndex 줄의 시작, `at_end=true`이면 lineIndex 줄의 끝을 반환한다.

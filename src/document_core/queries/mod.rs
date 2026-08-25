@@ -4,6 +4,7 @@ mod cursor_rect;
 pub(crate) mod doc_tree_nav;
 pub(crate) mod field_query;
 mod form_query;
+pub mod paragraph_anchors;
 pub mod rendering;
 mod search_query;
 pub mod structure;
