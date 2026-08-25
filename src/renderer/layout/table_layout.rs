@@ -2622,8 +2622,16 @@ impl LayoutEngine {
                 raw_y
             }
         } else if depth == 0 {
+            // [parity-round3 H3] 비-TAC 어울림(Square) 표의 문단 기준 양수 vert_offset —
+            // 분할 경로(table_partial.rs)와 동일 규칙. 페이지네이션 예산(v_offset_px)과 대칭.
+            let square_para_off = !table_treat_as_char
+                && matches!(table_text_wrap, crate::model::shape::TextWrap::Square)
+                && matches!(table.common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+                && signed_hwpunit(table.common.vertical_offset) > 0;
             let v_offset = if table_treat_as_char {
                 hwpunit_to_px(table.common.vertical_offset as i32, self.dpi)
+            } else if square_para_off {
+                hwpunit_to_px(signed_hwpunit(table.common.vertical_offset), self.dpi)
             } else {
                 0.0
             };

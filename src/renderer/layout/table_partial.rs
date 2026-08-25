@@ -1581,11 +1581,15 @@ impl LayoutEngine {
         // `raw_y.max(y_start)` 클램프가 있어 음수 무력화. Partial 경로에는
         // 클램프가 없으므로 게이트를 signed 비교로 정정해 동등 효과.
         let vert_off_signed = table.common.vertical_offset as i32;
+        // [parity-round3 H3] 어울림(Square) 표도 문단 기준 양수 vert_offset 을 첫 조각에
+        // 더한다 — 페이지네이션은 이미 v_offset_px 를 예산에서 빼므로(engine.rs) 렌더만
+        // 빠져 있던 비대칭. complex-full p9 117행 표(voff 307HU) 가 한컴보다 4px 위에
+        // 그려지던 원인.
         let y_start = if !is_continuation
             && !table.common.treat_as_char
             && matches!(
                 table.common.text_wrap,
-                crate::model::shape::TextWrap::TopAndBottom
+                crate::model::shape::TextWrap::TopAndBottom | crate::model::shape::TextWrap::Square
             )
             && matches!(
                 table.common.vert_rel_to,
