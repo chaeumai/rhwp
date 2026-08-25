@@ -1783,6 +1783,12 @@ fn parse_bullet_hwpx(
                     bullet.width_adjust = head.width_adjust;
                     bullet.text_distance = head.text_distance;
                     bullet.char_shape_id = head.char_shape_id;
+                    // [파리티 라운드3 J12] checkable 보존
+                    for attr in ee.attributes().flatten() {
+                        if attr.key.as_ref() == b"checkable" {
+                            bullet.checkable = attr_str(&attr) == "1";
+                        }
+                    }
                 }
                 // [파리티 라운드3 J2] 이미지 글머리표 `<hc:img binaryItemIDRef="imageN"/>` —
                 // 그림 컨트롤과 같은 규약으로 N 을 BinData ID 로 쓴다 (complex-full 제목의 ■ 아이콘).

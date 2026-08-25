@@ -863,6 +863,7 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
         image_data,
         check_bullet_char,
         image_bin_data_id,
+        checkable: false,
     })
 }
 

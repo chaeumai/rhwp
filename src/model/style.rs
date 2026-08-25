@@ -369,6 +369,9 @@ pub struct Bullet {
     /// [파리티 라운드3 J2] 이미지 글머리표의 BinData ID — HWPX `<hc:img binaryItemIDRef="imageN">`
     /// 의 N(그림 컨트롤과 같은 규약), HWP5 는 image_data 의 ID 바이트. 0 = 없음.
     pub image_bin_data_id: u16,
+    /// [파리티 라운드3 J12] HWPX `<hh:paraHead checkable="1">` — 체크 글머리표 여부.
+    /// 종전 직렬화기가 "0" 을 하드코딩해 왕복에서 유실됐다 (멘토링 신청서 멘티용-2).
+    pub checkable: bool,
 }
 
 /// 텍스트 정렬 방식

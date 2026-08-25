@@ -970,7 +970,8 @@ fn write_bullet<W: Write>(
             ("textOffset", &text_offset_s),
             ("numFormat", "DIGIT"),
             ("charPrIDRef", &char_pr_s),
-            ("checkable", "0"),
+            // [파리티 라운드3 J12] 파서가 읽은 checkable 을 되돌려 쓴다 (종전 "0" 고정)
+            ("checkable", if b.checkable { "1" } else { "0" }),
         ],
     )?;
     end_tag(w, "hh:bullet")?;
