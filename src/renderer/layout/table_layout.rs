@@ -6510,7 +6510,16 @@ impl LayoutEngine {
         let mut hit_hard_break = false;
         let mut fully_consumed = true;
         let mut consumed_height = 0.0f64;
-        const HARD_BREAK_REMAINING_TOLERANCE_PX: f64 = 32.0;
+        // [파리티 라운드3 J9] HWPX(한컴 저장본)의 셀 내부 vpos 리셋은 실제 쪽 경계다 — 남은
+        // 공간이 64px(≈2줄) 이하면 리셋을 따른다 (550 p49: 51px 남기고 Article 6 을 p50 으로,
+        // 종전 32px 문턱은 리셋을 무시해 첫 줄을 조각에 넣고 렌더는 저장 vpos 로 쪽 밖에 그림).
+        let hard_break_remaining_tolerance_px: f64 = if self.is_hwpx_source.get() {
+            64.0
+        } else {
+            32.0
+        };
+        #[allow(non_snake_case)]
+        let HARD_BREAK_REMAINING_TOLERANCE_PX = hard_break_remaining_tolerance_px;
         const ROWBREAK_VISIBLE_TAIL_OVERFLOW_TOLERANCE_PX: f64 = 120.0;
         let row_has_top_and_bottom_flow = row_cells
             .iter()
@@ -6714,7 +6723,13 @@ impl LayoutEngine {
         let mut hit_hard_break = false;
         let mut fully_consumed = true;
         let mut consumed_height = 0.0f64;
-        const HARD_BREAK_REMAINING_TOLERANCE_PX: f64 = 32.0;
+        // [파리티 라운드3 J9] advance_row_cut 과 동일 — HWPX 는 저장 리셋 신뢰 허용치 64px
+        #[allow(non_snake_case)]
+        let HARD_BREAK_REMAINING_TOLERANCE_PX: f64 = if self.is_hwpx_source.get() {
+            64.0
+        } else {
+            32.0
+        };
         const ROWBREAK_VISIBLE_TAIL_OVERFLOW_TOLERANCE_PX: f64 = 120.0;
         let block_has_top_and_bottom_flow = cells
             .iter()
@@ -6901,7 +6916,13 @@ impl LayoutEngine {
         // 무시하고 fresh 재배치로 쪽을 만충한다(연결맵 p26 = 81줄 실측, #2291).
         // 종전 이 walk 는 hard-break 에서 무조건 정지해 예산 잔여(≤52px)를 버리고
         // 조각 경계가 한글과 어긋났다.
-        const HARD_BREAK_REMAINING_TOLERANCE_PX: f64 = 32.0;
+        // [파리티 라운드3 J9] advance_row_cut 과 동일 — HWPX 는 저장 리셋 신뢰 허용치 64px
+        #[allow(non_snake_case)]
+        let HARD_BREAK_REMAINING_TOLERANCE_PX: f64 = if self.is_hwpx_source.get() {
+            64.0
+        } else {
+            32.0
+        };
         let block_has_top_and_bottom_flow = cells
             .iter()
             .any(|cell| self.cell_has_top_and_bottom_non_inline_flow(cell));
