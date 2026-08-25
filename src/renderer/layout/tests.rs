@@ -2126,6 +2126,58 @@ fn header_paper_relative_picture_uses_page_origin() {
     assert!((bbox.y - hwpunit_to_px(2_250, DEFAULT_DPI)).abs() < 0.01);
 }
 
+/// [parity-round3 H1] 머리말 안의 Paper 기준 자리차지 표는 머리말 영역 상단(위쪽 여백)이
+/// 원점이다. complex-full sec2 머리말 표(vertOffset −1417HU) 가 한컴 PDF/HTML 에서
+/// top=10mm(=15mm−5mm) 에 놓이는 것을 근거로 한다. 종전엔 용지 원점(0) 을 써서 −18.9px
+/// 로 종이 밖에 그려졌다.
+#[test]
+fn header_paper_relative_table_uses_header_area_origin() {
+    use crate::model::table::{Cell, Table};
+
+    let table = Table {
+        row_count: 1,
+        col_count: 1,
+        row_sizes: vec![1],
+        cells: vec![Cell {
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: 48_196,
+            height: 2_162,
+            border_fill_id: 1,
+            paragraphs: vec![Paragraph {
+                text: "머리말".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        common: CommonObjAttr {
+            width: 48_196,
+            height: 2_162,
+            vertical_offset: (-1_417i32) as u32,
+            horz_rel_to: HorzRelTo::Para,
+            vert_rel_to: VertRelTo::Paper,
+            vert_align: crate::model::shape::VertAlign::Top,
+            text_wrap: TextWrap::TopAndBottom,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let tree = render_tree_with_header_control(Control::Table(Box::new(table)));
+    let bbox = first_header_child_bbox(&tree, |node_type| {
+        matches!(node_type, RenderNodeType::Table(_))
+    });
+    // a4_page_def: margin_top 5669 → 머리말 영역 상단 = 75.6px; 표 top = 75.6 − 18.9 = 56.7px
+    let expected = hwpunit_to_px(5_669 - 1_417, DEFAULT_DPI);
+    assert!(
+        (bbox.y - expected).abs() < 0.05,
+        "header paper table y={} expected={}",
+        bbox.y,
+        expected
+    );
+}
+
 // [Task #2102] 쪽 배경 이미지 채우기는 구역 첫 쪽에만 적용된다.
 // 색 채우기는 첫 쪽 여부와 무관하게 유지된다.
 

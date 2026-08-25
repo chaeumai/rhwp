@@ -795,6 +795,7 @@ impl LayoutEngine {
                                 0.0,
                                 para_y,
                                 allow_para_top_bleed,
+                                clamp_header_negative_para_offset.then_some(col_area.y),
                             )
                         } else {
                             y_start
@@ -1146,6 +1147,7 @@ impl LayoutEngine {
                 caption_spacing,
                 para_y,
                 allow_para_top_bleed,
+                clamp_header_negative_para_offset.then_some(col_area.y),
             );
             if depth > 0 && render_caption {
                 computed_y + top_caption_flow_extra(&table.caption, caption_height, caption_spacing)
@@ -2490,6 +2492,7 @@ impl LayoutEngine {
         caption_spacing: f64,
         para_y: Option<f64>,
         allow_para_top_bleed: bool,
+        header_paper_origin_y: Option<f64>,
     ) -> f64 {
         let table_treat_as_char = table.common.treat_as_char;
         let table_text_wrap = if depth == 0 {
@@ -2532,7 +2535,13 @@ impl LayoutEngine {
                 crate::model::shape::VertRelTo::Para => {
                     (anchor_y, col_area.height - (anchor_y - col_area.y).max(0.0))
                 }
-                crate::model::shape::VertRelTo::Paper => (0.0, page_h_approx),
+                // [parity-round3 H1] 머리말 안의 Paper 기준 표는 한컴이 용지 상단이 아니라
+                // 머리말 영역 상단(위쪽 여백)을 원점으로 삼는다 — complex-full sec2 머리말 표
+                // (vertOffset −1417HU) 가 한컴 PDF/HTML 에서 top=10mm(=15−5) 에 놓임.
+                // 본문·바탕쪽 문맥(None)은 종전대로 용지 원점.
+                crate::model::shape::VertRelTo::Paper => {
+                    (header_paper_origin_y.unwrap_or(0.0), page_h_approx)
+                }
             };
             // Top 캡션: 표 위치를 캡션 높이만큼 아래로 이동
             let caption_top_offset = if let Some(ref cap) = table.caption {
