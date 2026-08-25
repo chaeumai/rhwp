@@ -7288,7 +7288,27 @@ impl LayoutEngine {
                                 t.page_break,
                                 crate::model::table::TablePageBreak::RowBreak
                             )
-                            && para_has_non_whitespace_text(para) =>
+                            && para_has_non_whitespace_text(para)
+                            // [파리티 라운드3 J1] #1686 의 "호스트 텍스트를 마지막 조각
+                            // 뒤에" 는 voff=0(표가 문단 첫 줄 자리)인 표본의 규칙이다.
+                            // voff 가 첫 줄 높이 이상이면 한컴은 텍스트를 표 **위**에
+                            // 둔다 (complex p52 '중점 주제의 적합성' voff 2230HU, 줄
+                            // 1040HU — 한컴 830.1px 제목 → 852.9px 표). 그 경우 첫 조각
+                            // 경로가 그린다.
+                            && {
+                                let voff = hwpunit_to_px(
+                                    t.common.vertical_offset as i32,
+                                    self.dpi,
+                                );
+                                let first_line = para
+                                    .line_segs
+                                    .first()
+                                    .map(|ls| {
+                                        hwpunit_to_px(ls.line_height + ls.line_spacing, self.dpi)
+                                    })
+                                    .unwrap_or(0.0);
+                                first_line <= 0.0 || voff + 0.5 < first_line
+                            } =>
                     {
                         Some(t.row_count as usize)
                     }
