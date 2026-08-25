@@ -5608,6 +5608,19 @@ impl LayoutEngine {
                         }
                         if ri + 1 == nrow {
                             uh += om_bot + spacing_after;
+                            // [파리티 라운드3 J7] 뒤에 문단이 더 있으면 표 줄의 저장 spacing 도
+                            // 흐름에 넣는다 — 텍스트 줄의 include_trailing_ls 와 같은 규칙. 빠지면
+                            // 다음 문단이 저장 vpos(spacing 포함)로 놓여 조각 바닥을 넘는다
+                            // (550 p20 '※ 구체적인 절차' 줄 8.8px 클립 + 다음 행이 끼어듦).
+                            if !is_last_para {
+                                let trailing_ls = p
+                                    .line_segs
+                                    .last()
+                                    .filter(|seg| !line_seg_is_synthetic(seg))
+                                    .map(|seg| hwpunit_to_px(seg.line_spacing.max(0), self.dpi))
+                                    .unwrap_or(0.0);
+                                uh += trailing_ls;
+                            }
                         }
                         units.push(CellUnit {
                             height: uh,
