@@ -2049,6 +2049,33 @@ impl HwpDocument {
         Ok(para.text.chars().count() as u32)
     }
 
+    /// 본문 문단에 포함된 표 컨트롤 인덱스를 JSON 배열로 반환한다.
+    #[wasm_bindgen(js_name = getTableControlIndices)]
+    pub fn get_table_control_indices(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_table_control_indices_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    /// 셀/글상자 안 문단에 포함된 표 컨트롤 인덱스를 JSON 배열로 반환한다.
+    #[wasm_bindgen(js_name = getTableControlIndicesByPath)]
+    pub fn get_table_control_indices_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+    ) -> Result<String, JsValue> {
+        self.get_table_control_indices_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            path_json,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표 셀의 텍스트 방향을 반환한다 (0=가로, 1=세로/영문눕힘, 2=세로/영문세움).
     #[wasm_bindgen(js_name = getCellTextDirection)]
     pub fn get_cell_text_direction(
@@ -2141,6 +2168,16 @@ impl HwpDocument {
             char_offset as usize,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 한채움 fork: 모든 최상위 문단의 첫 줄 앵커를 한 번에 반환한다 (서식 묶음 나누기).
+    ///
+    /// 반환: JSON `[{"section":N,"paragraph":N,"pageIndex":N,"x":F,"y":F,"height":F,"kind":"text|table|empty|object"}]`
+    /// 문단마다 `getCursorRect(section, paragraph, 0)` 과 같은 값이다. 조판되지 않은 문단은
+    /// `pageIndex:-1`. 좌표 단위는 `renderPageSvg` 와 같다.
+    #[wasm_bindgen(js_name = getParagraphAnchors)]
+    pub fn get_paragraph_anchors(&self) -> String {
+        self.paragraph_anchors_json_native()
     }
 
     /// 줄 경계 offset을 특정 시각 줄 기준으로 해석한 커서 좌표를 반환한다.
@@ -5571,6 +5608,41 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 본문 또는 중첩 표 셀 문단의 문단 속성을 동일한 path 계약으로 조회한다.
+    /// `cell_path_json`이 빈 배열이면 `parent_para_idx`가 본문 문단이다.
+    #[wasm_bindgen(js_name = getParaPropertiesByPath)]
+    pub fn get_para_properties_by_path(
+        &self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let cell_path = parse_cell_path_arg(cell_path_json)?;
+        self.get_para_properties_by_path_native(sec_idx, parent_para_idx, &cell_path)
+            .map_err(|e| e.into())
+    }
+
+    /// HWPX 네이티브 체크 글머리표의 문단별 선택 상태를 바꾼다.
+    #[wasm_bindgen(js_name = setCheckStateByPath)]
+    pub fn set_check_state_by_path(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        expected_checked: bool,
+        checked: bool,
+    ) -> Result<String, JsValue> {
+        let cell_path = parse_cell_path_arg(cell_path_json)?;
+        self.set_check_state_by_path_native(
+            sec_idx,
+            parent_para_idx,
+            &cell_path,
+            expected_checked,
+            checked,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 셀 내부 문단의 문단 속성을 조회한다.
     #[wasm_bindgen(js_name = getCellParaPropertiesAt)]
     pub fn get_cell_para_properties_at(
@@ -5888,7 +5960,7 @@ impl HwpDocument {
             lang_id: 1042, // 한국어 default (HWP5 spec 표 47)
             para_shape_id,
             char_shape_id,
-        lock_form: None,
+            lock_form: None,
         };
         self.core.document.doc_info.styles.push(new_style);
         self.core.document.doc_info.raw_stream_dirty = true;

@@ -382,6 +382,12 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).getStructureSignature());
   }
 
+  /** 한채움 fork: 최상위 문단 앵커 일괄(JSON 문자열, getParagraphAnchors 계약). */
+  getParagraphAnchorsJson(): string {
+    if (!this.doc) throw new Error('document not loaded');
+    return (this.doc as any).getParagraphAnchors();
+  }
+
   flushDeferredPagination(): { ok: boolean; pageCount?: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as { flushDeferredPagination?: () => string };
@@ -930,6 +936,16 @@ export class WasmBridge {
   getCellParagraphCountByPath(sec: number, parentPara: number, pathJson: string): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.getCellParagraphCountByPath(sec, parentPara, pathJson);
+  }
+
+  getTableControlIndices(sec: number, para: number): number[] {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getTableControlIndices(sec, para));
+  }
+
+  getTableControlIndicesByPath(sec: number, parentPara: number, pathJson: string): number[] {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getTableControlIndicesByPath(sec, parentPara, pathJson));
   }
 
   getCellParagraphLengthByPath(sec: number, parentPara: number, pathJson: string): number {
@@ -1836,6 +1852,22 @@ export class WasmBridge {
   getParaPropertiesAt(sec: number, para: number): ParaProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getParaPropertiesAt(sec, para));
+  }
+
+  getParaPropertiesByPath(sec: number, parentPara: number, pathJson: string): ParaProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getParaPropertiesByPath(sec, parentPara, pathJson));
+  }
+
+  setCheckStateByPath(
+    sec: number,
+    parentPara: number,
+    pathJson: string,
+    expectedChecked: boolean,
+    checked: boolean,
+  ): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).setCheckStateByPath(sec, parentPara, pathJson, expectedChecked, checked);
   }
 
   getCellParaPropertiesAt(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number): ParaProperties {

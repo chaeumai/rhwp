@@ -923,6 +923,11 @@ pub struct ParaShapeMods {
     pub border_spacing: Option<[i16; 4]>,
     pub border_connect: Option<bool>,
     pub border_ignore_margin: Option<bool>,
+    /// HWPX 체크 글머리표의 문단별 선택 상태 (`paraPr@checked`).
+    ///
+    /// 같은 ParaShape를 여러 선택지가 공유하므로 원본을 직접 바꾸지 않고
+    /// `find_or_create_para_shape`가 복제·재사용한 모양에만 적용한다.
+    pub checked: Option<bool>,
 }
 
 impl ParaShapeMods {
@@ -1021,6 +1026,9 @@ impl ParaShapeMods {
         }
         if let Some(v) = self.border_ignore_margin {
             set_bit(&mut ps.attr1, 29, v);
+        }
+        if let Some(v) = self.checked {
+            ps.checked = Some(if v { "1" } else { "0" }.to_string());
         }
         ps
     }

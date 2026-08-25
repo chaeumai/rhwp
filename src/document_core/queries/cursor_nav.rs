@@ -38,6 +38,47 @@ pub(crate) struct LineCursorHit {
 }
 
 impl DocumentCore {
+    fn table_control_indices_json(para: &Paragraph) -> String {
+        let indices = para
+            .controls
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, control)| {
+                matches!(control, Control::Table(_)).then_some(idx.to_string())
+            })
+            .collect::<Vec<_>>();
+        format!("[{}]", indices.join(","))
+    }
+
+    /// 본문 문단에 실제로 들어 있는 표 컨트롤 인덱스를 문서 순서대로 반환한다.
+    pub(crate) fn get_table_control_indices_native(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+    ) -> Result<String, HwpError> {
+        let para = self
+            .document
+            .sections
+            .get(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?
+            .paragraphs
+            .get(para_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", para_idx)))?;
+        Ok(Self::table_control_indices_json(para))
+    }
+
+    /// 셀/글상자 안 문단에 실제로 들어 있는 표 컨트롤 인덱스를 반환한다.
+    pub(crate) fn get_table_control_indices_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path_json: &str,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path(path_json)?;
+        let para = self.resolve_paragraph_by_path(section_idx, parent_para_idx, &path)?;
+        Ok(Self::table_control_indices_json(para))
+    }
+
     pub(crate) fn get_line_info_native(
         &self,
         section_idx: usize,
@@ -1858,22 +1899,19 @@ impl DocumentCore {
                     // 비교해 깊이2+ 셀의 run 이 매칭되지 않아 선택 하이라이트가
                     // 통째로 사라졌다 (2026-08-18, 009 안내문 박스 실측).
                     // 마지막 entry 의 문단은 순회 인자 cpi 로 비교한다.
-                    let matches_cell = tr.cell_context.as_ref().map_or(false, |ctx| {
-                        ctx.parent_para_index == ppi
-                            && ctx.path.len() == path.len()
-                            && ctx.path.iter().zip(path.iter()).enumerate().all(
-                                |(i, (a, b))| {
-                                    a.control_index == b.0
-                                        && a.cell_index == b.1
-                                        && (i + 1 == path.len()
-                                            || a.cell_para_index == b.2)
-                                },
-                            )
-                            && ctx
-                                .path
-                                .last()
-                                .map_or(false, |e| e.cell_para_index == cpi)
-                    });
+                    let matches_cell =
+                        tr.cell_context.as_ref().map_or(false, |ctx| {
+                            ctx.parent_para_index == ppi
+                                && ctx.path.len() == path.len()
+                                && ctx.path.iter().zip(path.iter()).enumerate().all(
+                                    |(i, (a, b))| {
+                                        a.control_index == b.0
+                                            && a.cell_index == b.1
+                                            && (i + 1 == path.len() || a.cell_para_index == b.2)
+                                    },
+                                )
+                                && ctx.path.last().map_or(false, |e| e.cell_para_index == cpi)
+                        });
                     if matches_cell {
                         let cs = tr.char_start.unwrap_or(0);
                         let cc = tr.text.chars().count();
@@ -2162,6 +2200,22 @@ impl DocumentCore {
 mod selection_rects_tests {
     use crate::model::control::Control;
 
+    #[test]
+    fn table_control_indices_are_exact_and_not_probe_limited() {
+        let mut para = crate::model::paragraph::Paragraph::default();
+        for _ in 0..9 {
+            para.controls.push(Control::Equation(Box::default()));
+        }
+        para.controls.push(Control::Table(Box::default()));
+        para.controls.push(Control::Equation(Box::default()));
+        para.controls.push(Control::Table(Box::default()));
+
+        assert_eq!(
+            crate::document_core::DocumentCore::table_control_indices_json(&para),
+            "[9,11]"
+        );
+    }
+
     fn load(path: &str) -> Option<crate::document_core::DocumentCore> {
         let p = std::path::Path::new(path);
         if !p.exists() {
@@ -2191,11 +2245,7 @@ mod selection_rects_tests {
                                 };
                                 let n = inner_para.text.chars().count();
                                 if n >= 2 {
-                                    return Some((
-                                        ppi,
-                                        vec![(ci, cei, cpi), (ci2, cei2, 0)],
-                                        n,
-                                    ));
+                                    return Some((ppi, vec![(ci, cei, cpi), (ci2, cei2, 0)], n));
                                 }
                             }
                         }
@@ -2222,14 +2272,14 @@ mod selection_rects_tests {
             .get_selection_rects_native(0, 0, 0, 0, end, Some((ppi, path.clone())))
             .expect("selection rects");
         assert_ne!(
-            rects, "[]",
+            rects,
+            "[]",
             "깊이2 셀 {:?} 안 0..{} 선택은 rect 를 내야 한다",
             (ppi, &path),
             end
         );
         assert!(rects.contains("\"width\""), "rect JSON 형태: {}", rects);
     }
-
 
     /// [2026-08-18 재현] 깊이2 셀의 "텍스트 줄 밖 여백" 클릭 — 캐럿이 외곽
     /// placeholder run 으로 새는지. 깊이2 셀 bbox 를 렌더 트리에서 찾아
@@ -2270,7 +2320,10 @@ mod selection_rects_tests {
             }
         }
         walk(&tree.root, &mut nested_runs);
-        assert!(!nested_runs.is_empty(), "깊이2 run 이 렌더 트리에 있어야 한다");
+        assert!(
+            !nested_runs.is_empty(),
+            "깊이2 run 이 렌더 트리에 있어야 한다"
+        );
         // 첫 깊이2 run 의 오른쪽 바깥(같은 y, x=run 끝+40px) — 셀 안 여백 근사
         let (x, y, w, h, _) = nested_runs[0];
         let probe_x = x + w + 40.0;
@@ -2310,6 +2363,10 @@ mod selection_rects_tests {
         let rects = core
             .get_selection_rects_native(0, 0, 0, 0, n - 1, Some((ppi, vec![(ci, cei, 0)])))
             .expect("selection rects");
-        assert_ne!(rects, "[]", "깊이1 셀 선택 rect 유지 (ppi={} ci={} cei={})", ppi, ci, cei);
+        assert_ne!(
+            rects, "[]",
+            "깊이1 셀 선택 rect 유지 (ppi={} ci={} cei={})",
+            ppi, ci, cei
+        );
     }
 }

@@ -690,4 +690,34 @@ mod tests {
         assert_eq!(id2, 1);
         assert_eq!(doc.doc_info.para_shapes.len(), 2);
     }
+
+    #[test]
+    fn test_find_or_create_checked_para_shape_does_not_mutate_shared_base() {
+        use super::style::{HeadType, ParaShape, ParaShapeMods};
+        let mut doc = Document::default();
+        doc.doc_info.para_shapes.push(ParaShape {
+            head_type: HeadType::Bullet,
+            numbering_id: 2,
+            checked: Some("0".to_string()),
+            ..Default::default()
+        });
+
+        let checked_id = doc.find_or_create_para_shape(
+            0,
+            &ParaShapeMods { checked: Some(true), ..Default::default() },
+        );
+
+        assert_eq!(checked_id, 1);
+        assert_eq!(doc.doc_info.para_shapes[0].checked.as_deref(), Some("0"));
+        assert_eq!(doc.doc_info.para_shapes[1].checked.as_deref(), Some("1"));
+        assert_eq!(doc.doc_info.para_shapes[1].numbering_id, 2);
+        assert_eq!(doc.doc_info.para_shapes[1].head_type, HeadType::Bullet);
+
+        let reused_id = doc.find_or_create_para_shape(
+            0,
+            &ParaShapeMods { checked: Some(true), ..Default::default() },
+        );
+        assert_eq!(reused_id, checked_id);
+        assert_eq!(doc.doc_info.para_shapes.len(), 2);
+    }
 }

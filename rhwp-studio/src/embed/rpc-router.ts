@@ -37,6 +37,7 @@ export interface EmbedRpcHandlers {
   /** 한채움 fork: AI 작성 표면 (ai-authoring-v1). */
   getOutline(): Promise<Outline>;
   getTextByPaths(paths: readonly string[]): Promise<Array<{ path: string; text: string | null }>>;
+  getCheckStates(paths: readonly string[]): Promise<Array<{ path: string; checked: boolean | null }>>;
   applyEdits(edits: readonly EditRequest[]): Promise<ApplyEditsResult>;
   revertLastBatch(): Promise<{ ok: boolean; reverted: boolean }>;
   /**
@@ -45,6 +46,22 @@ export interface EmbedRpcHandlers {
    * 막히지 않는 경로(직접 타이핑·붙여넣기·IME)라 별도 잠금이 필요하다.
    */
   setInputLocked(locked: boolean): Promise<{ locked: boolean }>;
+  /**
+   * 한채움 fork (paragraphAnchors): 모든 최상위 문단의 첫 줄 위치를 문서 순서로.
+   * 문단마다 getCursorRect(section, paragraph, 0) 과 같은 값이며 좌표 단위는 getPageSvg 와
+   * 같다. 조판되지 않은 문단은 pageIndex -1. 문서가 없으면 오류.
+   */
+  getParagraphAnchors(): Promise<ParagraphAnchor[]>;
+}
+
+export interface ParagraphAnchor {
+  section: number;
+  paragraph: number;
+  pageIndex: number;
+  x: number;
+  y: number;
+  height: number;
+  kind: 'table' | 'text' | 'empty' | 'object';
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -81,9 +98,27 @@ function asEdits(value: unknown): EditRequest[] {
     if (typeof entry !== 'object' || entry === null) throw new Error('edit must be an object');
     const edit = entry as Record<string, unknown>;
     if (typeof edit.path !== 'string' || edit.path.length === 0) throw new Error('edit.path must be a non-empty string');
+    if (edit.operation === 'SET_CHECKED') {
+      if (typeof edit.expectedChecked !== 'boolean') throw new Error('edit.expectedChecked must be a boolean');
+      if (typeof edit.checked !== 'boolean') throw new Error('edit.checked must be a boolean');
+      return {
+        operation: 'SET_CHECKED',
+        path: edit.path,
+        expectedChecked: edit.expectedChecked,
+        checked: edit.checked,
+      };
+    }
+    if (edit.operation !== undefined && edit.operation !== 'SET_TEXT') {
+      throw new Error('edit.operation must be SET_TEXT or SET_CHECKED');
+    }
     if (typeof edit.expectedText !== 'string') throw new Error('edit.expectedText must be a string');
     if (typeof edit.newText !== 'string') throw new Error('edit.newText must be a string');
-    return { path: edit.path, expectedText: edit.expectedText, newText: edit.newText };
+    return {
+      ...(edit.operation === 'SET_TEXT' ? { operation: 'SET_TEXT' as const } : {}),
+      path: edit.path,
+      expectedText: edit.expectedText,
+      newText: edit.newText,
+    };
   });
 }
 
@@ -131,9 +166,11 @@ export async function routeEmbedRequest(
     case 'exportHwpVerify': return handlers.exportHwpVerify();
     case 'getOutline': return handlers.getOutline();
     case 'getTextByPaths': return handlers.getTextByPaths(asPaths(params.paths));
+    case 'getCheckStates': return handlers.getCheckStates(asPaths(params.paths));
     case 'applyEdits': return handlers.applyEdits(asEdits(params.edits));
     case 'revertLastBatch': return handlers.revertLastBatch();
     case 'setInputLocked': return handlers.setInputLocked(params.locked === true);
+    case 'getParagraphAnchors': return handlers.getParagraphAnchors();
     default: throw new Error(`Unknown method: ${method}`);
   }
 }

@@ -171,6 +171,8 @@ pub struct ResolvedParaStyle {
     pub para_level: u8,
     /// 번호/글머리표 ID 참조
     pub numbering_id: u16,
+    /// HWPX 체크 글머리표의 문단별 선택 상태.
+    pub checked: bool,
     /// 테두리/배경 ID 참조 (0이면 없음)
     pub border_fill_id: u16,
     /// 테두리 안쪽 간격 (좌, 우, 상, 하) (px)
@@ -212,6 +214,7 @@ impl Default for ResolvedParaStyle {
             head_type: HeadType::None,
             para_level: 0,
             numbering_id: 0,
+            checked: false,
             border_fill_id: 0,
             border_spacing: [0.0; 4],
             default_tab_width: 0.0,
@@ -862,6 +865,7 @@ fn resolve_single_para_style(
         head_type: ps.head_type,
         para_level: ps.para_level,
         numbering_id: ps.numbering_id,
+        checked: matches!(ps.checked.as_deref(), Some("1" | "true" | "TRUE")),
         border_fill_id: ps.border_fill_id,
         border_spacing: [
             hwpunit_to_px(ps.border_spacing[0] as i32, dpi),

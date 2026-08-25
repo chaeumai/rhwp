@@ -14,6 +14,7 @@
  * 주소 문법:
  *   본문 문단  s{sec}/p{para}
  *   표 셀      s{sec}/p{para}/c{ctrl}/cell{idx}/p{cellPara}
+ *   중첩 표 셀 s{sec}/p{para}/c{ctrl}/cell{idx}/p{cellPara}/c{ctrl}/cell{idx}/p{cellPara}...
  *
  * 이 주소는 **세션 안에서만** 유효하다. 편집으로 문단이 밀리면 같은 주소가
  * 다른 곳을 가리킨다. 그래서 쓰기는 expectedText 를 반드시 함께 받고,
@@ -45,12 +46,26 @@ export interface AuthoringDocument {
   getTextRange(sec: number, para: number, charOffset: number, count: number): string;
   getTableDimensions(sec: number, parentPara: number, controlIdx: number): TableDimensions;
   getCellInfo(sec: number, parentPara: number, controlIdx: number, cellIdx: number): CellInfo;
+  getTableControlIndices(sec: number, para: number): number[];
+  getTableControlIndicesByPath(sec: number, parentPara: number, pathJson: string): number[];
+  getTableDimensionsByPath(sec: number, parentPara: number, pathJson: string): TableDimensions;
+  getCellInfoByPath(sec: number, parentPara: number, pathJson: string): CellInfo;
+  getCellParagraphCountByPath(sec: number, parentPara: number, pathJson: string): number;
   getTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string;
   getCellParagraphLengthByPath(sec: number, parentPara: number, pathJson: string): number;
   insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string): string;
   deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string;
   insertText(sec: number, para: number, charOffset: number, text: string): string;
   deleteText(sec: number, para: number, charOffset: number, count: number): string;
+  getParaPropertiesAt(sec: number, para: number): { checkable?: boolean; checked?: boolean };
+  getParaPropertiesByPath(sec: number, parentPara: number, pathJson: string): { checkable?: boolean; checked?: boolean };
+  setCheckStateByPath(
+    sec: number,
+    parentPara: number,
+    pathJson: string,
+    expectedChecked: boolean,
+    checked: boolean,
+  ): string;
   saveSnapshot(): number;
   restoreSnapshot(id: number): void;
   discardSnapshot(id: number): void;
@@ -64,7 +79,7 @@ export interface AuthoringDocument {
   removeFieldAt?(pos: FieldPosition): { ok: boolean };
 }
 
-export type NodeKind = 'paragraph' | 'cell';
+export type NodeKind = 'paragraph' | 'cell' | 'checkbox';
 
 export interface OutlineNode {
   /** 세션 유효 주소. read/write 의 path 인자로 그대로 쓴다. */
@@ -77,6 +92,8 @@ export interface OutlineNode {
   /** 표 셀일 때만. 0-based. */
   row?: number;
   col?: number;
+  /** 네이티브 체크 글머리표 노드일 때 현재 선택 상태. */
+  checked?: boolean;
 }
 
 export interface OutlineTable {
@@ -107,19 +124,31 @@ export interface Outline {
   truncated: boolean;
 }
 
-export interface EditRequest {
+export interface TextEditRequest {
+  operation?: 'SET_TEXT';
   path: string;
   /** 현재 그 자리에 있어야 하는 텍스트. 다르면 적용하지 않는다. */
   expectedText: string;
   newText: string;
 }
 
+export interface CheckEditRequest {
+  operation: 'SET_CHECKED';
+  path: string;
+  /** AI 응답을 기다리는 동안 사용자가 바꾼 상태를 덮지 않게 하는 기준값. */
+  expectedChecked: boolean;
+  checked: boolean;
+}
+
+export type EditRequest = TextEditRequest | CheckEditRequest;
+
 export interface EditOutcome {
   path: string;
   ok: boolean;
-  errorCode?: 'PATH_INVALID' | 'PATH_NOT_FOUND' | 'EXPECTED_TEXT_MISMATCH' | 'WRITE_FAILED';
+  errorCode?: 'PATH_INVALID' | 'PATH_NOT_FOUND' | 'EXPECTED_TEXT_MISMATCH' | 'EXPECTED_CHECKED_MISMATCH' | 'NOT_CHECKABLE' | 'WRITE_FAILED';
   /** 불일치 시 실제로 있던 텍스트. 호출자가 다시 판단할 근거. */
   actualText?: string;
+  actualChecked?: boolean;
 }
 
 export interface ApplyEditsResult {
@@ -133,8 +162,8 @@ export interface ApplyEditsResult {
 const PREVIEW_LIMIT = 40;
 /** outline 이 무한정 커지지 않게 하는 상한. 초과하면 truncated 로 알린다. */
 const MAX_OUTLINE_NODES = 2000;
-/** 문단 하나에서 표를 찾을 때 훑어볼 컨트롤 인덱스 범위. */
-const MAX_CONTROL_PROBE = 4;
+/** 비정상 문서가 순환 경로를 만들더라도 재귀가 끝나게 하는 상한. */
+const MAX_TABLE_DEPTH = 8;
 
 /** {@link AuthoringDocument.removeFieldAt} 이 받는 위치. `DocumentPosition` 의 부분집합이다. */
 export interface FieldPosition {
@@ -145,6 +174,7 @@ export interface FieldPosition {
   controlIndex?: number;
   cellIndex?: number;
   cellParaIndex?: number;
+  cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>;
   isTextBox?: boolean;
 }
 
@@ -152,26 +182,29 @@ interface ParsedPath {
   sec: number;
   para: number;
   /** 본문 문단이면 null. */
-  cell: { ctrl: number; cellIndex: number; cellPara: number } | null;
+  cells: Array<{ ctrl: number; cellIndex: number; cellPara: number }> | null;
 }
 
 const PARAGRAPH_PATH = /^s(\d+)\/p(\d+)$/;
-const CELL_PATH = /^s(\d+)\/p(\d+)\/c(\d+)\/cell(\d+)\/p(\d+)$/;
+const PATH_HEAD = /^s(\d+)\/p(\d+)(.*)$/;
+const CELL_SEGMENT = /^\/c(\d+)\/cell(\d+)\/p(\d+)/;
 
 export function parsePath(path: string): ParsedPath | null {
-  const cell = CELL_PATH.exec(path);
-  if (cell) {
-    return {
-      sec: Number(cell[1]),
-      para: Number(cell[2]),
-      cell: { ctrl: Number(cell[3]), cellIndex: Number(cell[4]), cellPara: Number(cell[5]) },
-    };
-  }
   const paragraph = PARAGRAPH_PATH.exec(path);
   if (paragraph) {
-    return { sec: Number(paragraph[1]), para: Number(paragraph[2]), cell: null };
+    return { sec: Number(paragraph[1]), para: Number(paragraph[2]), cells: null };
   }
-  return null;
+  const head = PATH_HEAD.exec(path);
+  if (!head || !head[3]) return null;
+  const cells: NonNullable<ParsedPath['cells']> = [];
+  let remaining = head[3];
+  while (remaining.length > 0) {
+    const segment = CELL_SEGMENT.exec(remaining);
+    if (!segment) return null;
+    cells.push({ ctrl: Number(segment[1]), cellIndex: Number(segment[2]), cellPara: Number(segment[3]) });
+    remaining = remaining.slice(segment[0].length);
+  }
+  return cells.length > 0 ? { sec: Number(head[1]), para: Number(head[2]), cells } : null;
 }
 
 export function paragraphPath(sec: number, para: number): string {
@@ -183,11 +216,20 @@ export function cellPath(sec: number, para: number, ctrl: number, cellIndex: num
 }
 
 function cellPathJson(parsed: ParsedPath): string {
-  const cell = parsed.cell;
-  if (!cell) throw new Error('cellPathJson requires a cell path');
-  return JSON.stringify([
-    { controlIndex: cell.ctrl, cellIndex: cell.cellIndex, cellParaIndex: cell.cellPara },
-  ]);
+  if (!parsed.cells) throw new Error('cellPathJson requires a cell path');
+  return cellSegmentsJson(parsed.cells);
+}
+
+function cellSegmentsJson(cells: NonNullable<ParsedPath['cells']>): string {
+  return JSON.stringify(cells.map((cell) => ({
+    controlIndex: cell.ctrl,
+    cellIndex: cell.cellIndex,
+    cellParaIndex: cell.cellPara,
+  })));
+}
+
+function cellSegmentsPath(sec: number, para: number, cells: NonNullable<ParsedPath['cells']>): string {
+  return `s${sec}/p${para}${cells.map((cell) => `/c${cell.ctrl}/cell${cell.cellIndex}/p${cell.cellPara}`).join('')}`;
 }
 
 function preview(text: string): string {
@@ -196,14 +238,14 @@ function preview(text: string): string {
 }
 
 /** 표가 아닌 문단에서 getTableDimensions 는 오류를 낸다. 존재 여부 판정에만 쓴다. */
-function tryTableDimensions(
+function tryTableDimensionsByPath(
   doc: AuthoringDocument,
   sec: number,
   para: number,
-  ctrl: number,
+  pathJson: string,
 ): TableDimensions | null {
   try {
-    const dimensions = doc.getTableDimensions(sec, para, ctrl);
+    const dimensions = doc.getTableDimensionsByPath(sec, para, pathJson);
     if (!dimensions || !Number.isFinite(dimensions.cellCount) || dimensions.cellCount <= 0) return null;
     return dimensions;
   } catch {
@@ -215,19 +257,24 @@ function tryTableDimensions(
  * 셀의 행·열 좌표. 병합이 있으면 cellCount 가 rowCount×colCount 와 다르므로
  * 인덱스에서 좌표를 계산하지 않고 문서에 물어본다.
  */
-function tryCellInfo(
+function tryCellInfoByPath(
   doc: AuthoringDocument,
   sec: number,
   para: number,
-  ctrl: number,
-  cellIndex: number,
+  pathJson: string,
 ): CellInfo | null {
   try {
-    const info = doc.getCellInfo(sec, para, ctrl, cellIndex);
+    const info = doc.getCellInfoByPath(sec, para, pathJson);
     return info && Number.isFinite(info.row) && Number.isFinite(info.col) ? info : null;
   } catch {
     return null;
   }
+}
+
+function tableControlIndices(values: unknown): number[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.filter((value): value is number => Number.isInteger(value) && value >= 0))]
+    .sort((left, right) => left - right);
 }
 
 function readCellText(doc: AuthoringDocument, sec: number, para: number, pathJson: string): string {
@@ -237,6 +284,25 @@ function readCellText(doc: AuthoringDocument, sec: number, para: number, pathJso
     return doc.getTextInCellByPath(sec, para, pathJson, 0, length) ?? '';
   } catch {
     return '';
+  }
+}
+
+interface CheckState {
+  checkable: boolean;
+  checked: boolean;
+}
+
+function readCheckStateAt(doc: AuthoringDocument, parsed: ParsedPath): CheckState | null {
+  try {
+    const properties = parsed.cells
+      ? doc.getParaPropertiesByPath(parsed.sec, parsed.para, cellPathJson(parsed))
+      : doc.getParaPropertiesAt(parsed.sec, parsed.para);
+    return {
+      checkable: properties?.checkable === true,
+      checked: properties?.checked === true,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -256,6 +322,79 @@ export function buildOutline(doc: AuthoringDocument): Outline {
     const paragraphs: OutlineNode[] = [];
     const tables: OutlineTable[] = [];
     const paragraphCount = doc.getParagraphCount(sec);
+    const visitedTables = new Set<string>();
+
+    const visitTable = (
+      para: number,
+      ancestors: NonNullable<ParsedPath['cells']>,
+      ctrl: number,
+      depth: number,
+    ): void => {
+      if (truncated) return;
+      if (depth > MAX_TABLE_DEPTH) {
+        truncated = true;
+        return;
+      }
+      const ancestorPath = ancestors
+        .map((cell) => `/c${cell.ctrl}/cell${cell.cellIndex}/p${cell.cellPara}`)
+        .join('');
+      const tablePath = `s${sec}/p${para}${ancestorPath}/c${ctrl}`;
+      if (visitedTables.has(tablePath)) return;
+      visitedTables.add(tablePath);
+
+      const tableLookup = [...ancestors, { ctrl, cellIndex: 0, cellPara: 0 }];
+      const dimensions = tryTableDimensionsByPath(doc, sec, para, cellSegmentsJson(tableLookup));
+      if (!dimensions) return;
+
+      const cells: OutlineNode[] = [];
+      const nestedTables: Array<{ ancestors: NonNullable<ParsedPath['cells']>; ctrl: number }> = [];
+      for (let cellIndex = 0; cellIndex < dimensions.cellCount && !truncated; cellIndex += 1) {
+        const containerPath = [...ancestors, { ctrl, cellIndex, cellPara: 0 }];
+        let paragraphTotal = 1;
+        try {
+          paragraphTotal = doc.getCellParagraphCountByPath(sec, para, cellSegmentsJson(containerPath));
+        } catch {
+          paragraphTotal = 1;
+        }
+        if (!Number.isFinite(paragraphTotal) || paragraphTotal < 1) paragraphTotal = 1;
+
+        for (let cellPara = 0; cellPara < paragraphTotal && !truncated; cellPara += 1) {
+          const pathSegments = [...ancestors, { ctrl, cellIndex, cellPara }];
+          const pathJson = cellSegmentsJson(pathSegments);
+          const text = readCellText(doc, sec, para, pathJson);
+          const checkState = readCheckStateAt(doc, { sec, para, cells: pathSegments });
+          let nestedControls: number[] = [];
+          try {
+            nestedControls = tableControlIndices(doc.getTableControlIndicesByPath(sec, para, pathJson));
+          } catch {
+            nestedControls = [];
+          }
+
+          // 중첩 표만 담는 빈 컨테이너는 값 입력 대상이 아니다. 일반 빈 셀은
+          // AI가 채울 자리이므로 남기고, 텍스트와 중첩 표가 함께 있으면 둘 다 남긴다.
+          if (nestedControls.length === 0 || text.trim().length > 0) {
+            if (nodeCount >= MAX_OUTLINE_NODES) {
+              truncated = true;
+              break;
+            }
+            const info = tryCellInfoByPath(doc, sec, para, pathJson);
+            cells.push({
+              path: cellSegmentsPath(sec, para, pathSegments),
+              kind: checkState?.checkable ? 'checkbox' : 'cell',
+              length: text.length,
+              preview: preview(text),
+              ...(checkState?.checkable ? { checked: checkState.checked } : {}),
+              ...(info ? { row: info.row, col: info.col } : {}),
+            });
+            nodeCount += 1;
+          }
+          nestedControls.forEach((nestedCtrl) => nestedTables.push({ ancestors: pathSegments, ctrl: nestedCtrl }));
+        }
+      }
+
+      tables.push({ path: tablePath, rows: dimensions.rowCount, cols: dimensions.colCount, cells });
+      nestedTables.forEach((nested) => visitTable(para, nested.ancestors, nested.ctrl, depth + 1));
+    };
 
     for (let para = 0; para < paragraphCount; para += 1) {
       if (nodeCount >= MAX_OUTLINE_NODES) {
@@ -263,41 +402,14 @@ export function buildOutline(doc: AuthoringDocument): Outline {
         break;
       }
 
-      // 표가 항상 컨트롤 0 인 것은 아니다(문단에 다른 컨트롤이 먼저 올 수 있다).
-      let tableCtrl = -1;
-      let dimensions: TableDimensions | null = null;
-      for (let ctrl = 0; ctrl < MAX_CONTROL_PROBE; ctrl += 1) {
-        const found = tryTableDimensions(doc, sec, para, ctrl);
-        if (found) { tableCtrl = ctrl; dimensions = found; break; }
+      let rootTableControls: number[] = [];
+      try {
+        rootTableControls = tableControlIndices(doc.getTableControlIndices(sec, para));
+      } catch {
+        rootTableControls = [];
       }
-      if (dimensions) {
-        const cells: OutlineNode[] = [];
-        // 병합 셀 때문에 cellCount 는 rowCount×colCount 와 다를 수 있다.
-        // 인덱스 공간을 그대로 훑고 좌표는 문서에 물어본다.
-        for (let cellIndex = 0; cellIndex < dimensions.cellCount; cellIndex += 1) {
-          if (nodeCount >= MAX_OUTLINE_NODES) {
-            truncated = true;
-            break;
-          }
-          const path = cellPath(sec, para, tableCtrl, cellIndex, 0);
-          const parsed = parsePath(path);
-          const text = parsed ? readCellText(doc, sec, para, cellPathJson(parsed)) : '';
-          const info = tryCellInfo(doc, sec, para, tableCtrl, cellIndex);
-          cells.push({
-            path,
-            kind: 'cell',
-            length: text.length,
-            preview: preview(text),
-            ...(info ? { row: info.row, col: info.col } : {}),
-          });
-          nodeCount += 1;
-        }
-        tables.push({
-          path: `s${sec}/p${para}/c${tableCtrl}`,
-          rows: dimensions.rowCount,
-          cols: dimensions.colCount,
-          cells,
-        });
+      if (rootTableControls.length > 0) {
+        rootTableControls.forEach((ctrl) => visitTable(para, [], ctrl, 1));
         continue;
       }
 
@@ -315,11 +427,13 @@ export function buildOutline(doc: AuthoringDocument): Outline {
         continue;
       }
       if (!text.trim()) continue;
+      const checkState = readCheckStateAt(doc, { sec, para, cells: null });
       paragraphs.push({
         path: paragraphPath(sec, para),
-        kind: 'paragraph',
+        kind: checkState?.checkable ? 'checkbox' : 'paragraph',
         length: text.length,
         preview: preview(text),
+        ...(checkState?.checkable ? { checked: checkState.checked } : {}),
       });
       nodeCount += 1;
     }
@@ -335,7 +449,7 @@ export function readPath(doc: AuthoringDocument, path: string): string | null {
   const parsed = parsePath(path);
   if (!parsed) return null;
   try {
-    if (parsed.cell) {
+    if (parsed.cells) {
       const pathJson = cellPathJson(parsed);
       const length = doc.getCellParagraphLengthByPath(parsed.sec, parsed.para, pathJson);
       if (!Number.isFinite(length)) return null;
@@ -355,6 +469,18 @@ export function readPaths(doc: AuthoringDocument, paths: readonly string[]): Arr
   return paths.map((path) => ({ path, text: readPath(doc, path) }));
 }
 
+/** 주소들의 현재 체크 상태를 읽는다. 체크 문단이 아니거나 주소가 없으면 null. */
+export function readCheckStates(
+  doc: AuthoringDocument,
+  paths: readonly string[],
+): Array<{ path: string; checked: boolean | null }> {
+  return paths.map((path) => {
+    const parsed = parsePath(path);
+    const state = parsed ? readCheckStateAt(doc, parsed) : null;
+    return { path, checked: state?.checkable ? state.checked : null };
+  });
+}
+
 /** 같은 문단 안에서 뒤쪽부터 고치도록 정렬한다. 앞선 수정이 뒤쪽 좌표를 밀지 않게. */
 function sortForApply(edits: readonly EditRequest[]): EditRequest[] {
   return [...edits].sort((left, right) => {
@@ -363,10 +489,18 @@ function sortForApply(edits: readonly EditRequest[]): EditRequest[] {
     if (!a || !b) return 0;
     if (a.sec !== b.sec) return b.sec - a.sec;
     if (a.para !== b.para) return b.para - a.para;
-    const aCell = a.cell?.cellIndex ?? -1;
-    const bCell = b.cell?.cellIndex ?? -1;
-    if (aCell !== bCell) return bCell - aCell;
-    return (b.cell?.cellPara ?? 0) - (a.cell?.cellPara ?? 0);
+    const aCells = a.cells ?? [];
+    const bCells = b.cells ?? [];
+    const length = Math.max(aCells.length, bCells.length);
+    for (let idx = 0; idx < length; idx += 1) {
+      const leftCell = aCells[idx];
+      const rightCell = bCells[idx];
+      if (!leftCell || !rightCell) return bCells.length - aCells.length;
+      if (leftCell.ctrl !== rightCell.ctrl) return rightCell.ctrl - leftCell.ctrl;
+      if (leftCell.cellIndex !== rightCell.cellIndex) return rightCell.cellIndex - leftCell.cellIndex;
+      if (leftCell.cellPara !== rightCell.cellPara) return rightCell.cellPara - leftCell.cellPara;
+    }
+    return 0;
   });
 }
 
@@ -388,15 +522,23 @@ function sortForApply(edits: readonly EditRequest[]): EditRequest[] {
  */
 function releaseGuideField(doc: AuthoringDocument, parsed: ParsedPath): void {
   try {
-    const pos: FieldPosition = parsed.cell
+    // 기존 removeFieldAtInCell 은 깊이 1 좌표만 받는다. 중첩 경로를 외곽 셀
+    // 좌표로 축약하면 엉뚱한 누름틀을 지울 수 있으므로 중첩 셀에서는 건드리지 않는다.
+    if ((parsed.cells?.length ?? 0) > 1) return;
+    const pos: FieldPosition = parsed.cells
       ? {
         sectionIndex: parsed.sec,
         paragraphIndex: parsed.para,
         charOffset: 0,
         parentParaIndex: parsed.para,
-        controlIndex: parsed.cell.ctrl,
-        cellIndex: parsed.cell.cellIndex,
-        cellParaIndex: parsed.cell.cellPara,
+        controlIndex: parsed.cells[0].ctrl,
+        cellIndex: parsed.cells[0].cellIndex,
+        cellParaIndex: parsed.cells[0].cellPara,
+        cellPath: parsed.cells.map((cell) => ({
+          controlIndex: cell.ctrl,
+          cellIndex: cell.cellIndex,
+          cellParaIndex: cell.cellPara,
+        })),
         isTextBox: false,
       }
       : { sectionIndex: parsed.sec, paragraphIndex: parsed.para, charOffset: 0 };
@@ -409,7 +551,7 @@ function releaseGuideField(doc: AuthoringDocument, parsed: ParsedPath): void {
 function writeText(doc: AuthoringDocument, parsed: ParsedPath, newText: string): boolean {
   try {
     releaseGuideField(doc, parsed);
-    if (parsed.cell) {
+    if (parsed.cells) {
       const pathJson = cellPathJson(parsed);
       // 누름틀을 풀면서 안내문이 함께 지워졌을 수 있다 — `current` 를 믿지 말고
       // 지금 길이를 다시 읽는다. 옛 길이로 지우면 이웃 글자를 먹는다.
@@ -429,6 +571,26 @@ function writeText(doc: AuthoringDocument, parsed: ParsedPath, newText: string):
     if (newText.length > 0) {
       doc.insertText(parsed.sec, parsed.para, 0, newText);
     }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeChecked(
+  doc: AuthoringDocument,
+  parsed: ParsedPath,
+  expectedChecked: boolean,
+  checked: boolean,
+): boolean {
+  try {
+    doc.setCheckStateByPath(
+      parsed.sec,
+      parsed.para,
+      parsed.cells ? cellPathJson(parsed) : '[]',
+      expectedChecked,
+      checked,
+    );
     return true;
   } catch {
     return false;
@@ -464,26 +626,55 @@ export function applyEdits(doc: AuthoringDocument, edits: readonly EditRequest[]
       failed = true;
       break;
     }
-    const current = readPath(doc, edit.path);
-    if (current === null) {
-      outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
-      failed = true;
-      break;
-    }
-    if (current !== edit.expectedText) {
-      outcomes.push({
-        path: edit.path,
-        ok: false,
-        errorCode: 'EXPECTED_TEXT_MISMATCH',
-        actualText: current,
-      });
-      failed = true;
-      break;
-    }
-    if (!writeText(doc, parsed, edit.newText)) {
-      outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
-      failed = true;
-      break;
+    if (edit.operation === 'SET_CHECKED') {
+      const state = readCheckStateAt(doc, parsed);
+      if (state === null) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
+        failed = true;
+        break;
+      }
+      if (!state.checkable) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'NOT_CHECKABLE' });
+        failed = true;
+        break;
+      }
+      if (state.checked !== edit.expectedChecked) {
+        outcomes.push({
+          path: edit.path,
+          ok: false,
+          errorCode: 'EXPECTED_CHECKED_MISMATCH',
+          actualChecked: state.checked,
+        });
+        failed = true;
+        break;
+      }
+      if (!writeChecked(doc, parsed, edit.expectedChecked, edit.checked)) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
+        failed = true;
+        break;
+      }
+    } else {
+      const current = readPath(doc, edit.path);
+      if (current === null) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'PATH_NOT_FOUND' });
+        failed = true;
+        break;
+      }
+      if (current !== edit.expectedText) {
+        outcomes.push({
+          path: edit.path,
+          ok: false,
+          errorCode: 'EXPECTED_TEXT_MISMATCH',
+          actualText: current,
+        });
+        failed = true;
+        break;
+      }
+      if (!writeText(doc, parsed, edit.newText)) {
+        outcomes.push({ path: edit.path, ok: false, errorCode: 'WRITE_FAILED' });
+        failed = true;
+        break;
+      }
     }
     outcomes.push({ path: edit.path, ok: true });
   }

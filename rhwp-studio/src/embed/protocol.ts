@@ -3,11 +3,15 @@ export const EMBED_CAPABILITIES = [
   'transferable-array-buffer',
   'hml-export',
   'renderer-diagnostics-v1',
-  // 한채움 fork: AI 작성 표면(getOutline/getTextByPaths/applyEdits/
+  // 한채움 fork: AI 작성 표면(getOutline/getTextByPaths/getCheckStates/applyEdits/
   // revertLastBatch/setInputLocked). 호스트는 이 값이 없으면 기능을 조용히
   // 감추지 말고 명시적 오류를 내야 한다 — 구버전 배포본과의 조합을 침묵
   // 속에 굴리면 "왜 아무 일도 안 일어나는가"를 추적할 수 없다.
   'ai-authoring-v1',
+  // 한채움 fork: 최상위 문단 앵커 일괄 조회(getParagraphAnchors). 서식 묶음 나누기
+  // 호스트가 getPageSvg 위에 자르는 선을 그린다. 없으면 호스트는 PDF 추정으로 폴백한다.
+  // 계약: hanchaeum docs/plans/2026-08-25/rhwp-getParagraphAnchors-RPC-계약.md
+  'paragraphAnchors',
 ] as const;
 
 export interface EmbedConnectAttempt {

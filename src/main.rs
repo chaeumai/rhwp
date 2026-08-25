@@ -17,6 +17,7 @@ fn main() {
         Some("export-png") => export_png(&args[2..]),
         Some("export-pdf") => export_pdf(&args[2..]),
         Some("export-text") => export_text(&args[2..]),
+        Some("paragraph-anchors") => paragraph_anchors(&args[2..]),
         Some("export-markdown") => export_markdown(&args[2..]),
         Some("export-hwpx") => export_hwpx(&args[2..]),
         Some("export-hml") => export_hml(&args[2..]),
@@ -1467,6 +1468,44 @@ fn print_export_pdf_usage() {
         "        공백 포함 값은 큰따옴표 권장: --font-path \"./My Fonts\", --fallback-sans \"Apple SD Gothic Neo\""
     );
     eprintln!("        작은따옴표는 zsh/bash/PowerShell에서 literal 값이 필요할 때만 사용합니다.");
+}
+
+/// 한채움 fork: 최상위 문단 앵커 일괄 출력 (getParagraphAnchors 의 네이티브 검증 경로).
+///
+/// `rhwp paragraph-anchors <파일> [--json]` — 기본은 사람이 읽는 표, `--json` 이면 wasm 과
+/// 같은 JSON 배열을 그대로 stdout 에 쓴다.
+fn paragraph_anchors(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("사용법: rhwp paragraph-anchors <파일.hwp|.hwpx> [--json]");
+        return;
+    }
+    let as_json = args.iter().any(|a| a == "--json");
+    let data = match fs::read(&args[0]) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: 파일을 읽을 수 없습니다 - {}: {}", args[0], e);
+            return;
+        }
+    };
+    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: 파싱 실패 - {}", e);
+            return;
+        }
+    };
+    if as_json {
+        println!("{}", doc.get_paragraph_anchors());
+        return;
+    }
+    println!("문서: {} ({}쪽)", args[0], doc.page_count());
+    println!("{:>4} {:>5} {:>5} {:>8} {:>8} {:>7}  kind", "sec", "para", "page", "x", "y", "height");
+    for a in doc.paragraph_anchors_native() {
+        println!(
+            "{:>4} {:>5} {:>5} {:>8.1} {:>8.1} {:>7.1}  {}",
+            a.section, a.paragraph, a.page_index, a.x, a.y, a.height, a.kind
+        );
+    }
 }
 
 fn export_text(args: &[String]) {

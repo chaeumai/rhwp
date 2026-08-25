@@ -75,6 +75,9 @@ const EMBED_ALLOWED_COMMANDS = new Set([
   'edit:goto',
   'view:zoom-in',
   'view:zoom-out',
+  // 문자표(특수문자) — 캐럿 자리에 글자를 넣는 InsertTextCommand 경로라 "기존 칸의
+  // 값을 고치는 것"에 든다. 대화상자는 self-contained (메뉴·툴바 chrome 불필요).
+  'insert:symbols',
 ]);
 
 /**
