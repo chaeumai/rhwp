@@ -1544,11 +1544,33 @@ fn paragraph_saved_vpos_reset_starts_new_page_after(
 
     let next_first_vpos = next_para.line_segs.first().map(|s| s.vertical_pos);
     let curr_last_vpos = current_para.line_segs.last().map(|s| s.vertical_pos);
+    // [파리티 라운드3 J15] 현재 문단이 자리차지(TopAndBottom·vert=PARA) 표를 품으면 그 줄
+    // vpos 가 0 이어도 흐름은 표 높이만큼 내려가 있다 — 저장 흐름 범위(마지막 줄 + 표 높이)로
+    // 판정해야 다음 문단의 vpos 0 이 새 쪽 리셋으로 잡힌다 (550 p39→40 '[별첨 1]': 직전
+    // 문단 '2. 외국인연구자…' 줄 vpos 0 + 표 ~900px, 종전엔 cl=0 이라 리셋 불인정 → p39 끝에 붙음).
+    let curr_flow_extent = curr_last_vpos.map(|cl| {
+        let line_h = current_para.line_segs.last().map(|s| s.line_height).unwrap_or(0);
+        let float_h: i32 = current_para
+            .controls
+            .iter()
+            .filter_map(|c| match c {
+                Control::Table(t)
+                    if !t.common.treat_as_char
+                        && crate::renderer::float_placement::is_para_topbottom_float(&t.common) =>
+                {
+                    Some(t.common.height.min(i32::MAX as u32) as i32
+                        + signed_hwpunit(t.common.vertical_offset).max(0))
+                }
+                _ => None,
+            })
+            .sum();
+        cl.saturating_add(line_h).saturating_add(float_h)
+    });
     let multi_col = col_count > 1;
     let allowed_top_vpos = if is_hwp3_variant { 1500 } else { 0 };
 
-    matches!((next_first_vpos, curr_last_vpos), (Some(nv), Some(cl))
-        if (if multi_col { nv < cl } else { nv <= allowed_top_vpos }) && cl > 5000)
+    matches!((next_first_vpos, curr_last_vpos, curr_flow_extent), (Some(nv), Some(cl), Some(ext))
+        if (if multi_col { nv < cl } else { nv <= allowed_top_vpos }) && ext > 5000)
 }
 
 fn paragraph_forces_page_boundary_after(
@@ -3362,8 +3384,34 @@ impl TypesetEngine {
                             cv < pv && pv > 5000
                         }
                     } else {
+                        // [파리티 라운드3 J15] 직전 문단이 자리차지 표 호스트면 그 줄 vpos(0)가
+                        // 아니라 표까지의 흐름 범위로 판정 — 550 p39→40 '[별첨 1]'(vpos 0): 직전
+                        // '2. 외국인연구자…' 줄 vpos 0 + 표 ~900px 인데 pv=0 이라 리셋 불인정.
+                        // 빈 오버레이 문단(#1488) 오발동 방지로 가시 텍스트/표 문단에 한정.
+                        let prev_float_extent = prev_vpos_end.saturating_add(
+                            prev_para
+                                .controls
+                                .iter()
+                                .filter_map(|c| match c {
+                                    Control::Table(t)
+                                        if !t.common.treat_as_char
+                                            && is_para_topbottom_float(&t.common) =>
+                                    {
+                                        Some(
+                                            t.common.height.min(i32::MAX as u32) as i32
+                                                + signed_hwpunit(t.common.vertical_offset).max(0),
+                                        )
+                                    }
+                                    _ => None,
+                                })
+                                .sum::<i32>(),
+                        );
+                        let prev_reaches_below =
+                            pv > 5000
+                                || (prev_float_extent > 5000
+                                    && (para_has_visible_text(para) || has_table_control));
                         (cv == 0
-                            && pv > 5000
+                            && prev_reaches_below
                             && !hwp3_content_vpos_zero_reset
                             && !para_is_page_bottom_fixed_table_anchor(para))
                             || near_page_top_reset
