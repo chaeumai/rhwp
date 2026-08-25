@@ -399,6 +399,22 @@ impl HwpDocument {
         self.invalidate_page_tree_cache();
     }
 
+    /// 빈 누름틀 안내문(Direction) 표시 여부를 반환한다.
+    #[wasm_bindgen(js_name = getShowFieldGuides)]
+    pub fn get_show_field_guides(&self) -> bool {
+        self.show_field_guides
+    }
+
+    /// 빈 누름틀 안내문 표시 여부를 설정한다.
+    ///
+    /// 기본값은 true(편집 화면). 한컴 인쇄본에는 없는 편집 안내이므로,
+    /// 원본 PDF 와 픽셀을 맞춰 보는 파리티 대조에서는 false 로 끈다.
+    #[wasm_bindgen(js_name = setShowFieldGuides)]
+    pub fn set_show_field_guides(&mut self, enabled: bool) {
+        self.show_field_guides = enabled;
+        self.invalidate_page_tree_cache();
+    }
+
     /// 투명선 표시 여부를 반환한다.
     #[wasm_bindgen(js_name = getShowTransparentBorders)]
     pub fn get_show_transparent_borders(&self) -> bool {

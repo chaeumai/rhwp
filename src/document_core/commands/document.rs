@@ -144,6 +144,7 @@ impl DocumentCore {
             paste_cascade_count: 0,
             show_paragraph_marks: false,
             show_control_codes: false,
+            show_field_guides: true,
             show_transparent_borders: false,
             clip_enabled: true,
             debug_overlay: false,

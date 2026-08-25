@@ -21128,6 +21128,79 @@ fn test_task229_field_svg_guide_text() {
     assert!(svg.contains(">입</text>"), "SVG에 '입' 글자가 있어야 함");
 }
 
+/// 빈 누름틀 안내문은 표시 전용이라 줄의 다른 글자를 밀면 안 된다.
+///
+/// 한컴은 안내문을 흐름에 넣지 않고 인쇄본에도 찍지 않는다. 우리가 안내문 폭만큼
+/// 뒤를 밀면 줄 배치가 한컴과 어긋나고, 저장 lineseg 를 그대로 신뢰해 재줄바꿈을
+/// 하지 않는 우리 정책 탓에 좁은 칸에서는 곧바로 잘림이 된다(등록 서식
+/// '결과보고서' 자필서명 칸). 안내문을 끈 렌더와 켠 렌더에서 **안내문 아닌 글자의
+/// x 좌표 목록이 완전히 같아야** 한다.
+#[test]
+fn test_field_guide_is_zero_width_overlay() {
+    /// 안내문(빨간 기울임) 이 아닌 <text> 요소의 x 좌표를 문서 순서대로 모은다.
+    fn non_guide_text_x(svg: &str) -> Vec<String> {
+        let mut xs = Vec::new();
+        for chunk in svg.split("<text").skip(1) {
+            let Some(head_end) = chunk.find('>') else {
+                continue;
+            };
+            let head = &chunk[..head_end];
+            let is_guide = head.contains("ff0000") && head.contains("italic");
+            if is_guide {
+                continue;
+            }
+            if let Some(x_at) = head.find("x=\"") {
+                let rest = &head[x_at + 3..];
+                if let Some(end) = rest.find('"') {
+                    xs.push(rest[..end].to_string());
+                }
+            }
+        }
+        xs
+    }
+
+    // issue-986-receipt: 한 줄 안에서 빈 누름틀 안내문 뒤에 글자가 이어지는 문서.
+    // (samples 전수 대조로 고른 재현 문서 — 수정 전에는 이 문서에서만 x 가 밀렸다)
+    let data = std::fs::read("samples/issue-986-receipt.hwp").expect("파일 읽기 실패");
+
+    let mut with_guides = HwpDocument::from_bytes(&data).expect("HwpDocument 생성 실패");
+    let svg_on = with_guides
+        .render_page_svg_native(0)
+        .expect("SVG 렌더링 실패");
+
+    let mut without_guides = HwpDocument::from_bytes(&data).expect("HwpDocument 생성 실패");
+    assert!(
+        without_guides.get_show_field_guides(),
+        "안내문 표시는 기본값이 켜짐이어야 함"
+    );
+    without_guides.set_show_field_guides(false);
+    let svg_off = without_guides
+        .render_page_svg_native(0)
+        .expect("SVG 렌더링 실패");
+
+    // 켰을 때만 안내문이 나온다
+    let guide_runs = |svg: &str| {
+        svg.split("<text")
+            .skip(1)
+            .filter(|c| {
+                c.split('>')
+                    .next()
+                    .map(|h| h.contains("ff0000") && h.contains("italic"))
+                    .unwrap_or(false)
+            })
+            .count()
+    };
+    assert!(guide_runs(&svg_on) > 0, "안내문이 렌더되어야 함");
+    assert_eq!(guide_runs(&svg_off), 0, "끄면 안내문이 없어야 함");
+
+    // 안내문 유무와 무관하게 나머지 글자의 자리는 같아야 한다
+    assert_eq!(
+        non_guide_text_x(&svg_on),
+        non_guide_text_x(&svg_off),
+        "안내문이 다른 글자의 x 를 밀면 안 된다"
+    );
+}
+
 // ─── Task 230: 필드 WASM API 테스트 ─────────────────────────
 
 #[test]
@@ -24831,3 +24904,4 @@ fn test_paragraph_anchors_match_cursor_rect() {
     assert_eq!(arr.len(), expected);
     assert!(arr[0].get("kind").is_some() && arr[0].get("pageIndex").is_some());
 }
+

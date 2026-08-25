@@ -1354,6 +1354,10 @@ pub struct LayoutEngine {
         std::cell::RefCell<Option<(usize, usize, usize, Option<Vec<(usize, usize, usize)>>)>>,
     /// 조판부호 표시 여부
     show_control_codes: std::cell::Cell<bool>,
+    /// 빈 누름틀 안내문(Direction) 표시 여부. 기본 true — 편집 화면의 안내이며
+    /// 한컴 인쇄본에는 없는 요소라, 파리티 대조처럼 원본과 픽셀을 맞춰야 하는
+    /// 경로에서는 끌 수 있다.
+    show_field_guides: std::cell::Cell<bool>,
     /// 현재 페이지 용지 너비 (표 HorzRelTo::Paper 위치 계산용)
     current_paper_width: std::cell::Cell<f64>,
     /// 현재 페이지 본문 영역 (표 HorzRelTo::Page / VertRelTo::Page 위치 계산용)
@@ -1460,6 +1464,7 @@ impl LayoutEngine {
             endnote_separator_below_hu: std::cell::Cell::new(0),
             active_field: std::cell::RefCell::new(None),
             show_control_codes: std::cell::Cell::new(false),
+            show_field_guides: std::cell::Cell::new(true),
             current_paper_width: std::cell::Cell::new(0.0),
             current_body_area: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
             is_hwp3_variant: std::cell::Cell::new(false),
@@ -1881,6 +1886,10 @@ impl LayoutEngine {
     }
 
     /// 조판부호 표시 여부 설정
+    pub fn set_show_field_guides(&self, enabled: bool) {
+        self.show_field_guides.set(enabled);
+    }
+
     pub fn set_show_control_codes(&self, enabled: bool) {
         self.show_control_codes.set(enabled);
     }

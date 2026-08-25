@@ -5336,6 +5336,11 @@ impl LayoutEngine {
         let line_char_start = comp_line.char_start;
         let active = self.active_field.borrow();
         let ctrl_codes = self.show_control_codes.get();
+        let show_guides = self.show_field_guides.get();
+        // 안내문을 줄 안에 넣어 주기 위한 줄 상자(가용 폭). line_node 는 뒤에서
+        // 가변 대여하므로 여기서 값만 떠 둔다.
+        let line_left = line_node.bbox.x;
+        let line_right = line_node.bbox.x + line_node.bbox.width;
 
         // char_x_map에서 특정 char_idx에 해당하는 x 좌표를 보간 계산
         let find_x_for_char = |target: usize| -> f64 {
@@ -5481,13 +5486,25 @@ impl LayoutEngine {
 
                 // 빈 필드 안내문 (활성 필드가 아닐 때만)
                 if is_empty && !is_active && start_in_line {
-                    if let Some(guide) = field.guide_text() {
+                    if let Some(guide) = field.guide_text().filter(|_| show_guides) {
                         let mut guide_style = base_style.clone();
                         guide_style.color = 0x0000FF; // BGR: 빨간색
                         guide_style.italic = true;
                         let guide_width = estimate_text_width(guide, &guide_style);
                         // 안내문은 [누름틀 시작] 마커 뒤에 위치
                         let guide_x = find_x_for_char(fr.start_char_idx);
+                        // 줄 오른쪽 끝을 넘으면 넘은 만큼 왼쪽으로 당겨 넣는다.
+                        // 가운데·오른쪽 정렬된 빈 줄에서는 캐럿 x 가 줄 가운데(또는 끝)라
+                        // 안내문이 통째로 오른쪽으로 튀어나가고, 우리는 저장 lineseg 를
+                        // 그대로 신뢰해 재줄바꿈을 하지 않으므로 그대로 잘린다
+                        // (등록 서식 '결과보고서' 자필서명 칸: 셀 85.5px 에 안내문 51.7px
+                        // 이 42.8px 지점에서 시작 → 뒷글자 잘림). 표시 전용 오버레이이니
+                        // 줄 안으로 넣어 준다 — 줄 시작보다 왼쪽으로는 가지 않는다.
+                        let guide_x = if guide_width > 0.0 && guide_x + guide_width > line_right {
+                            (line_right - guide_width).max(line_left)
+                        } else {
+                            guide_x
+                        };
                         let guide_id = tree.next_id();
                         let guide_node = RenderNode::new(
                             guide_id,
@@ -5511,9 +5528,14 @@ impl LayoutEngine {
                             }),
                             BoundingBox::new(guide_x, y, guide_width, line_height),
                         );
+                        // 안내문은 표시 전용이다 — 한컴은 이 글자를 흐름에 넣지 않고
+                        // 인쇄본에도 찍지 않으므로, 폭을 차지해 뒤를 밀면 줄 배치가
+                        // 한컴과 어긋난다. 게다가 우리는 저장 lineseg 를 그대로 신뢰해
+                        // 재줄바꿈을 하지 않으니, 미는 순간 좁은 칸에서는 잘림이 된다
+                        // (등록 서식 '결과보고서' 자필서명 칸). 폭 0 으로 얹어 그린다.
                         markers.push(MarkerInsert {
                             marker_x: guide_x,
-                            marker_w: guide_width,
+                            marker_w: 0.0,
                             node: guide_node,
                         });
                     }
@@ -5624,7 +5646,10 @@ impl LayoutEngine {
         for mi in 0..markers.len() {
             let mw = markers[mi].marker_w;
             if mw == 0.0 {
-                // zero-width 앵커: shift 없이 원래 위치 유지
+                // 폭 0 노드(커서 앵커·누름틀 안내문): 자신은 뒤를 밀지 않는다.
+                // 다만 앞선 마커가 이미 줄을 밀었다면 그만큼 같이 따라가야
+                // 본문 글자와 자리가 맞는다(조판부호 표시 켠 경우).
+                markers[mi].node.bbox.x += accumulated_shift;
                 continue;
             }
             let shift_x = markers[mi].marker_x + accumulated_shift;

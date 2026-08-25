@@ -1128,6 +1128,7 @@ impl DocumentCore {
             | (u8::from(self.clip_enabled) << 3)
             | (u8::from(self.debug_overlay) << 4)
             | (profile_bits << 5)
+            | (u8::from(!self.show_field_guides) << 7)
     }
 
     /// 페이지 overlay 이미지와 replay-plane summary만 작은 JSON으로 반환한다.
@@ -4268,6 +4269,8 @@ impl DocumentCore {
         self.layout_engine.set_clip_enabled(self.clip_enabled);
         self.layout_engine
             .set_show_control_codes(self.show_control_codes);
+        self.layout_engine
+            .set_show_field_guides(self.show_field_guides);
         self.layout_engine
             .set_hwp3_variant(self.document.is_hwp3_variant);
         crate::renderer::layout::text_measurement::set_kopub_proportional(

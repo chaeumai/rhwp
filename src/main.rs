@@ -308,6 +308,7 @@ fn export_svg(args: &[String]) {
     let mut target_page: Option<u32> = None;
     let mut show_para_marks = false;
     let mut show_control_codes = false;
+    let mut show_field_guides = true;
     let mut debug_overlay = false;
     let mut grid_mm: Option<f64> = None;
     let mut grid_origin = GridOriginOption::Fixed((0.0_f64, 0.0_f64));
@@ -364,6 +365,10 @@ fn export_svg(args: &[String]) {
             }
             "--show-control-codes" => {
                 show_control_codes = true;
+                i += 1;
+            }
+            "--no-field-guides" => {
+                show_field_guides = false;
                 i += 1;
             }
             "--debug-overlay" => {
@@ -490,6 +495,9 @@ fn export_svg(args: &[String]) {
     if show_control_codes {
         doc.set_show_control_codes(true);
     }
+    if !show_field_guides {
+        doc.set_show_field_guides(false);
+    }
     if debug_overlay {
         doc.set_debug_overlay(true);
     }
@@ -599,6 +607,7 @@ fn export_render_tree(args: &[String]) {
     let mut target_page: Option<u32> = None;
     let mut show_para_marks = false;
     let mut show_control_codes = false;
+    let mut show_field_guides = true;
     let mut respect_vpos_reset = false;
 
     let mut i = 1;
@@ -634,6 +643,10 @@ fn export_render_tree(args: &[String]) {
             }
             "--show-control-codes" => {
                 show_control_codes = true;
+                i += 1;
+            }
+            "--no-field-guides" => {
+                show_field_guides = false;
                 i += 1;
             }
             "--respect-vpos-reset" => {
@@ -675,6 +688,9 @@ fn export_render_tree(args: &[String]) {
     }
     if show_control_codes {
         doc.set_show_control_codes(true);
+    }
+    if !show_field_guides {
+        doc.set_show_field_guides(false);
     }
     if respect_vpos_reset {
         doc.set_respect_vpos_reset(true);
@@ -971,6 +987,7 @@ fn export_png(args: &[String]) {
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
     let mut dpi: Option<f64> = None;
+    let mut show_field_guides = true;
     // PNG export is print-equivalent output. Editor visuals require an explicit screen profile.
     let mut render_profile = rhwp::paint::RenderProfile::HighQuality;
 
@@ -1090,6 +1107,10 @@ fn export_png(args: &[String]) {
                     return;
                 }
             }
+            "--no-field-guides" => {
+                show_field_guides = false;
+                i += 1;
+            }
             _ => {
                 eprintln!("알 수 없는 옵션: {}", args[i]);
                 i += 1;
@@ -1113,13 +1134,16 @@ fn export_png(args: &[String]) {
         }
     };
 
-    let core = match rhwp::document_core::DocumentCore::from_bytes(&data) {
+    let mut core = match rhwp::document_core::DocumentCore::from_bytes(&data) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("오류: HWP 파싱 실패 - {:?}", e);
             return;
         }
     };
+    if !show_field_guides {
+        core.set_show_field_guides(false);
+    }
 
     let page_count = core.page_count();
     println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
@@ -1518,6 +1542,7 @@ fn export_text(args: &[String]) {
     let file_path = &args[0];
     let mut output_dir = "output".to_string();
     let mut target_page: Option<u32> = None;
+    let mut show_field_guides = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -1546,6 +1571,10 @@ fn export_text(args: &[String]) {
                     return;
                 }
             }
+            "--no-field-guides" => {
+                show_field_guides = false;
+                i += 1;
+            }
             _ => {
                 eprintln!("알 수 없는 옵션: {}", args[i]);
                 i += 1;
@@ -1561,13 +1590,16 @@ fn export_text(args: &[String]) {
         }
     };
 
-    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+    let mut doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("오류: HWP 파싱 실패 - {}", e);
             return;
         }
     };
+    if !show_field_guides {
+        doc.set_show_field_guides(false);
+    }
 
     let page_count = doc.page_count();
     println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);

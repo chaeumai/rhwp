@@ -111,6 +111,8 @@ pub struct DocumentCore {
     pub(crate) show_paragraph_marks: bool,
     /// 조판부호 표시 여부 (개체 마커 [표]/[그림] 등, 문단부호 포함)
     pub(crate) show_control_codes: bool,
+    /// 빈 누름틀 안내문(Direction) 표시 여부. 기본 true (편집 화면 기본 동작).
+    pub(crate) show_field_guides: bool,
     /// 투명선 표시 여부
     pub(crate) show_transparent_borders: bool,
     /// 잘림 보기 (body/셀 클리핑 활성화 여부)
@@ -265,6 +267,18 @@ impl DocumentCore {
         crate::model::event::serialize_event_log(&self.event_log)
     }
 
+    /// 빈 누름틀 안내문(Direction) 표시 여부를 설정한다.
+    ///
+    /// 기본 true. 한컴 인쇄본에 없는 편집 화면 안내라, 원본과 픽셀·텍스트를
+    /// 맞춰 보는 파리티 대조에서는 false 로 끈다.
+    pub fn set_show_field_guides(&mut self, enabled: bool) {
+        if self.show_field_guides == enabled {
+            return;
+        }
+        self.show_field_guides = enabled;
+        self.invalidate_page_tree_cache();
+    }
+
     /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
     pub fn set_dpi(&mut self, dpi: f64) {
         use crate::renderer::style_resolver::resolve_styles_with_variant;
@@ -293,6 +307,7 @@ impl DocumentCore {
             paste_cascade_count: 0,
             show_paragraph_marks: false,
             show_control_codes: false,
+            show_field_guides: true,
             show_transparent_borders: false,
             clip_enabled: true,
             debug_overlay: false,
