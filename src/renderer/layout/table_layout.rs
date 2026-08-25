@@ -5348,12 +5348,31 @@ impl LayoutEngine {
                 && p.line_segs
                     .first()
                     .is_some_and(|seg| seg.vertical_pos >= cell_first_vpos);
+            // [파리티 라운드3 J10] 저장 vpos 가 직전 문단보다 전진하는 빈 문단은 사다리에 실린
+            // 진짜 빈 줄이다 — 접으면 안 된다 (550 서식 8: 빈 줄 7개×24.8px 가 0 이 되어 p72 에
+            // 한컴보다 7줄을 더 채우고 p72~77 Δ±300~600). 오버레이 스페이서(#1488, 같은/역방향
+            // vpos)만 종전대로 접는다.
+            let empty_spacer_progresses = is_empty_spacer_para
+                && p.line_segs.first().is_some_and(|seg| {
+                    !line_seg_is_synthetic(seg)
+                        && cell.paragraphs[..pi]
+                            .iter()
+                            .rev()
+                            .find_map(|q| {
+                                q.line_segs
+                                    .last()
+                                    .filter(|ls| !line_seg_is_synthetic(ls))
+                                    .map(|ls| ls.vertical_pos)
+                            })
+                            .is_some_and(|pv| seg.vertical_pos > pv)
+                });
             let collapse_empty_rowbreak_spacer = is_block_rowbreak
                 && table.row_count == 1
                 && table.col_count == 1
                 && is_empty_spacer_para
                 && cell_has_visible_content
-                && !preserve_vpos_empty_spacer;
+                && !preserve_vpos_empty_spacer
+                && !empty_spacer_progresses;
             let is_last_para = pi + 1 == para_count;
             // [Task #1488] 가시 텍스트 문단 여부 — 비가시(빈) 오버레이 스페이서 문단이 만든
             // vpos 리셋을 하드 브레이크(강제 페이지 분할)에서 제외하기 위한 게이트.
