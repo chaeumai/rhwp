@@ -1165,6 +1165,35 @@ fn collect_shape_marker_labels(show_ctrl: bool, para: Option<&Paragraph>) -> Vec
     }
 }
 
+/// 빈 누름틀 안내문을 주어진 자리(px) 안에 들어가게 다듬는다.
+///
+/// 안내문은 폭 0 오버레이라 뒤 글자를 밀지 않는다. 그래서 자리보다 길면 그대로
+/// 겹쳐 그려져 안내문도 본문도 못 읽게 된다. 들어갈 만큼만 남기고 말줄임표를
+/// 붙이며, 말줄임표조차 못 들어가면 빈 문자열(=그리지 않음)을 돌려준다.
+fn fit_guide_text(guide: &str, style: &TextStyle, avail: f64) -> (String, f64) {
+    const ELLIPSIS: &str = "…";
+    let full_width = estimate_text_width(guide, style);
+    if full_width <= avail {
+        return (guide.to_string(), full_width);
+    }
+    let ellipsis_width = estimate_text_width(ELLIPSIS, style);
+    if avail <= ellipsis_width {
+        return (String::new(), 0.0);
+    }
+    let mut best = String::new();
+    let mut best_width = 0.0;
+    for (idx, _) in guide.char_indices().skip(1) {
+        let candidate = format!("{}{}", &guide[..idx], ELLIPSIS);
+        let width = estimate_text_width(&candidate, style);
+        if width > avail {
+            break;
+        }
+        best = candidate;
+        best_width = width;
+    }
+    (best, best_width)
+}
+
 impl LayoutEngine {
     pub(crate) fn layout_inline_table_paragraph(
         &self,
@@ -5490,21 +5519,43 @@ impl LayoutEngine {
                         let mut guide_style = base_style.clone();
                         guide_style.color = 0x0000FF; // BGR: 빨간색
                         guide_style.italic = true;
-                        let guide_width = estimate_text_width(guide, &guide_style);
                         // 안내문은 [누름틀 시작] 마커 뒤에 위치
-                        let guide_x = find_x_for_char(fr.start_char_idx);
-                        // 줄 오른쪽 끝을 넘으면 넘은 만큼 왼쪽으로 당겨 넣는다.
-                        // 가운데·오른쪽 정렬된 빈 줄에서는 캐럿 x 가 줄 가운데(또는 끝)라
-                        // 안내문이 통째로 오른쪽으로 튀어나가고, 우리는 저장 lineseg 를
-                        // 그대로 신뢰해 재줄바꿈을 하지 않으므로 그대로 잘린다
-                        // (등록 서식 '결과보고서' 자필서명 칸: 셀 85.5px 에 안내문 51.7px
-                        // 이 42.8px 지점에서 시작 → 뒷글자 잘림). 표시 전용 오버레이이니
-                        // 줄 안으로 넣어 준다 — 줄 시작보다 왼쪽으로는 가지 않는다.
-                        let guide_x = if guide_width > 0.0 && guide_x + guide_width > line_right {
-                            (line_right - guide_width).max(line_left)
-                        } else {
-                            guide_x
-                        };
+                        let guide_x0 = find_x_for_char(fr.start_char_idx);
+                        // 안내문이 들어갈 빈 자리 = (캐럿 왼쪽 마지막 글자의 오른쪽 끝)
+                        // ~ (캐럿 자리부터 오른쪽으로 처음 나오는 글자의 시작). 줄 상자를
+                        // 벗어나지 않는다.
+                        //
+                        // 폭 0 오버레이라 뒤를 밀지 않는 대신, 자리를 넘겨 그리면 본문
+                        // 글자와 겹쳐 둘 다 못 읽게 된다(등록 서식 '근무상황부' 「※ 2026년
+                        // 최저시급…」 줄: 오른쪽 정렬이라 빈 필드와 '(단위: 원)' 이 같은 x
+                        // 에서 시작한다). 빈 자리 안으로 넣고, 그래도 모자라면 말줄임한다.
+                        let mut gap_left = line_left;
+                        let mut gap_right = line_right;
+                        for child in line_node.children.iter() {
+                            // 실제로 글자가 찍히는 런만 자리를 차지한다. 빈 필드의
+                            // 캐럿 앵커처럼 폭 0 인 노드까지 벽으로 치면 안내문이
+                            // 한 글자로 쪼그라든다.
+                            let has_glyphs = matches!(
+                                &child.node_type,
+                                RenderNodeType::TextRun(run) if !run.text.trim().is_empty()
+                            );
+                            if !has_glyphs || child.bbox.width <= 0.5 {
+                                continue;
+                            }
+                            let child_left = child.bbox.x;
+                            let child_right = child_left + child.bbox.width;
+                            if child_right <= guide_x0 + 0.5 {
+                                gap_left = gap_left.max(child_right);
+                            } else if child_left >= guide_x0 - 0.5 {
+                                gap_right = gap_right.min(child_left);
+                            }
+                        }
+                        let avail = (gap_right - gap_left).max(0.0);
+                        let (guide_text, guide_width) = fit_guide_text(guide, &guide_style, avail);
+                        let guide = guide_text.as_str();
+                        let guide_x = guide_x0
+                            .max(gap_left)
+                            .min((gap_right - guide_width).max(gap_left));
                         let guide_id = tree.next_id();
                         let guide_node = RenderNode::new(
                             guide_id,
@@ -5533,11 +5584,13 @@ impl LayoutEngine {
                         // 한컴과 어긋난다. 게다가 우리는 저장 lineseg 를 그대로 신뢰해
                         // 재줄바꿈을 하지 않으니, 미는 순간 좁은 칸에서는 잘림이 된다
                         // (등록 서식 '결과보고서' 자필서명 칸). 폭 0 으로 얹어 그린다.
-                        markers.push(MarkerInsert {
-                            marker_x: guide_x,
-                            marker_w: 0.0,
-                            node: guide_node,
-                        });
+                        if !guide.is_empty() {
+                            markers.push(MarkerInsert {
+                                marker_x: guide_x,
+                                marker_w: 0.0,
+                                node: guide_node,
+                            });
+                        }
                     }
                 }
 
