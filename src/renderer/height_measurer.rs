@@ -1394,7 +1394,10 @@ impl HeightMeasurer {
                 // 비접촉. 상위 TAC 표는 렌더가 measured 행높이를 그대로 쓰므로
                 // (mt 우선) 측정·렌더가 이미 일관 — tac 을 미러에 포함하면 실제
                 // 지오메트리가 이동한다 (KTX/exam_kor/복학원서 golden). depth>0 만.
-                let relaxed_pad_mirror = depth > 0
+                // [파리티 라운드3 T2] 상위 표도 저장 lineseg **빈** 셀은 pad 미가산
+                // (table_layout::cell_is_empty_stored 주석의 complex p30 실측).
+                let empty_stored_cell = crate::renderer::layout::LayoutEngine::cell_is_empty_stored(cell);
+                let relaxed_pad_mirror = (depth > 0 || empty_stored_cell)
                     && cell.text_direction == 0
                     && !has_nested_table_in_cell
                     && !cell.paragraphs.is_empty()
@@ -1488,7 +1491,9 @@ impl HeightMeasurer {
                             .iter()
                             .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
                     eprintln!(
-                        "DIAG_ROWH r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={}",
+                        "DIAG_ROWH t={}x{} r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={} empty={} np={} nls={}",
+                        table.row_count,
+                        table.col_count,
                         cell.row,
                         cell.col,
                         cell_h_px,
@@ -1498,6 +1503,9 @@ impl HeightMeasurer {
                         cell_last_trailing_ls,
                         all_stored,
                         has_nested_table_in_cell,
+                        cell.paragraphs.iter().all(|p| p.text.trim().is_empty()),
+                        cell.paragraphs.len(),
+                        cell.paragraphs.iter().map(|p| p.line_segs.len()).sum::<usize>(),
                     );
                 }
                 if required_height > row_heights[r] {
@@ -1820,7 +1828,8 @@ impl HeightMeasurer {
                 let wrap_bottom = self.cell_wrap_objects_bottom_height(&cell.paragraphs);
                 // [Task #2221] 단일행과 동일 — 중첩/TAC 표의 저장 LINE_SEG 텍스트
                 // 셀은 pad 미가산 (layout 2-b relaxed_pad 미러).
-                let relaxed_pad_mirror = depth > 0
+                let relaxed_pad_mirror = (depth > 0
+                    || crate::renderer::layout::LayoutEngine::cell_is_empty_stored(cell))
                     && cell.text_direction == 0
                     && !cell.paragraphs.is_empty()
                     && cell

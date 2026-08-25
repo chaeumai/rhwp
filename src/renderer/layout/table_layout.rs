@@ -1719,6 +1719,22 @@ impl LayoutEngine {
                 .all(|p| !crate::renderer::para_has_no_stored_line_segs(p))
     }
 
+    /// [파리티 라운드3 T2] 저장 LINE_SEG 를 보유한 **빈** 셀(전 문단 공백·컨트롤
+    /// 없음) — 한컴은 이런 셀의 행 성장에 pad 를 더하지 않고 저장 줄박스(lh)만
+    /// 하한으로 쓴다. complex p30 설명도 표(63×10 분할 표) 실측: 빈 스페이서
+    /// 행 선언 12.0(lh 12.0, pad 3.7)을 한컴은 12.0 으로, rhwp 는 15.8 로 그려
+    /// 박스 3행 피치 36.0 vs 47.3(전라문화→이야기→한스타일 세 피치가 전부
+    /// 36.0 = 12+12+12; pad 가산 모델 47.1 기각). 텍스트 셀은 종전대로 pad
+    /// 가산 — 같은 문서 p15 연구소 현황 표(텍스트 셀, 선언 15.2 < 10.7+5.1)가
+    /// pad 가산으로 한컴과 정확히 일치하므로 규칙을 빈 셀로 한정한다.
+    pub(crate) fn cell_is_empty_stored(cell: &crate::model::table::Cell) -> bool {
+        Self::cell_has_stored_line_segs(cell)
+            && cell
+                .paragraphs
+                .iter()
+                .all(|p| p.text.trim().is_empty() && p.controls.is_empty())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn resolve_row_heights_with_common_fit(
         &self,
@@ -1789,7 +1805,9 @@ impl LayoutEngine {
                         styles,
                         inner_width,
                     );
-                    let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
+                    let line_req = if (relaxed_pad && Self::cell_has_stored_line_segs(cell))
+                        || Self::cell_is_empty_stored(cell)
+                    {
                         line_based
                     } else {
                         line_based + pad_top + pad_bottom
@@ -1892,7 +1910,9 @@ impl LayoutEngine {
                 // 개체 기반 지오메트리는 pad 가산 유지.
                 let (line_based, object_based) =
                     self.calc_cell_paragraphs_content_parts(&cell.paragraphs, styles, inner_width);
-                let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
+                let line_req = if (relaxed_pad && Self::cell_has_stored_line_segs(cell))
+                        || Self::cell_is_empty_stored(cell)
+                    {
                     line_based
                 } else {
                     line_based + pad_top + pad_bottom
@@ -7653,7 +7673,13 @@ impl LayoutEngine {
             let has_visible_cut = units[su..eu]
                 .iter()
                 .any(|unit| Self::cell_unit_has_visible_content(cell, unit));
-            let pad_cell = if is_whole_row || has_visible_cut {
+            // [파리티 라운드3 T2] 통행(whole row)의 저장 lineseg **빈** 셀은 pad
+            // 미가산 — cell_is_empty_stored 주석 참조 (measurer·resolve_row_heights
+            // 와 동일 규칙이어야 페이지네이션 예산과 렌더 행높이가 갈라지지 않는다).
+            let empty_stored_cell = cell.text_direction == 0 && Self::cell_is_empty_stored(cell);
+            let pad_cell = if is_whole_row && empty_stored_cell {
+                0.0
+            } else if is_whole_row || has_visible_cut {
                 pad_top + pad_bottom
             } else {
                 0.0
@@ -8453,6 +8479,66 @@ mod row_cut_tests {
             &mut h2,
         );
         assert_eq!(j2, 2, "같은 문단 줄 하나만 고립되는 경우는 #1116 되감기 유지");
+    }
+
+    #[test]
+    fn empty_stored_cell_does_not_grow_row_by_padding() {
+        // [파리티 라운드3 T2] 저장 LINE_SEG 를 보유한 **빈** 셀은 pad 를 행
+        // 성장에 더하지 않는다 — complex p30 설명도 표: 선언 12.0(lh 12.0,
+        // pad 3.7)의 빈 스페이서 행을 한컴은 12.0, 종전 rhwp 는 15.7 로 렌더.
+        // 텍스트 셀은 종전대로 content+pad (같은 문서 p15 표가 한컴과 일치).
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let mk_cell = |row: u16, text: &str| Cell {
+            row,
+            col: 0,
+            row_span: 1,
+            col_span: 1,
+            width: 10000,
+            height: 900, // 12.0px
+            paragraphs: vec![Paragraph {
+                text: text.to_string(),
+                char_count: text.chars().count() as u32,
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: 900,
+                    line_spacing: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            apply_inner_margin: true,
+            padding: crate::model::Padding {
+                left: 0,
+                right: 0,
+                top: 141,
+                bottom: 141,
+            },
+            ..Default::default()
+        };
+        let t = Table {
+            row_count: 2,
+            col_count: 1,
+            cells: vec![mk_cell(0, ""), mk_cell(1, "가")],
+            ..Default::default()
+        };
+        assert!(LayoutEngine::cell_is_empty_stored(&t.cells[0]));
+        assert!(!LayoutEngine::cell_is_empty_stored(&t.cells[1]));
+        let rh = eng.resolve_row_heights(&t, 1, 2, None, &styles, false);
+        assert!(
+            (rh[0] - 12.0).abs() < 0.2,
+            "빈 저장 셀은 선언 12.0 유지(pad 미가산): {:?}",
+            rh
+        );
+        assert!(
+            rh[1] > 15.0,
+            "텍스트 셀은 종전대로 content+pad 로 성장: {:?}",
+            rh
+        );
+        let cut0 = eng.row_cut_content_height(&t, 0, &[], &[], &styles);
+        let cut1 = eng.row_cut_content_height(&t, 1, &[], &[], &styles);
+        assert!((cut0 - 12.0).abs() < 0.2, "컷 측정도 동일 규칙: {cut0}");
+        assert!(cut1 > 15.0, "컷 측정 텍스트 셀: {cut1}");
     }
 
     #[test]
