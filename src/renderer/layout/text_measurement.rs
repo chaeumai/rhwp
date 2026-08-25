@@ -312,6 +312,10 @@ fn compute_char_positions_walk(
         if c == '\u{2007}' {
             return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
         }
+        // [파리티 라운드3 J14] 괘선 ─/━ 는 전각 (모든 측정 경로 공통)
+        if matches!(c, '\u{2500}' | '\u{2501}') {
+            return font_size * ratio + style.letter_spacing + style.extra_char_spacing;
+        }
         // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
         if c == '\u{FFFC}' {
             return 0.0;
@@ -444,6 +448,10 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             let c = chars[i];
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
+            }
+            // [파리티 라운드3 J14] 괘선 ─/━ 는 전각 (모든 측정 경로 공통)
+            if matches!(c, '\u{2500}' | '\u{2501}') {
+                return font_size * ratio + style.letter_spacing + style.extra_char_spacing;
             }
             // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
             if c == '\u{FFFC}' {
@@ -656,6 +664,12 @@ impl TextMeasurer for EmbeddedTextMeasurer {
         // [#2132] 폭 산출원 훅 — embedded 메트릭 lookup + 폴백 사다리 (Task #257 포함).
         let char_px_raw = |_i: usize, c: char, _chars: &[char], cluster_len: &[u8]| -> f64 {
             let i = _i;
+            // [파리티 라운드3 J14] 괘선 문자(─ U+2500·━ U+2501)는 한글 글꼴(신명조 등)에서 전각이다.
+            // 대체 글꼴 메트릭(반각 0.38em)을 쓰면 jbnu-002 머리말 밑줄 ─×43 이 218px 로 줄어든다
+            // (한컴 510px = 머리말 폭). 렌더도 글리프 대신 실선으로 그린다.
+            if matches!(c, '\u{2500}' | '\u{2501}') {
+                return font_size;
+            }
             if let Some(w) = (c == '\u{318D}')
                 .then(|| area_dot_fallback_width(&style.font_family, font_size))
                 .flatten()
@@ -1040,6 +1054,10 @@ impl TextMeasurer for WasmTextMeasurer {
             let c = chars[i];
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
+            }
+            // [파리티 라운드3 J14] 괘선 ─/━ 는 전각 (모든 측정 경로 공통)
+            if matches!(c, '\u{2500}' | '\u{2501}') {
+                return font_size * ratio + style.letter_spacing + style.extra_char_spacing;
             }
             // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
             if c == '\u{FFFC}' {
@@ -1789,6 +1807,10 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
         let c = chars[i];
         if c == '\u{2007}' {
             return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
+        }
+        // [파리티 라운드3 J14] 괘선 ─/━ 는 전각 (모든 측정 경로 공통)
+        if matches!(c, '\u{2500}' | '\u{2501}') {
+            return font_size * ratio + style.letter_spacing + style.extra_char_spacing;
         }
         // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
         if c == '\u{FFFC}' {

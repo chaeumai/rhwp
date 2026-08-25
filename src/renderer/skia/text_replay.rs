@@ -496,6 +496,25 @@ impl SkiaTextReplay<'_> {
                             }
                             continue;
                         }
+                        // [파리티 라운드3 J14] 괘선 문자 ─/━ 는 글리프 대신 advance 폭 실선으로
+                        // (대체 글꼴 글리프는 반각·회색 점선처럼 보임; 한컴은 연속 실선).
+                        if cluster == "\u{2500}" || cluster == "\u{2501}" {
+                            let advance = cluster_advance(*char_idx, cluster);
+                            let x1 = bbox.x as f32
+                                + char_positions.get(*char_idx).copied().unwrap_or(0.0) as f32
+                                + dx;
+                            let thick = if cluster == "\u{2501}" { font_size * 0.12 } else { font_size * 0.06 };
+                            draw_styled_line(
+                                x1,
+                                y as f32 - font_size * 0.32 + dy,
+                                x1 + advance,
+                                color,
+                                thick.max(0.5),
+                                &[],
+                                false,
+                            );
+                            continue;
+                        }
                         if is_middle_dot(cluster) {
                             let advance = cluster_advance(*char_idx, cluster);
                             let cx = bbox.x as f32
