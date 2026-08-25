@@ -2899,15 +2899,36 @@ impl LayoutEngine {
                                         body_area,
                                         &paper_area,
                                     );
+                                    // 바탕쪽 문단은 본문 영역 안에 놓이므로 문단(PARA)·단(COLUMN)
+                                    // 기준 그림은 본문 영역 + 저장 vpos 를 원점으로 잡는다. 종전엔
+                                    // 종이 원점(0,0)이라 위 여백으로 올라가는 음수 vertOffset 로고
+                                    // (멘토링 신청서 오른쪽 로고: PARA −16mm, COLUMN +142.7mm)가
+                                    // y<0 으로 사라졌다. PAPER/PAGE 기준은 영향 없음.
+                                    let (mp_container, mp_para_y) = if !pic.common.treat_as_char
+                                        && (matches!(pic.common.vert_rel_to, VertRelTo::Para)
+                                            || matches!(
+                                                pic.common.horz_rel_to,
+                                                HorzRelTo::Para | HorzRelTo::Column
+                                            ))
+                                    {
+                                        let vpos = para
+                                            .line_segs
+                                            .first()
+                                            .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                                            .unwrap_or(0.0);
+                                        (body_area, body_area.y + vpos)
+                                    } else {
+                                        (&paper_area, paper_area.y)
+                                    };
                                     let (pic_x, pic_y) = self.compute_object_position(
                                         &pic.common,
                                         pic_w,
                                         pic_h,
-                                        &paper_area,
-                                        &paper_area,
+                                        mp_container,
+                                        mp_container,
                                         body_area,
                                         &paper_area,
-                                        paper_area.y,
+                                        mp_para_y,
                                         Alignment::Left,
                                     );
                                     let pic_area = super::layout::LayoutRect {

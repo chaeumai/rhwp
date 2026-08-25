@@ -1967,6 +1967,37 @@ fn master_page_paper_relative_shape_uses_page_origin() {
 }
 
 #[test]
+fn master_page_para_relative_picture_uses_body_origin() {
+    // 멘토링 신청서 바탕쪽 오른쪽 로고: vertRelTo=PARA vertOffset −4535HU, horzRelTo=COLUMN
+    // horzOffset 40439HU. 한컴(hwpx2pdf 일치): 본문 왼쪽 + 142.66mm, 본문 상단 − 16mm.
+    let tree = render_tree_with_master_page_control(Control::Picture(Box::new(
+        crate::model::image::Picture {
+            common: CommonObjAttr {
+                width: 9_150,
+                height: 2_730,
+                horizontal_offset: 40_439,
+                vertical_offset: (-4_535i32) as u32,
+                horz_rel_to: HorzRelTo::Column,
+                vert_rel_to: VertRelTo::Para,
+                text_wrap: TextWrap::Square,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )));
+    let layout = PageLayoutInfo::from_page_def_default(&a4_page_def(), &ColumnDef::default());
+    let body = layout.body_area;
+    let bbox = first_master_child_bbox(&tree, |node_type| {
+        matches!(
+            node_type,
+            RenderNodeType::Image(_) | RenderNodeType::Placeholder(_)
+        )
+    });
+    assert!((bbox.x - (body.x + hwpunit_to_px(40_439, DEFAULT_DPI))).abs() < 0.01, "x {}", bbox.x);
+    assert!((bbox.y - (body.y + hwpunit_to_px(-4_535, DEFAULT_DPI))).abs() < 0.01, "y {}", bbox.y);
+}
+
+#[test]
 fn master_page_paper_relative_picture_uses_page_origin() {
     let tree = render_tree_with_master_page_control(Control::Picture(Box::new(
         crate::model::image::Picture {
