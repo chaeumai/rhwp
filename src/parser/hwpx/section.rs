@@ -2281,7 +2281,12 @@ fn parse_picture(
     let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
+        // [파리티 라운드3 T3-b] 빈 요소(<hc:fillBrush/>, <hp:renderingInfo/>)는 자식 읽기
+        // 루프를 타면 안 된다 — 종료 태그가 없어 도형 끝까지 삼켜 drawText·sz·pos 가
+        // 통째로 유실된다 (jbnu-002 별지서식 1 글상자 소실).
+        let ev = reader.read_event_into(&mut buf);
+        let is_empty_elem = matches!(ev, Ok(Event::Empty(_)));
+        match ev {
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"imgRect" => {
                 parse_picture_img_rect(reader, &mut border_x, &mut border_y)?;
             }
@@ -2519,7 +2524,9 @@ fn parse_picture(
                     }
                     b"renderingInfo" => {
                         // 그룹 내 자식의 아핀 변환 행렬 파싱
-                        parse_rendering_info(reader, &mut shape_attr)?;
+                        if !is_empty_elem {
+                            parse_rendering_info(reader, &mut shape_attr)?;
+                        }
                     }
                     b"flip" => {
                         parse_shape_flip(ce, &mut shape_attr);
@@ -3646,7 +3653,12 @@ fn parse_shape_object(
     let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
+        // [파리티 라운드3 T3-b] 빈 요소(<hc:fillBrush/>, <hp:renderingInfo/>)는 자식 읽기
+        // 루프를 타면 안 된다 — 종료 태그가 없어 도형 끝까지 삼켜 drawText·sz·pos 가
+        // 통째로 유실된다 (jbnu-002 별지서식 1 글상자 소실).
+        let ev = reader.read_event_into(&mut buf);
+        let is_empty_elem = matches!(ev, Ok(Event::Empty(_)));
+        match ev {
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"shapeComment" => {
                 common.description = read_dutmal_text(reader, b"shapeComment")?;
             }
@@ -3793,10 +3805,14 @@ fn parse_shape_object(
                     b"start2" => parse_xy(ce, &mut e_start2),
                     b"end2" => parse_xy(ce, &mut e_end2),
                     b"renderingInfo" => {
-                        parse_rendering_info(reader, &mut shape_attr)?;
+                        if !is_empty_elem {
+                            parse_rendering_info(reader, &mut shape_attr)?;
+                        }
                     }
                     b"fillBrush" => {
-                        fill = parse_shape_fill_brush(reader)?;
+                        if !is_empty_elem {
+                            fill = parse_shape_fill_brush(reader)?;
+                        }
                     }
                     b"shadow" => {
                         shadow_acc = Some(parse_shape_shadow_attr(ce));
@@ -3950,7 +3966,12 @@ fn parse_container(
     let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
+        // [파리티 라운드3 T3-b] 빈 요소(<hc:fillBrush/>, <hp:renderingInfo/>)는 자식 읽기
+        // 루프를 타면 안 된다 — 종료 태그가 없어 도형 끝까지 삼켜 drawText·sz·pos 가
+        // 통째로 유실된다 (jbnu-002 별지서식 1 글상자 소실).
+        let ev = reader.read_event_into(&mut buf);
+        let is_empty_elem = matches!(ev, Ok(Event::Empty(_)));
+        match ev {
             // 묶음 개체 캡션 (#1403) — 미적재 시 roundtrip 에서 캡션 subList 소실
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"caption" => {
                 caption = Some(parse_table_caption(ce, reader)?);
@@ -3996,7 +4017,9 @@ fn parse_container(
                         }
                     }
                     b"renderingInfo" => {
-                        parse_rendering_info(reader, &mut shape_attr)?;
+                        if !is_empty_elem {
+                            parse_rendering_info(reader, &mut shape_attr)?;
+                        }
                     }
                     _ => {}
                 }
@@ -7270,6 +7293,48 @@ mod tests {
         assert_eq!(rect.round_rate, 50);
     }
 
+    /// [파리티 라운드3 T3-b] jbnu-002 별지서식 1: `<hc:fillBrush/>` **빈 요소**가
+    /// drawText·sz·pos 앞에 오면 텍스트박스와 위치 속성이 통째로 유실됐다.
+    #[test]
+    fn test_parse_rect_empty_fill_brush_before_draw_text() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:rect id="1" zOrder="0" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES">
+        <hp:offset x="0" y="0"/>
+        <hp:orgSz width="37984" height="25512"/>
+        <hp:curSz width="0" height="22403"/>
+        <hp:lineShape color="#000000" width="84" style="SOLID"/>
+        <hc:fillBrush/>
+        <hp:shadow type="NONE" color="#000000" offsetX="0" offsetY="0" alpha="0"/>
+        <hp:drawText lastWidth="37984" name="" editable="0">
+          <hp:subList vertAlign="CENTER">
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>수 료 증 명 서</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:drawText>
+        <hp:sz width="37984" height="22404" protect="0"/>
+        <hp:pos treatAsChar="1" vertRelTo="PARA" horzRelTo="COLUMN"/>
+      </hp:rect>
+      <hp:t/>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+        let section = parse_hwpx_section(xml).unwrap();
+        let Control::Shape(shape) = &section.paragraphs[0].controls[0] else {
+            panic!("expected shape control");
+        };
+        let ShapeObject::Rectangle(rect) = shape.as_ref() else {
+            panic!("expected rectangle shape");
+        };
+        let tb = rect.drawing.text_box.as_ref().expect("drawText 텍스트박스 보존");
+        assert_eq!(tb.paragraphs.len(), 1);
+        assert!(tb.paragraphs[0].text.contains("수 료 증 명 서"));
+        assert!(rect.common.treat_as_char, "pos treatAsChar=1 보존");
+        assert_eq!(rect.common.height, 22404, "sz 보존");
+    }
     #[test]
     fn test_parse_rect_preserves_size_protect() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
