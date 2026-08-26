@@ -1170,6 +1170,35 @@ fn collect_shape_marker_labels(show_ctrl: bool, para: Option<&Paragraph>) -> Vec
 /// 안내문은 폭 0 오버레이라 뒤 글자를 밀지 않는다. 그래서 자리보다 길면 그대로
 /// 겹쳐 그려져 안내문도 본문도 못 읽게 된다. 들어갈 만큼만 남기고 말줄임표를
 /// 붙이며, 말줄임표조차 못 들어가면 빈 문자열(=그리지 않음)을 돌려준다.
+/// [E-4] `guide` 앞에서 폭 `avail` 안에 들어가는 가장 긴 접두(바이트 길이). 공백 뒤에서
+/// 자를 수 있으면 거기서(어절), 아니면 글자 단위. 한 글자도 안 들어가면 첫 글자.
+fn guide_prefix_fitting(guide: &str, style: &TextStyle, avail: f64) -> usize {
+    if guide.is_empty() {
+        return 0;
+    }
+    if estimate_text_width(guide, style) <= avail {
+        return guide.len();
+    }
+    let mut best_char = 0usize;
+    for (idx, _) in guide.char_indices().skip(1) {
+        if estimate_text_width(&guide[..idx], style) > avail {
+            break;
+        }
+        best_char = idx;
+    }
+    if best_char == 0 {
+        return guide.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+    }
+    // 어절 경계 우선: 자른 자리 앞의 마지막 공백 뒤로(공백은 앞 줄 끝에 남긴다)
+    let head = &guide[..best_char];
+    if let Some(sp) = head.rfind(' ') {
+        if sp > 0 {
+            return sp + 1;
+        }
+    }
+    best_char
+}
+
 fn fit_guide_text(guide: &str, style: &TextStyle, avail: f64) -> (String, f64) {
     const ELLIPSIS: &str = "…";
     let full_width = estimate_text_width(guide, style);
@@ -3922,6 +3951,8 @@ impl LayoutEngine {
                     y,
                     line_height,
                     baseline,
+                    line_idx,
+                    &composed.lines,
                 );
             }
 
@@ -5360,6 +5391,8 @@ impl LayoutEngine {
         y: f64,
         line_height: f64,
         baseline: f64,
+        line_idx: usize,
+        composed_lines: &[crate::renderer::composer::ComposedLine],
     ) -> f64 {
         // line_char_end: 파라미터로 수령 (원본: char_offset)
         let line_char_start = comp_line.char_start;
@@ -5551,7 +5584,40 @@ impl LayoutEngine {
                             }
                         }
                         let avail = (gap_right - gap_left).max(0.0);
-                        let (guide_text, guide_width) = fit_guide_text(guide, &guide_style, avail);
+                        // [E-4] 빈 필드가 저장 lineseg 여러 줄(빈 줄)에 걸치면 각 줄의
+                        // [line_char_start, line_char_end] 가 모두 [s, s] 라 start_in_line 이
+                        // 매 줄 참이 된다 — 종전엔 줄마다 안내문을 처음부터 그려 「사업단 …」×3
+                        // (등록 서식 근무상황부 「담당자」칸). 한글은 안내문을 본문처럼 줄에
+                        // 이어 감는다. 필드에 속한 빈 줄들의 순번으로 남은 문자열을 이어 그린다.
+                        let field_start = fr.start_char_idx;
+                        let qualifies = |j: usize, l: &crate::renderer::composer::ComposedLine| {
+                            j == line_idx || (l.runs.is_empty() && l.char_start == field_start)
+                        };
+                        let ordinal = composed_lines
+                            .iter()
+                            .enumerate()
+                            .take(line_idx)
+                            .filter(|(j, l)| qualifies(*j, l))
+                            .count();
+                        let total = composed_lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(j, l)| qualifies(*j, l))
+                            .count()
+                            .max(1);
+                        let guide_slice: String = {
+                            let mut rest: &str = guide;
+                            for _ in 0..ordinal {
+                                rest = &rest[guide_prefix_fitting(rest, &guide_style, avail)..];
+                            }
+                            if ordinal + 1 < total {
+                                rest[..guide_prefix_fitting(rest, &guide_style, avail)].to_string()
+                            } else {
+                                rest.to_string()
+                            }
+                        };
+                        let (guide_text, guide_width) =
+                            fit_guide_text(&guide_slice, &guide_style, avail);
                         let guide = guide_text.as_str();
                         let guide_x = guide_x0
                             .max(gap_left)
