@@ -330,6 +330,18 @@ struct VisibleFloatExclusion {
 }
 
 #[derive(Debug, Clone)]
+/// [파리티 라운드3 J13] 쪽나눔=None(나누지 않음) 자리차지 표가 현재 쪽 잔여에 안 들어가
+/// 다음 자유 쪽으로 미뤄진 항목. 한글은 이 표를 행/셀 컷하지 않고 **표만** 다음 쪽으로
+/// 보내며(FIFO, 쪽당 하나) 본문 흐름은 그 자리에 계속 채운다 (550 p79: 라벨 4 + 제목 상자 2,
+/// p80~82 표 각각 통째 — hwpx2pdf `BlockTableSplitter.relocateUnsplittableTable` 동형).
+struct DeferredPageFloat {
+    para_index: usize,
+    control_index: usize,
+    row_count: usize,
+    table_height: f64,
+}
+
+#[derive(Debug, Clone)]
 struct DeferredTableControl {
     para_index: usize,
     control_index: usize,
@@ -452,6 +464,9 @@ struct TypesetState {
     /// 같은 문단의 선행 RowBreak 표가 continuation 을 만들 때 후행 co-anchored 표를
     /// 후속 섹션 블록 뒤로 잠시 미루기 위한 큐.
     deferred_table_controls: Vec<DeferredTableControl>,
+    /// [파리티 라운드3 J13] None 자리차지 표 지연 큐 — 쪽 넘김(`push_new_page`)·섹션 끝에서
+    /// 쪽당 하나씩 `PartialTable(0..n)` 로 비운다.
+    deferred_page_floats: Vec<DeferredPageFloat>,
     /// [Task #1753] 지연 이월되는 visible-host 자리차지 표 직전에 현재 쪽 잔여 공간으로
     /// 선행 배치(prefill)된 후속 문단들 — 메인 루프에서 스킵.
     prefilled_paras: std::collections::HashSet<usize>,
@@ -1789,6 +1804,7 @@ impl TypesetState {
             pending_body_wide_top_reserve: 0.0,
             visible_float_exclusions: Vec::new(),
             deferred_table_controls: Vec::new(),
+            deferred_page_floats: Vec::new(),
             prefilled_paras: std::collections::HashSet::new(),
             pre_emitted_host_paras: std::collections::HashSet::new(),
             pre_emitted_host_heights: std::collections::HashMap::new(),
@@ -2027,8 +2043,47 @@ impl TypesetState {
         }
     }
 
+    /// [파리티 라운드3 J13] 지연 큐의 None 자리차지 표를 쪽당 하나씩 새 쪽에 통째 배치한다.
+    /// 흐름이 쪽을 넘길 때(`push_new_page`)와 섹션 끝에서 호출 — 큐 바닥을 지난 뒤 흐름이
+    /// 새 쪽에서 재개된다(hwpx2pdf `ColumnCursor.skipDeferredBackfillPages` 동형).
+    fn flush_deferred_page_floats(&mut self) {
+        if self.deferred_page_floats.is_empty() {
+            return;
+        }
+        let queue = std::mem::take(&mut self.deferred_page_floats);
+        for d in queue {
+            self.pages.push(self.new_page_content(Vec::new()));
+            self.reset_for_new_page();
+            self.pending_body_wide_top_reserve = 0.0;
+            self.current_items.push(PageItem::PartialTable {
+                para_index: d.para_index,
+                control_index: d.control_index,
+                start_row: 0,
+                end_row: d.row_count,
+                is_continuation: false,
+                start_cut: Vec::new(),
+                end_cut: Vec::new(),
+                is_block_split: false,
+            });
+            self.current_height = d.table_height;
+            if std::env::var("RHWP_CUT_DBG").is_ok() {
+                eprintln!(
+                    "CUT_DBG_DEFER flush pi={} ctrl={} rows={} h={:.1} page={}",
+                    d.para_index,
+                    d.control_index,
+                    d.row_count,
+                    d.table_height,
+                    self.pages.len()
+                );
+            }
+            self.flush_column_always();
+        }
+    }
+
     /// 새 페이지 push + 상태 리셋
     fn push_new_page(&mut self) {
+        // [파리티 라운드3 J13] 미룬 None 자리차지 표가 있으면 먼저 쪽당 하나씩 배치.
+        self.flush_deferred_page_floats();
         self.pages.push(self.new_page_content(Vec::new()));
         self.reset_for_new_page();
         // Task #321: 새 페이지에서는 body-wide top reserve 초기화
@@ -4418,6 +4473,8 @@ impl TypesetEngine {
         if !st.current_items.is_empty() {
             st.flush_column_always();
         }
+        // [파리티 라운드3 J13] 섹션 끝에 남은 지연 큐 비우기.
+        st.flush_deferred_page_floats();
         st.ensure_page();
 
         // [#1955] 글뒤로 표 후행 빈 문단 보류 흡수 부착 — 페이지 확정 후
@@ -15361,7 +15418,19 @@ impl TypesetEngine {
             && !table.common.treat_as_char
             && declared_object_total > host_spacing_total
             && st.current_height + declared_object_total <= available;
-        if st.current_height + table_total <= available
+        // [파리티 라운드3 J13] None 자리차지 표의 통째 fit 에 vert_offset 포함 — 렌더는
+        // para+voff 에 놓이므로 voff 를 빼고 "들어간다" 로 판정하면(TRIAGE J13 1.3px 축)
+        // 본문 하단을 넘긴 채 배치된다. 지연 큐 대상(단일 단·None·자리차지)에만 적용.
+        let none_float_voff = if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && is_para_topbottom_float(&table.common)
+            && st.col_count == 1
+            && std::env::var("RHWP_NONE_DEFER_OFF").is_err()
+        {
+            hwpunit_to_px(signed_hwpunit(table.common.vertical_offset), self.dpi).max(0.0)
+        } else {
+            0.0
+        };
+        if st.current_height + table_total + none_float_voff <= available
             || fits_after_overlay_shapes
             || single_row_object_height_advance.is_some()
             || declared_table_whole_fits
@@ -15504,6 +15573,53 @@ impl TypesetEngine {
                 is_first_placed,
                 is_last_placed,
             );
+            return;
+        }
+
+        // [파리티 라운드3 J13] 쪽나눔=None(나누지 않음) 자리차지 표는 한글이 행/셀 컷하지
+        // 않는다. 현재 쪽 잔여에 안 들어가고(여기 도달 = 통째 fit 실패) fresh 쪽엔 들어가면
+        // 표만 지연 큐에 넣고(FIFO, 쪽당 하나) 흐름은 다음 문단으로 계속한다 — 550 서식 9·
+        // 회의록·출장신청서(p79 라벨 4 + 제목 상자 2 → p80/81/82 표 통째, 한컴 PDF·저장
+        // vpos 0→28217HU 연속). 종전엔 RowBreak 와 같은 행 스캔으로 셀 컷(end_cut=[11]) →
+        // 라벨이 3쪽에 흩어지고 p79~82 Δ±615. #1753 prefill(RowBreak·컨트롤 없는 문단 8개)
+        // 은 tac 제목 상자에서 멈춰 91→90쪽 회귀(TRIAGE J13 기각 기록). host 가시 텍스트
+        // ([서식 9])는 현재 쪽에 남긴다. 단일 단 한정. `RHWP_NONE_DEFER_OFF=1` 로 종전 동작.
+        if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && is_para_topbottom_float(&table.common)
+            && st.col_count == 1
+            && !st.current_items.is_empty()
+            && !mt.cells.is_empty()
+            && table_only_height > 0.0
+            && table_only_height <= st.base_available_height()
+            && std::env::var("RHWP_NONE_DEFER_OFF").is_err()
+        {
+            self.pre_emit_visible_rowbreak_host_text(st, para_idx, para, composed_all, styles);
+            // 미룬 표는 새 쪽 상단에 놓인다 — layout(table_partial.rs) 의 vert_offset 가산을
+            // host 높이 감액으로 상쇄(voff 이하로 기록된 host_h 는 voff 로 올림).
+            let v_off_px = hwpunit_to_px(signed_hwpunit(table.common.vertical_offset), self.dpi);
+            if v_off_px > 0.0 {
+                let e = st.pre_emitted_host_heights.entry(para_idx).or_insert(0.0);
+                if *e < v_off_px {
+                    *e = v_off_px;
+                }
+            }
+            if std::env::var("RHWP_CUT_DBG").is_ok() {
+                eprintln!(
+                    "CUT_DBG_DEFER pi={} ctrl={} h={:.1} cur_h={:.1} avail={:.1} queue_len={}",
+                    para_idx,
+                    ctrl_idx,
+                    table_only_height,
+                    st.current_height,
+                    available,
+                    st.deferred_page_floats.len() + 1
+                );
+            }
+            st.deferred_page_floats.push(DeferredPageFloat {
+                para_index: para_idx,
+                control_index: ctrl_idx,
+                row_count: mt.row_heights.len(),
+                table_height: table_only_height,
+            });
             return;
         }
 
@@ -17967,6 +18083,166 @@ mod tests {
             first_end_row, 1,
             "표 분할 예산은 저장 vpos(40px) 기준이어야 한다 — 2행이 들어갔다면 \
              표 문단 vpos 스냅이 빠진 것 (드리프트 예산 과대)"
+        );
+    }
+
+    /// [파리티 라운드3 J13] 테스트 공통 — 선행 문단(500px) + 자리차지 표(3행×200px) + 후속 문단.
+    fn j13_doc(
+        page_break: crate::model::table::TablePageBreak,
+        second_float: bool,
+    ) -> Vec<Paragraph> {
+        use crate::model::control::Control;
+        use crate::model::shape::{TextWrap, VertRelTo};
+        use crate::model::table::{Cell, Table};
+
+        let make_float = |rows: u16| {
+            let row_h_hu: u32 = 15000; // 200px
+            let mut common = crate::model::shape::CommonObjAttr::default();
+            common.text_wrap = TextWrap::TopAndBottom;
+            common.vert_rel_to = VertRelTo::Para;
+            common.treat_as_char = false;
+            common.width = 30000;
+            common.height = row_h_hu * rows as u32;
+            let mut host = Paragraph::default();
+            host.controls.push(Control::Table(Box::new(Table {
+                row_count: rows,
+                col_count: 1,
+                page_break,
+                common,
+                cells: (0..rows)
+                    .map(|r| Cell {
+                        row: r,
+                        col: 0,
+                        row_span: 1,
+                        col_span: 1,
+                        height: row_h_hu,
+                        width: 30000,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })));
+            host
+        };
+        let mut paras = vec![make_paragraph_with_height(37500), make_float(3)];
+        paras.push(make_paragraph_with_height(1500));
+        if second_float {
+            paras.push(make_float(3));
+            paras.push(make_paragraph_with_height(1500));
+        }
+        paras
+    }
+
+    fn j13_run(paras: &[Paragraph]) -> PaginationResult {
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured = HeightMeasurer::with_default_dpi().measure_section(
+            paras,
+            &composed,
+            &styles,
+            None,
+        );
+        engine.typeset_section(
+            paras,
+            &composed,
+            &styles,
+            &a4_page_def(),
+            &ColumnDef::default(),
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    fn j13_items(result: &PaginationResult, page: usize) -> Vec<String> {
+        result.pages[page]
+            .column_contents
+            .iter()
+            .flat_map(|c| c.items.iter())
+            .map(|it| match it {
+                PageItem::FullParagraph { para_index } => format!("P{para_index}"),
+                PageItem::PartialParagraph { para_index, .. } => format!("p{para_index}"),
+                PageItem::Table { para_index, .. } => format!("T{para_index}"),
+                PageItem::PartialTable {
+                    para_index,
+                    start_row,
+                    end_row,
+                    is_continuation,
+                    ..
+                } => format!("PT{para_index}[{start_row}..{end_row}{}]", if *is_continuation { "c" } else { "" }),
+                _ => "?".to_string(),
+            })
+            .collect()
+    }
+
+    /// [파리티 라운드3 J13] (a) None 자리차지 표가 잔여에 안 들어가면 다음 쪽 상단에 통째,
+    /// (b) 후속 문단은 앞 쪽에 남는다(흐름 계속).
+    #[test]
+    fn j13_none_float_defers_whole_and_flow_continues() {
+        let paras = j13_doc(crate::model::table::TablePageBreak::None, false);
+        let result = j13_run(&paras);
+        assert!(result.pages.len() >= 2, "pages={}", result.pages.len());
+        let p0 = j13_items(&result, 0);
+        let p1 = j13_items(&result, 1);
+        assert!(
+            p0.iter().any(|s| s == "P2"),
+            "후속 문단(pi2)은 앞 쪽에 남아야 한다: p0={p0:?} p1={p1:?}"
+        );
+        assert!(
+            !p0.iter().any(|s| s.starts_with("PT1") || s == "T1"),
+            "None 표는 앞 쪽에 조각이 없어야 한다: p0={p0:?}"
+        );
+        assert!(
+            p1.iter().any(|s| s == "PT1[0..3]"),
+            "None 표는 다음 쪽에 통째(0..3, 비연속)여야 한다: p1={p1:?}"
+        );
+    }
+
+    /// [파리티 라운드3 J13] (c) 두 번째 None float 은 그 다음 쪽(쪽당 하나).
+    #[test]
+    fn j13_second_none_float_gets_next_page() {
+        let paras = j13_doc(crate::model::table::TablePageBreak::None, true);
+        let result = j13_run(&paras);
+        assert!(result.pages.len() >= 3, "pages={}", result.pages.len());
+        let p0 = j13_items(&result, 0);
+        let p1 = j13_items(&result, 1);
+        let p2 = j13_items(&result, 2);
+        assert!(p0.iter().any(|s| s == "P2") && p0.iter().any(|s| s == "P4"), "p0={p0:?}");
+        assert_eq!(p1, vec!["PT1[0..3]".to_string()], "p1={p1:?}");
+        assert_eq!(p2, vec!["PT3[0..3]".to_string()], "p2={p2:?}");
+    }
+
+    /// [파리티 라운드3 J13] (d) RowBreak 표는 종전대로 행 분할(앞 쪽에 조각).
+    #[test]
+    fn j13_rowbreak_float_still_splits() {
+        let paras = j13_doc(crate::model::table::TablePageBreak::RowBreak, false);
+        let result = j13_run(&paras);
+        let p0 = j13_items(&result, 0);
+        assert!(
+            p0.iter().any(|s| s.starts_with("PT1[0..")),
+            "RowBreak 표는 앞 쪽에서 행 분할이 시작돼야 한다: p0={p0:?}"
+        );
+    }
+
+    /// [파리티 라운드3 J13] (e) `RHWP_NONE_DEFER_OFF` 가 아니어도 fresh 쪽에 안 들어가는
+    /// None 표(4행×280px > 본문)는 종전 분기(#2097 통째 오버플로/분할 폴백)로 간다 — 큐 미사용.
+    #[test]
+    fn j13_none_float_larger_than_page_not_deferred() {
+        use crate::model::control::Control;
+        let mut paras = j13_doc(crate::model::table::TablePageBreak::None, false);
+        if let Some(Control::Table(t)) = paras[1].controls.get_mut(0) {
+            for c in t.cells.iter_mut() {
+                c.height = 30000; // 400px ×3 = 1200px > 본문
+            }
+            t.common.height = 90000;
+        }
+        let result = j13_run(&paras);
+        let all: Vec<String> = (0..result.pages.len()).flat_map(|i| j13_items(&result, i)).collect();
+        assert!(
+            !all.iter().any(|s| s == "PT1[0..3]") || all.iter().position(|s| s == "P2") < all.iter().position(|s| s == "PT1[0..3]"),
+            "쪽보다 큰 None 표는 지연 큐를 타지 않는다: {all:?}"
         );
     }
 
