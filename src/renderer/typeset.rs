@@ -351,6 +351,11 @@ struct HostSpacing {
     after: f64,
     /// spacing_after만 (마지막 fragment용 — Paginator와 동일)
     spacing_after_only: f64,
+    /// [파리티 라운드3 C-2097] 게이트 통과 빈 호스트 표의 흐름 전용 outMargin.bottom.
+    c2097_flow_extra: Option<f64>,
+    /// [파리티 라운드3 C-2097] `before` 에 포함된 voff — 분할 예산은 vert_offset_overhead 로 따로
+    /// 빼므로 그 경로에서는 이 값을 되돌려 이중 차감을 막는다(550 서식 8 p72 −24.8px 회귀).
+    c2097_voff_in_before: f64,
     /// 페이지 적합 판정용 after — 빈 호스트 자리차지 표의 outer_margin_bottom 은
     /// 흐름 전진에만 계상하고 fit 에서 제외한다 (#2195 stage58: 86712 구분선 간격
     /// 한글 괘선 실측 vs hwpspec 178쪽 핀(#1086) 동시 충족).
@@ -387,7 +392,10 @@ const BOTTOM_SQUEEZE_MAX_REST_PX: f64 = 100.0;
 /// [파리티 라운드2 T2] 12→10: complex-full sec4 ③ 표 마지막 행(잔여 91.3,
 /// 콘텐츠 80.0, 여유 11.3px)을 한컴이 압축 실측 — 이월 실측(1.3px)과의
 /// 사이로 하향. squeeze 밴드 컷 게이트와 공유.
-const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 10.0;
+/// [파리티 라운드3 C-2097] 10→5: complex-full sec10 「적합성」 표 r2(선언 89.1, 한컴 잔여 88.6,
+/// 콘텐츠 80.0+pad 3.8 → 여유 4.8~8.6px)를 한컴이 같은 쪽에 압축 실측(p52 통째, 마지막 줄
+/// yMax 1003.9 < 본문 하단 1009.1). 이월 실측 1.3px 과는 여전히 분리된다.
+const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 5.0;
 const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
 /// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
 /// 제한된 tail 경로에만 허용하는 누적 높이 drift 완화값.
@@ -469,6 +477,13 @@ struct TypesetState {
     /// 각주 있는 페이지에서 한글 LINESEG 는 tail 문단을 본문에 배치(각주는 아래)하는데,
     /// rhwp 각주 예약(+40px 버퍼)이 tail 을 수 px 초과로 밀어 near-empty 페이지 over-pagination.
     skip_footnote_margin_once: bool,
+    /// [파리티 라운드3 C-2097] 빈 호스트 자리차지 표(게이트 통과)의 흐름 전용 outMargin.bottom —
+    /// typeset_block_table 진입 때 채우고 place_table_with_text 의 빈 호스트 흐름 전진에서 소비.
+    c2097_flow_extra: Option<f64>,
+    /// [파리티 라운드3 C-2097] 직전 항목이 게이트 통과 빈 호스트 표 → 다음 문단 spacing_before 미소비.
+    c2097_skip_next_sb: bool,
+    /// [파리티 라운드3 C-2097] 위 플래그를 세운 흐름 높이 — 다음 문단이 다른 높이에서 시작하면 미적용.
+    c2097_skip_at_h: f64,
     /// [Task #1725 v2] tail-before-vpos-reset 문단 1회 소량 오버플로 허용(px). 각주 없이도
     /// 페이지가 수 px over-fill 되어 tail 이 밀리는 케이스(국제고속선기준 pi=718/995/1789/2128).
     /// 한글은 tail 을 본문 하단(여백 침범 무시)에 배치하므로 tail 에 한해 소량 초과를 허용한다.
@@ -1794,6 +1809,9 @@ impl TypesetState {
             pre_emitted_host_heights: std::collections::HashMap::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
+            c2097_flow_extra: None,
+            c2097_skip_next_sb: false,
+            c2097_skip_at_h: f64::NAN,
             tail_overflow_tolerance_once: 0.0,
             is_hwp3_variant: false,
             is_hwp3_source: false,
@@ -11439,6 +11457,11 @@ impl TypesetEngine {
             0.0
         };
         let float_jumped = st.apply_visible_float_exclusions(exclusion_probe_height);
+        // [파리티 라운드3 C-2097] 직전 빈 호스트 자리차지 표 뒤 문단도 spacing_before 미소비.
+        let c2097_skip_sb = std::mem::take(&mut st.c2097_skip_next_sb)
+            && (st.current_height - st.c2097_skip_at_h).abs() < 0.5;
+        st.c2097_skip_at_h = f64::NAN;
+        let float_jumped = float_jumped || c2097_skip_sb;
         // [파리티 라운드3 J4] 자리차지 표 아래로 점프한 문단은 spacing_before 를 소비하지
         // 않는다 — 한컴 저장 vpos 는 표 하단 + outMargin 에 줄을 둔다 (complex sec10 빈
         // 문단 17/17, 보통 문맥의 빈 문단은 14/14 적용). 단 상단 취급과 같다.
@@ -12352,11 +12375,56 @@ impl TypesetEngine {
             (if !is_column_top { sb } else { 0.0 }) + outer_top
         };
         let after = sa + outer_bottom + host_line_spacing;
+        // [파리티 라운드3 C-2097] 빈 호스트 자리차지 표(HWPX·저장 lineseg·voff≥0·다음이 빈 앵커 아님):
+        // 한컴은 표 top = 원점 + voff + outMargin.top, 표 뒤 = 하단 + outMargin.bottom 이고 호스트
+        // spacing_after·다음 문단 spacing_before 는 소비하지 않는다(complex sec10 pi9: 종전 −1.9/+6.8px).
+        // fit 예산은 before 에 voff 를 넣고(종전엔 흐름·fit 모두 누락) bottom 은 흐름 전용(#2195 stage59).
+        let c2097_gate = crate::renderer::layout::empty_host_float_om_gate(
+            self.is_hwpx_source.get(),
+            para,
+            next_para,
+            table,
+        );
+        // [파리티 라운드3 C-2097 ②] 가시 호스트 제목이 표 **위**에 오는 자리차지 표(voff ≥ 첫 줄 높이,
+        // J1/J11 판정과 동일): 한컴 표 top = 원점 + voff + outMargin.top 이고 제목 줄(sb 포함)은
+        // voff 안에 든다. 흐름(place_table_with_text: para_start + outer_top + v_off)은 이미 그렇게
+        // 전진하는데 fit·분할 예산(host_spacing.before = sb + outer_top)만 sb 를 한 번 더 빼
+        // complex p52 「적합성」 표 3행(89.1px)이 10.7px 모자라 분할·p53 이월됐다. HWPX 한정.
+        let title_precedes_table = self.is_hwpx_source.get()
+            && std::env::var_os("RHWP_C2097B_OFF").is_none()
+            && is_visible_host_float
+            && signed_hwpunit(table.common.vertical_offset) > 0
+            && {
+                let first_line = para
+                    .line_segs
+                    .first()
+                    .map(|ls| hwpunit_to_px(ls.line_height, self.dpi))
+                    .unwrap_or(0.0);
+                let voff_px = hwpunit_to_px(signed_hwpunit(table.common.vertical_offset), self.dpi);
+                first_line > 0.0 && voff_px + 0.5 >= first_line
+            };
+        let before = if title_precedes_table && !is_column_top {
+            outer_top
+        } else {
+            before
+        };
+        let (before, after, sa, after_for_fit, c2097_flow_extra, c2097_voff_in_before) =
+            if c2097_gate {
+                let voff_px =
+                    hwpunit_to_px(signed_hwpunit(table.common.vertical_offset), self.dpi).max(0.0);
+                let ob = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
+                // 분할 표의 마지막 조각 뒤에는 sa 대신 outMargin.bottom.
+                (outer_top + voff_px, ob, ob, 0.0, Some(ob), voff_px)
+            } else {
+                (before, after, sa, after - outer_bottom_flow_only, None, 0.0)
+            };
         let host_spacing = HostSpacing {
             before,
             after,
             spacing_after_only: sa,
-            after_for_fit: after - outer_bottom_flow_only,
+            after_for_fit,
+            c2097_flow_extra,
+            c2097_voff_in_before,
         };
 
         let (
@@ -12629,6 +12697,9 @@ impl TypesetEngine {
         paragraphs_all: &[Paragraph],
         composed_all: &[ComposedParagraph],
     ) {
+        // [파리티 라운드3 C-2097] 표 문단은 sb 면제 대상이 아니다 — 잔여 플래그 정리.
+        st.c2097_skip_next_sb = false;
+        st.c2097_flow_extra = None;
         // [#2243 진단] 표 문단 진입 누적 — 동작 불변.
         if std::env::var("RHWP_DIAG_TAC").is_ok() {
             eprintln!(
@@ -13654,7 +13725,14 @@ impl TypesetEngine {
             // 순효과가 반전되고, v_off 를 저장이 소비하지 않는 하위 형상
             // (pi114: +20.5→+44.1 악화) 존재. 82802 56→57(hc=51) 악화 실측.
             // vpos-스냅/NO_LS 축과의 동시 정합 없이는 적용 불가.
-            st.current_height += pre_height + table_total_height;
+            // [파리티 라운드3 C-2097] 게이트 통과 빈 호스트 표: 하단 outMargin 을 흐름에 더하고
+            // 다음 문단 spacing_before 를 면제한다 (layout 6778 미러). 82802(NO_LS)는 게이트 밖.
+            let c2097_extra = st.c2097_flow_extra.take();
+            st.current_height += pre_height + table_total_height + c2097_extra.unwrap_or(0.0);
+            if c2097_extra.is_some() {
+                st.c2097_skip_next_sb = true;
+                st.c2097_skip_at_h = st.current_height;
+            }
         }
         // [#2243 진단] TAC 표 라인 회계 분해 — 동작 불변.
         if std::env::var("RHWP_DIAG_TAC").is_ok() {
@@ -14816,6 +14894,8 @@ impl TypesetEngine {
         paragraphs_all: &[Paragraph],
         composed_all: &[ComposedParagraph],
     ) {
+        // [파리티 라운드3 C-2097] 빈 호스트 흐름 전용 outMargin.bottom 을 place 단계로 전달.
+        st.c2097_flow_extra = ft.host_spacing.c2097_flow_extra;
         // 표 내 각주를 고려한 가용 높이 계산 (Paginator engine.rs:583-586 동일)
         let total_footnote =
             st.projected_footnote_height(ft.table_footnote_height, ft.table_footnote_count);
@@ -15887,7 +15967,8 @@ impl TypesetEngine {
             let host_before_overhead = if is_continuation {
                 0.0
             } else {
-                ft.host_spacing.before
+                // [파리티 라운드3 C-2097] voff 는 아래 vert_offset_overhead 가 빼므로 여기선 제외.
+                ft.host_spacing.before - ft.host_spacing.c2097_voff_in_before
             };
             let vert_offset_overhead = if is_continuation {
                 0.0

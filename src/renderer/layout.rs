@@ -670,6 +670,35 @@ fn para_has_visible_inline_control(para: &Paragraph) -> bool {
     })
 }
 
+/// [파리티 라운드3 C-2097] 빈 호스트 자리차지 표의 outMargin 규칙 게이트 — HWPX 원본,
+/// 비-TAC TopAndBottom·PARA, 호스트 가시 텍스트 없음, voff ≥ 0, 호스트 저장 lineseg 보유,
+/// 다음 문단이 빈 표 앵커가 아님(스택은 #1133/#1880 규칙 유지). 한컴은 표 top 에
+/// outMargin.top, 표 뒤에 outMargin.bottom 을 더하고 호스트 spacing_after·다음 문단
+/// spacing_before 는 소비하지 않는다(complex 빈 호스트 21/29·550 17/23 저장 vpos Δ0,
+/// next_sb=800 사례 전부 Δ0). typeset 미러: `empty_host_float_om_gate` 동명.
+pub(crate) fn empty_host_float_om_gate(
+    is_hwpx_source: bool,
+    para: &Paragraph,
+    next_para: Option<&Paragraph>,
+    t: &crate::model::table::Table,
+) -> bool {
+    is_hwpx_source
+        && std::env::var_os("RHWP_C2097_OFF").is_none()
+        && is_para_topbottom_float(&t.common)
+        && !para_has_visible_text(para)
+        && signed_hwpunit(t.common.vertical_offset) >= 0
+        && !para.line_segs.is_empty()
+        && !next_para
+            .map(|p| {
+                para_is_empty_topbottom_table_anchor(p)
+                    || (!para_has_visible_text(p)
+                        && p.controls.iter().any(
+                            |c| matches!(c, Control::Table(t) if t.common.treat_as_char),
+                        ))
+            })
+            .unwrap_or(false)
+}
+
 fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
     !para_has_visible_text(para)
         && para
@@ -1378,6 +1407,9 @@ pub struct LayoutEngine {
     /// 첫 줄의 spacing_before 를 소비하지 않는다 (typeset 의 float_jumped 미러).
     /// layout_column_item 진입마다 false 로 리셋, 점프 분기에서만 true.
     suppress_spacing_before_after_float_jump: std::cell::Cell<bool>,
+    /// [파리티 라운드3 C-2097] sb 면제 토글을 세운 흐름 y — 다음 항목이 되감기/스냅으로 다른 y 에서
+    /// 시작하면(complex sec6 pi27: 흐름 694.0 vs 항목 686.0) 면제를 적용하지 않는다. NaN = 미설정.
+    c2097_suppress_at_y: std::cell::Cell<f64>,
     /// 위 플래그를 현재 항목 배치 동안 유지하는 사본 (첫 spacing_before 적용 지점에서 소비).
     float_jump_suppress_active: std::cell::Cell<bool>,
     /// HWPX `Preview/PrvImage.png` 원본. HMapsi OLE처럼 일반 preview stream이 없는
@@ -1471,6 +1503,7 @@ impl LayoutEngine {
             use_hwp3_origin_flow_spacing_before: std::cell::Cell::new(false),
             keep_continuation_column_top_spacing_before: std::cell::Cell::new(false),
             suppress_spacing_before_after_float_jump: std::cell::Cell::new(false),
+            c2097_suppress_at_y: std::cell::Cell::new(f64::NAN),
             float_jump_suppress_active: std::cell::Cell::new(false),
             is_hwpx_source: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
@@ -5664,6 +5697,10 @@ impl LayoutEngine {
             eprintln!("DIAG_ITEM sec={} item={:?} y={:.1}", ctx.page_content.section_index, item, y_offset);
         }
         let float_jump_suppress = self.suppress_spacing_before_after_float_jump.replace(false);
+        // [파리티 라운드3 C-2097] 빈 호스트 표 뒤 sb 면제는 항목이 그 흐름 y 에서 시작할 때만.
+        let c2097_at = self.c2097_suppress_at_y.replace(f64::NAN);
+        let float_jump_suppress =
+            float_jump_suppress && (c2097_at.is_nan() || (y_offset - c2097_at).abs() < 0.5);
         self.float_jump_suppress_active.set(float_jump_suppress);
         match item {
             PageItem::FullParagraph { para_index } => {
@@ -6223,6 +6260,23 @@ impl LayoutEngine {
         let mut tac_seg_applied = false;
         let mut para_float_lane_info: Option<(f64, f64, f64, f64, f64)> = None;
         if let Some(Control::Table(t)) = para.controls.get(control_index) {
+            // [파리티 라운드3 C-2097] 빈 호스트 자리차지 표 outMargin 게이트 (typeset 미러).
+            let c2097_gate = empty_host_float_om_gate(
+                self.is_hwpx_source.get(),
+                para,
+                paragraphs.get(para_index + 1),
+                t,
+            );
+            let c2097_outer_top_px = if c2097_gate {
+                hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+            } else {
+                0.0
+            };
+            let c2097_outer_bottom_px = if c2097_gate {
+                hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi)
+            } else {
+                0.0
+            };
             let raw_mt = measured_tables
                 .iter()
                 .find(|mt| mt.para_index == para_index && mt.control_index == control_index);
@@ -6472,7 +6526,10 @@ impl LayoutEngine {
                         horizontal_range(&t.common, width_px, placement_ctx, self.dpi);
                     let v_offset_px =
                         hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
-                    let raw_top = (para_y_for_table + v_offset_px).max(para_y_for_table);
+                    // [파리티 라운드3 C-2097] 한컴은 표 top = 문단 원점 + voff + outMargin.top
+                    // (complex sec10 pi9: 652.2 + 2.75 + 1.87 = 656.8, 종전 654.9).
+                    let raw_top = (para_y_for_table + c2097_outer_top_px + v_offset_px)
+                        .max(para_y_for_table);
                     let lane_top = para_float_lanes
                         .entry(para_index)
                         .or_default()
@@ -6613,7 +6670,17 @@ impl LayoutEngine {
                             title_flow_y = title_flow_y.max(zone.bottom);
                         }
                     }
-                    table_y_start.max(title_flow_y + host_line_px + visible_outer_top_px)
+                    // [파리티 라운드3 C-2097 ②] HWPX: 한컴 표 top = 원점 + voff + outMargin.top
+                    // (complex sec10 pi11: 818.6 + 29.7 + 1.87 = 850.2, 종전 제목 줄높이 27.9 로 848.5).
+                    // voff 가 제목 줄보다 작으면 종전대로 제목 줄 아래.
+                    let above_px = if self.is_hwpx_source.get()
+                        && std::env::var_os("RHWP_C2097B_OFF").is_none()
+                    {
+                        host_line_px.max(hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi))
+                    } else {
+                        host_line_px
+                    };
+                    table_y_start.max(title_flow_y + above_px + visible_outer_top_px)
                 } else {
                     table_y_start
                 };
@@ -6733,6 +6800,13 @@ impl LayoutEngine {
                     table_y_before
                 } else if table_visual_shift > 0.0 {
                     (table_visual_end - table_visual_shift).max(table_y_before)
+                } else if c2097_gate {
+                    // [파리티 라운드3 C-2097] 표 뒤 흐름 = 표 하단 + outMargin.bottom, 다음 문단의
+                    // spacing_before 는 소비하지 않는다 (J4 점프 토글 재사용, typeset 미러).
+                    self.suppress_spacing_before_after_float_jump.set(true);
+                    self.c2097_suppress_at_y
+                        .set(table_visual_end + c2097_outer_bottom_px);
+                    table_visual_end + c2097_outer_bottom_px
                 } else {
                     table_visual_end
                 };
@@ -7167,13 +7241,27 @@ impl LayoutEngine {
             } else {
                 false
             };
+            // [파리티 라운드3 C-2097] 빈 호스트 자리차지 표 게이트(표 블록과 동일 판정).
+            let c2097_gate = para
+                .controls
+                .get(control_index)
+                .map(|c| {
+                    matches!(c, Control::Table(t) if empty_host_float_om_gate(
+                        self.is_hwpx_source.get(),
+                        para,
+                        paragraphs.get(para_index + 1),
+                        t,
+                    ))
+                })
+                .unwrap_or(false);
             if !tac_seg_applied && !is_outside_body && !is_current_visible_para_float {
                 let comp = composed.get(para_index);
                 let para_style_id = comp
                     .map(|c| c.para_style_id as usize)
                     .unwrap_or(para.para_shape_id as usize);
                 if let Some(para_style) = styles.para_styles.get(para_style_id) {
-                    if para_style.spacing_after > 0.0 {
+                    // [파리티 라운드3 C-2097] 빈 호스트 자리차지 표: 호스트 spacing_after 미소비.
+                    if para_style.spacing_after > 0.0 && !c2097_gate {
                         y_offset += para_style.spacing_after;
                     }
                 }
@@ -7218,7 +7306,11 @@ impl LayoutEngine {
                 let reserved_height = (y_offset - lane_top).max(0.0);
                 let lanes = para_float_lanes.entry(para_index).or_default();
                 lanes.place(x_start, x_end, raw_top, reserved_height);
-                let lane_flow_bottom = if is_current_empty_para_float {
+                let lane_flow_bottom = if c2097_gate {
+                    // [파리티 라운드3 C-2097] 한컴 흐름 = 표 하단(원점+voff+omT+h) + omB —
+                    // voff·outMargin 을 흐름에서 빼지 않는다(typeset 미러).
+                    y_offset
+                } else if is_current_empty_para_float {
                     // Empty-anchor TopAndBottom tables can encode a visual
                     // vertical offset separately from the flow height measured
                     // by pagination. Keep the table painted at lane_top, but
