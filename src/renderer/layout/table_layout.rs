@@ -5213,6 +5213,36 @@ impl LayoutEngine {
         units
     }
 
+    /// [파리티 라운드3 B-T4] 새 행 첫 조각의 저장 사다리 — row_span==1 셀 중 첫 vpos 리셋
+    /// (`hard_break_before`) 앞까지의 유닛 누적 높이 최댓값. 리셋이 없는 행은 None.
+    /// 한컴이 이 행의 첫 조각을 얼마나 두었는지의 증거(550 p20 r4 cell2: 38유닛 = 한 쪽).
+    pub(crate) fn row_stored_first_fragment_height(
+        &self,
+        table: &crate::model::table::Table,
+        row: usize,
+        styles: &ResolvedStyleSet,
+    ) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for cell in table
+            .cells
+            .iter()
+            .filter(|c| c.row as usize == row && c.row_span == 1)
+        {
+            let units = self.cell_units(cell, table, styles);
+            if let Some(k) = units
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, u)| u.hard_break_before)
+                .map(|(k, _)| k)
+            {
+                let h: f64 = units[..k].iter().map(|u| u.height).sum();
+                best = Some(best.map_or(h, |b| b.max(h)));
+            }
+        }
+        best
+    }
+
     fn cell_units_uncached(
         &self,
         cell: &crate::model::table::Cell,

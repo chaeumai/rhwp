@@ -14666,6 +14666,33 @@ impl TypesetEngine {
                 }
                 break;
             }
+            // [파리티 라운드3 B-T4] 새 행 첫 조각 — 저장 사다리 신뢰. 쪽 끝자락에서 첫 유닛을
+            // 압축해 넣을지(#2097 SQUEEZE) 행을 통째로 다음 쪽으로 보낼지는 문턱값으로 못 가른다
+            // (21298295 초과 8.0 수용 vs 550 p20 r4 초과 11.9 이월, 둘 다 64px 허용치 안). 한컴이
+            // 남긴 셀 lineseg 첫 vpos 리셋 위치가 답이다: 550 r4 cell2 는 38유닛(907.6px = p21 한
+            // 쪽) 뒤에 리셋 → 새 쪽 시작; 21298295 r13 은 1유닛 뒤 리셋 → 압축 배치. 4문서 새 행
+            // 컷 22건 전부 cut_j == first_hb, 반례 0. HWPX·쪽 끝자락(≤100px)·새 행 한정.
+            if r > cursor_row
+                && row_start_cut.is_empty()
+                && st.is_hwpx_source
+                && budget <= BOTTOM_SQUEEZE_MAX_REST_PX
+            {
+                if let Some(ladder_h) =
+                    layout_engine.row_stored_first_fragment_height(table, r, styles)
+                {
+                    let hb_tol = HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX;
+                    if ladder_h > budget + hb_tol && ladder_h > res.consumed_height + hb_tol {
+                        if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                            eprintln!(
+                                "DIAG_SCAN LADDER_DEFER r={} budget={:.1} cut_h={:.1} ladder={:.1}",
+                                r, budget, res.consumed_height, ladder_h
+                            );
+                        }
+                        end_row = r;
+                        break;
+                    }
+                }
+            }
             // [Task #713] sliver(orphan) 회피 — 페이지 시작 행이 아니면서
             // 너무 적게 들어가면 행 전체를 다음 페이지로 미룬다.
             if r > cursor_row && res.consumed_height < MIN_TOP_KEEP_PX {
