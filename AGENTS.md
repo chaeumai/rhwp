@@ -99,16 +99,16 @@ git diff --name-only <base> HEAD -- '*.rs' | wc -l   # 0 이면 cargo 불필요
 ### 빌드 산출물 배치 (필수)
 
 ```bash
-cd /data/rhwp-fork
+cd /home/ubuntu/storage/rhwp/fork
 export CARGO_HOME=$PWD/.cargo-home RUSTUP_HOME=$PWD/.rustup-home   # 격리 툴체인
 export PATH=$PWD/.cargo-home/bin:$PATH
-export CARGO_TARGET_DIR=/data/build/cargo-target                   # fork 트리 밖
+export CARGO_TARGET_DIR=/home/ubuntu/storage/rhwp/build-cargo-target                   # fork 트리 밖
 export CARGO_PROFILE_TEST_DEBUG=0                                  # 용량 주범
 ```
 
 - 기본 배치로 돌리면 `target/`이 fork 트리 안에서 **59G까지** 자라 디스크를 채운다
   (2026-08-17 `/data` 95% 포화 사고). `debuginfo`를 끄면 **8.4G**로 86% 줄어든다
-- **warm 캐시(`/data/build/cargo-target`)를 지우지 말 것.** 지우면 콜드 컴파일
+- **warm 캐시(`/home/ubuntu/storage/rhwp/build-cargo-target`)를 지우지 말 것.** 지우면 콜드 컴파일
   5분이 매번 앞에 붙는다. 위 39초·307초 측정은 warm 상태 기준이다
 - 장시간 빌드 전후로 `df -h /data`를 확인한다. 여유가 15G 아래로 내려가면
   파일이 조용히 0바이트로 잘린다. 호스트 전체 정책은 `~/DISK_CAPACITY_PLAN.md`
@@ -121,11 +121,11 @@ export CARGO_PROFILE_TEST_DEBUG=0                                  # 용량 주�
 - **원칙: 개발·검증·정식 배포 모두 level 인자 없이 최소 최적화 `-O1`을 쓴다.**
   다른 level은 최적화 수준 비교 실험에서만 명시한다. 배포마다 다른 level을 써서 검증본과
   최종본을 가르지 않는다. 실측은 `-O1` 91초 / `-O` 409초였고 실행 속도 차이는 미미했다.
-- WASM 은 **Rust 빌드 입력의 git tree hash** 로 캐시된다(`/data/rhwp-wasm-cache`). TypeScript 만
+- WASM 은 **Rust 빌드 입력의 git tree hash** 로 캐시된다(`/home/ubuntu/storage/rhwp/wasm-cache`). TypeScript 만
   바꾼 커밋은 wasm-pack·wasm-opt 를 통째로 건너뛰어 전체 빌드가 ~10초다. 의심스러우면
   `--no-wasm-cache`.
 - 배포 빌드는 **깨끗한 트리**를 요구한다 — 미커밋 변경(문서 포함)이 있으면 클린 검증에서 막힌다.
   fork 의 변경은 커밋하고 나서 빌드한다.
-- ⚠ cargo 캐시가 두 곳이다: 위 테스트 gate 는 `/data/build/cargo-target`, `build-release.sh` 는
-  `/data/rhwp-fork/target`. 한쪽을 warm 해도 다른 쪽 cargo 단계는 짧아지지 않는다(미해결 —
+- ⚠ cargo 캐시가 두 곳이다: 위 테스트 gate 는 `/home/ubuntu/storage/rhwp/build-cargo-target`, `build-release.sh` 는
+  `/home/ubuntu/storage/rhwp/fork/target`. 한쪽을 warm 해도 다른 쪽 cargo 단계는 짧아지지 않는다(미해결 —
   통일하려면 두 세션의 락 경합부터 풀어야 한다).
