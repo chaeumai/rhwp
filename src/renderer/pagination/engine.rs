@@ -1081,7 +1081,12 @@ impl Paginator {
                         }
                     }
                     Control::Table(table) => {
-                        Self::collect_pagehide_in_table(table, pi, &mut page_hides);
+                        Self::collect_page_ctrls_in_table(
+                            table,
+                            pi,
+                            &mut page_hides,
+                            &mut new_page_numbers,
+                        );
                     }
                     _ => {}
                 }
@@ -1091,12 +1096,16 @@ impl Paginator {
         (hf_entries, page_number_pos, page_hides, new_page_numbers)
     }
 
-    /// 표 셀 안 paragraph 의 PageHide 를 재귀 수집.
-    /// 외부 paragraph index `pi` 를 그대로 사용해 페이지 매핑 정합성 유지.
-    fn collect_pagehide_in_table(
+    /// 표 셀 안 paragraph 의 PageHide·NewNumber(PAGE) 를 재귀 수집.
+    /// 외부 paragraph index `pi` 를 그대로 사용해 페이지 매핑 정합성 유지 —
+    /// NewNumber 는 소유 표(PageItem::Table/PartialTable 첫 조각)가 처음
+    /// 등장하는 쪽에서 발화한다 (T6-a: 셀 문단 newNum 미발화로 인쇄 쪽번호
+    /// 가 한컴과 어긋나던 결함).
+    fn collect_page_ctrls_in_table(
         table: &crate::model::table::Table,
         pi: usize,
         page_hides: &mut Vec<(usize, crate::model::control::PageHide)>,
+        new_page_numbers: &mut Vec<(usize, u16)>,
     ) {
         for cell in &table.cells {
             for cp in &cell.paragraphs {
@@ -1105,8 +1114,18 @@ impl Paginator {
                         Control::PageHide(ph) => {
                             page_hides.push((pi, ph.clone()));
                         }
+                        Control::NewNumber(nn) => {
+                            if nn.number_type == crate::model::control::AutoNumberType::Page {
+                                new_page_numbers.push((pi, nn.number));
+                            }
+                        }
                         Control::Table(inner) => {
-                            Self::collect_pagehide_in_table(inner, pi, page_hides);
+                            Self::collect_page_ctrls_in_table(
+                                inner,
+                                pi,
+                                page_hides,
+                                new_page_numbers,
+                            );
                         }
                         _ => {}
                     }

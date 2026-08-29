@@ -17040,7 +17040,12 @@ impl TypesetEngine {
                         page_hides.push((pi, ph.clone()));
                     }
                     Control::Table(table) => {
-                        Self::collect_pagehide_in_table(table, pi, &mut page_hides);
+                        Self::collect_page_ctrls_in_table(
+                            table,
+                            pi,
+                            &mut page_hides,
+                            &mut new_page_numbers,
+                        );
                     }
                     _ => {}
                 }
@@ -17050,12 +17055,16 @@ impl TypesetEngine {
         (hf_entries, page_number_pos, new_page_numbers, page_hides)
     }
 
-    /// 표 셀 안 paragraph 의 PageHide 를 재귀 수집.
-    /// 외부 paragraph index `pi` 를 그대로 사용해 페이지 매핑 정합성 유지.
-    fn collect_pagehide_in_table(
+    /// 표 셀 안 paragraph 의 PageHide·NewNumber(PAGE) 를 재귀 수집.
+    /// 외부 paragraph index `pi` 를 그대로 사용해 페이지 매핑 정합성 유지 —
+    /// NewNumber 는 소유 표(PageItem::Table/PartialTable 첫 조각)가 처음
+    /// 등장하는 쪽에서 발화한다 (T6-a: 셀 문단 newNum 미발화로 인쇄 쪽번호
+    /// 가 한컴과 어긋나던 결함).
+    fn collect_page_ctrls_in_table(
         table: &crate::model::table::Table,
         pi: usize,
         page_hides: &mut Vec<(usize, crate::model::control::PageHide)>,
+        new_page_numbers: &mut Vec<(usize, u16)>,
     ) {
         for cell in &table.cells {
             for cp in &cell.paragraphs {
@@ -17064,8 +17073,18 @@ impl TypesetEngine {
                         Control::PageHide(ph) => {
                             page_hides.push((pi, ph.clone()));
                         }
+                        Control::NewNumber(nn) => {
+                            if nn.number_type == crate::model::control::AutoNumberType::Page {
+                                new_page_numbers.push((pi, nn.number));
+                            }
+                        }
                         Control::Table(inner) => {
-                            Self::collect_pagehide_in_table(inner, pi, page_hides);
+                            Self::collect_page_ctrls_in_table(
+                                inner,
+                                pi,
+                                page_hides,
+                                new_page_numbers,
+                            );
                         }
                         _ => {}
                     }
@@ -17648,6 +17667,92 @@ mod tests {
 
         assert!(pages[0].page_hide.is_some());
         assert!(pages[1].page_hide.is_none());
+    }
+
+    /// [T6-a] 표 안 셀 문단의 NewNumber(PAGE) 도 수집되어야 한다 — 소유 문단
+    /// 인덱스는 외부 문단 pi 로 매핑되어, 그 표가 처음 등장하는 쪽에서 발화한다.
+    /// (complex-full section8·10·12: 제목 셀 안 newNum 을 영영 못 보고 지나쳐
+    /// 물리 p48 부터 인쇄 쪽번호가 한컴 37/rhwp 38 로 어긋나던 결함)
+    #[test]
+    fn new_number_in_table_cell_is_collected_with_outer_para_index() {
+        use crate::model::control::{AutoNumberType, Control, NewNumber};
+        use crate::model::table::{Cell, Table};
+
+        let cell_para = Paragraph {
+            controls: vec![Control::NewNumber(NewNumber {
+                number_type: AutoNumberType::Page,
+                number: 37,
+            })],
+            ..Default::default()
+        };
+        let table = Table {
+            cells: vec![Cell {
+                paragraphs: vec![cell_para],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let outer = Paragraph {
+            controls: vec![Control::Table(Box::new(table))],
+            ..Default::default()
+        };
+        let paragraphs = vec![Paragraph::default(), outer];
+
+        let (_, _, new_page_numbers, _) =
+            TypesetEngine::collect_header_footer_controls(&paragraphs, 0);
+        assert_eq!(
+            new_page_numbers,
+            vec![(1, 37)],
+            "셀 문단 NewNumber 는 외부 문단 인덱스로 수집돼야 한다"
+        );
+    }
+
+    /// [T6-a] 중첩 표(셀 안의 표) 속 NewNumber(PAGE) 도 재귀 수집. FOOTNOTE 등
+    /// 쪽번호가 아닌 NewNumber 는 종전대로 제외.
+    #[test]
+    fn new_number_in_nested_table_is_collected_page_type_only() {
+        use crate::model::control::{AutoNumberType, Control, NewNumber};
+        use crate::model::table::{Cell, Table};
+
+        let inner_para = Paragraph {
+            controls: vec![
+                Control::NewNumber(NewNumber {
+                    number_type: AutoNumberType::Footnote,
+                    number: 5,
+                }),
+                Control::NewNumber(NewNumber {
+                    number_type: AutoNumberType::Page,
+                    number: 40,
+                }),
+            ],
+            ..Default::default()
+        };
+        let inner = Table {
+            cells: vec![Cell {
+                paragraphs: vec![inner_para],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let outer_cell_para = Paragraph {
+            controls: vec![Control::Table(Box::new(inner))],
+            ..Default::default()
+        };
+        let outer = Table {
+            cells: vec![Cell {
+                paragraphs: vec![outer_cell_para],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let holder = Paragraph {
+            controls: vec![Control::Table(Box::new(outer))],
+            ..Default::default()
+        };
+
+        let (_, _, new_page_numbers, _) =
+            TypesetEngine::collect_header_footer_controls(&[holder], 0);
+        assert_eq!(new_page_numbers, vec![(0, 40)]);
     }
 
     #[test]

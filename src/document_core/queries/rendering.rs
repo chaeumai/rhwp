@@ -3140,12 +3140,24 @@ impl DocumentCore {
                 }
             }
 
-            // 구역 간 쪽번호 연속: NewNumber(Page) 컨트롤이 없으면 이전 구역에서 이어짐
+            // 구역 간 쪽번호 연속: NewNumber(Page) 컨트롤이 없으면 이전 구역에서 이어짐.
+            // [T6-a] 판정은 표 셀 문단까지 재귀 — 셀 안 newNum(복잡 문서의 제목 셀
+            // 관행)을 못 보면 구역 내 절대 발화값에 carry 가 이중 가산된다.
             if idx > 0 && carry_last_page_number > 0 {
                 use crate::model::control::{AutoNumberType, Control};
-                let has_new_number = section.paragraphs.iter().any(|p|
-                    p.controls.iter().any(|c| matches!(c, Control::NewNumber(nn) if nn.number_type == AutoNumberType::Page))
-                );
+                fn para_has_page_new_number(p: &crate::model::paragraph::Paragraph) -> bool {
+                    p.controls.iter().any(|c| match c {
+                        Control::NewNumber(nn) => {
+                            nn.number_type == AutoNumberType::Page
+                        }
+                        Control::Table(t) => t
+                            .cells
+                            .iter()
+                            .any(|cell| cell.paragraphs.iter().any(para_has_page_new_number)),
+                        _ => false,
+                    })
+                }
+                let has_new_number = section.paragraphs.iter().any(para_has_page_new_number);
                 if !has_new_number {
                     for page in &mut result.pages {
                         page.page_number += carry_last_page_number;
