@@ -778,6 +778,11 @@ function applySavedTextMarkSettings(): void {
   const clipEnabled = !view.clipView;
   wasm.setClipEnabled(clipEnabled);
   syncClipMenu(clipEnabled);
+  // 투명 선 가이드 — 저장 설정 복원 (기본 켜짐, 한컴 기본 동작)
+  wasm.setShowTransparentBorders(view.showTransparentBorders);
+  document.querySelectorAll('[data-cmd="view:border-transparent"]').forEach((el) => {
+    el.classList.toggle('active', view.showTransparentBorders);
+  });
 }
 
 async function initializeDocument(docInfo: DocumentInfo, displayName: string): Promise<void> {

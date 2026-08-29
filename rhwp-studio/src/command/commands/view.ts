@@ -255,6 +255,7 @@ export const viewCommands: CommandDef[] = [
       // WASM 실제 상태를 읽어 토글 — 셀 진입 자동 ON 등으로 인한 초기값 불일치 방지
       const next = !services.wasm.getShowTransparentBorders();
       services.wasm.setShowTransparentBorders(next);
+      userSettings.setShowTransparentBorders(next);
       document.querySelectorAll('[data-cmd="view:border-transparent"]').forEach(el => {
         el.classList.toggle('active', next);
       });

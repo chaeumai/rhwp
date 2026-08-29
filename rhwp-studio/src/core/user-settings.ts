@@ -50,6 +50,8 @@ export interface ViewSettings {
   showControlCodes: boolean;
   /** 짤림보기(잘림 보기) 켜짐 여부. true = 편집용지 경계 밖 오버플로 내용을 보임(잘림 미적용). */
   clipView: boolean;
+  /** 투명 선(투명 테두리 빨간 점선 가이드) 표시 여부. 기본 켜짐 — 한컴 기본 동작. */
+  showTransparentBorders: boolean;
 }
 
 /** 복구용 자동저장 설정 */
@@ -137,6 +139,7 @@ function defaultSettings(): AppSettings {
       showParagraphMarks: false,
       showControlCodes: false,
       clipView: true,
+      showTransparentBorders: true,
     },
     autosave: {
       recoveryEnabled: true,
@@ -212,6 +215,10 @@ class UserSettingsService {
           clipView: normalizeBoolean(
             view.clipView,
             defaults.view.clipView,
+          ),
+          showTransparentBorders: normalizeBoolean(
+            view.showTransparentBorders,
+            defaults.view.showTransparentBorders,
           ),
         },
         autosave: {
@@ -305,6 +312,12 @@ class UserSettingsService {
   /** 조판부호 표시 설정 */
   setShowControlCodes(value: boolean): void {
     this.data.view.showControlCodes = value;
+    this.save();
+  }
+
+  /** 투명 선(투명 테두리 가이드) 표시 설정 */
+  setShowTransparentBorders(value: boolean): void {
+    this.data.view.showTransparentBorders = value;
     this.save();
   }
 
