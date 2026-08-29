@@ -66,8 +66,8 @@ fn has_initial_tac_shape_host(paragraphs: &[Paragraph]) -> bool {
 use super::super::composer::effective_text_for_metrics;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, create_border_line_nodes, render_cell_diagonal,
-    render_edge_borders, render_transparent_borders,
+    build_cell_edge_masks, build_row_col_x, collect_cell_borders, create_border_line_nodes,
+    render_cell_diagonal, render_edge_borders, render_transparent_borders,
 };
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
 use super::utils::find_bin_data;
@@ -1411,8 +1411,10 @@ impl LayoutEngine {
                 tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
             ));
             if self.show_transparent_borders.get() {
+                let (h_mask, v_mask) = build_cell_edge_masks(table, col_count, row_count);
                 table_node.children.extend(render_transparent_borders(
-                    tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
+                    tree, &h_edges, &v_edges, &h_mask, &v_mask, &row_col_x, &row_y, table_x,
+                    table_y,
                 ));
             }
         }

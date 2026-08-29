@@ -373,12 +373,123 @@ pub(crate) fn render_edge_borders(
     nodes
 }
 
+/// 셀의 실제 변(둘레) 슬롯을 표시한다. collect_cell_borders 와 같은 인덱스 규약.
+/// 병합(span) 셀이 덮은 내부 격자 슬롯은 어느 셀의 변도 아니므로 표시되지 않는다.
+fn mark_cell_edge_mask(
+    h_mask: &mut [Vec<bool>],
+    v_mask: &mut [Vec<bool>],
+    col: usize,
+    row: usize,
+    col_span: usize,
+    row_span: usize,
+) {
+    let h_rows = h_mask.len();
+    let v_cols = v_mask.len();
+    let col_count = if h_rows > 0 { h_mask[0].len() } else { return };
+    let row_count = if v_cols > 0 { v_mask[0].len() } else { return };
+
+    let end_col = (col + col_span).min(col_count);
+    let end_row = (row + row_span).min(row_count);
+
+    if row < h_rows {
+        for c in col..end_col {
+            h_mask[row][c] = true;
+        }
+    }
+    if end_row < h_rows {
+        for c in col..end_col {
+            h_mask[end_row][c] = true;
+        }
+    }
+    if col < v_cols {
+        for r in row..end_row {
+            v_mask[col][r] = true;
+        }
+    }
+    if end_col < v_cols {
+        for r in row..end_row {
+            v_mask[end_col][r] = true;
+        }
+    }
+}
+
+/// 표 전체의 셀 변 마스크 구축 (일반 표 경로).
+/// border_fill_id 유무와 무관하게 모든 셀의 둘레를 표시한다 —
+/// borderFillIDRef=0(명시적 무테두리) 셀의 변도 투명선 가이드 대상이다.
+pub(crate) fn build_cell_edge_masks(
+    table: &Table,
+    col_count: usize,
+    row_count: usize,
+) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
+    let mut h_mask = vec![vec![false; col_count]; row_count + 1];
+    let mut v_mask = vec![vec![false; row_count]; col_count + 1];
+    for cell in &table.cells {
+        let c = cell.col as usize;
+        let r = cell.row as usize;
+        if c >= col_count || r >= row_count {
+            continue;
+        }
+        mark_cell_edge_mask(
+            &mut h_mask,
+            &mut v_mask,
+            c,
+            r,
+            cell.col_span as usize,
+            cell.row_span as usize,
+        );
+    }
+    (h_mask, v_mask)
+}
+
+/// 분할 표 조각의 셀 변 마스크 구축.
+/// layout_partial_table_cells 와 같은 render_rows 매핑(first_ri/last_ri)을 쓴다.
+pub(crate) fn build_cell_edge_masks_partial(
+    table: &Table,
+    col_count: usize,
+    render_rows: &[usize],
+) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
+    let render_row_count = render_rows.len();
+    let mut h_mask = vec![vec![false; col_count]; render_row_count + 1];
+    let mut v_mask = vec![vec![false; render_row_count]; col_count + 1];
+    for cell in &table.cells {
+        let cell_col = cell.col as usize;
+        let cell_row = cell.row as usize;
+        if cell_col >= col_count {
+            continue;
+        }
+        let cell_end_row_idx = cell_row + cell.row_span as usize;
+        let first_ri = render_rows.iter().position(|&r| r == cell_row).or_else(|| {
+            render_rows
+                .iter()
+                .position(|&r| r > cell_row && r < cell_end_row_idx)
+        });
+        let last_ri = render_rows
+            .iter()
+            .rposition(|&r| r >= cell_row && r < cell_end_row_idx);
+        if let (Some(fri), Some(lri)) = (first_ri, last_ri) {
+            mark_cell_edge_mask(
+                &mut h_mask,
+                &mut v_mask,
+                cell_col,
+                fri,
+                cell.col_span as usize,
+                lri + 1 - fri,
+            );
+        }
+    }
+    (h_mask, v_mask)
+}
+
 /// 투명 테두리를 빨간색 점선 Line 노드로 생성한다.
-/// 엣지 그리드에서 None 슬롯(투명 테두리)을 찾아 연속 구간을 병합한다.
+/// 엣지 그리드에서 None 슬롯 중 **셀의 실제 변인 곳**(h_mask/v_mask)만 찾아
+/// 연속 구간을 병합한다. 병합 셀 내부의 숨은 격자 슬롯은 테두리가 아니므로 제외
+/// (한컴 동작 — 이슈 20260829-145200-form-근무상황부-p001).
 pub(crate) fn render_transparent_borders(
     tree: &mut PageRenderTree,
     h_edges: &[Vec<Option<BorderLine>>],
     v_edges: &[Vec<Option<BorderLine>>],
+    h_mask: &[Vec<bool>],
+    v_mask: &[Vec<bool>],
     row_col_x: &[Vec<f64>],
     row_y: &[f64],
     table_x: f64,
@@ -398,7 +509,13 @@ pub(crate) fn render_transparent_borders(
         let mut seg_start: Option<usize> = None;
 
         for (ci, edge_opt) in h_row.iter().enumerate() {
-            if edge_opt.is_none() {
+            let is_guide = edge_opt.is_none()
+                && h_mask
+                    .get(ri)
+                    .and_then(|m| m.get(ci))
+                    .copied()
+                    .unwrap_or(false);
+            if is_guide {
                 if seg_start.is_none() {
                     seg_start = Some(ci);
                 }
@@ -427,7 +544,13 @@ pub(crate) fn render_transparent_borders(
                     .get(ri)
                     .and_then(|rx| rx.get(ci).copied())
                     .unwrap_or(0.0);
-            if edge_opt.is_none() {
+            let is_guide = edge_opt.is_none()
+                && v_mask
+                    .get(ci)
+                    .and_then(|m| m.get(ri))
+                    .copied()
+                    .unwrap_or(false);
+            if is_guide {
                 if seg_start.is_none() {
                     seg_start = Some(ri);
                     seg_x = x;
@@ -1226,5 +1349,84 @@ mod tests {
         assert!(thick.style.width > thin.style.width);
         assert_ne!((thick.x1, thick.y1), (thin.x1, thin.y1));
         assert_ne!((thick.x2, thick.y2), (thin.x2, thin.y2));
+    }
+
+    /// 3x3 격자, (0,0) 2x2 병합 + 단일 셀 5개. 병합 셀 내부의 숨은 격자 슬롯은
+    /// 마스크에서 제외되고(투명선 가이드 금지), 모든 실제 셀 변은 포함되어야 한다.
+    /// (이슈 20260829-145200-form-근무상황부-p001 — 병합 셀 내부 과잉 표시)
+    #[test]
+    fn cell_edge_mask_excludes_merged_interior() {
+        use crate::model::table::{Cell, Table};
+
+        let mut table = Table::default();
+        let mk = |col: u16, row: u16, cs: u16, rs: u16| Cell {
+            col,
+            row,
+            col_span: cs,
+            row_span: rs,
+            ..Default::default()
+        };
+        table.cells = vec![
+            mk(0, 0, 2, 2), // 병합
+            mk(2, 0, 1, 1),
+            mk(2, 1, 1, 1),
+            mk(0, 2, 1, 1),
+            mk(1, 2, 1, 1),
+            mk(2, 2, 1, 1),
+        ];
+
+        let (h, v) = build_cell_edge_masks(&table, 3, 3);
+
+        // 병합 내부: 행 경계 1의 열 0·1 (병합 셀 안 가로), 열 경계 1의 행 0·1 (안 세로)
+        assert!(!h[1][0] && !h[1][1], "병합 셀 내부 가로 슬롯은 변이 아님");
+        assert!(!v[1][0] && !v[1][1], "병합 셀 내부 세로 슬롯은 변이 아님");
+
+        // 병합 셀 둘레
+        assert!(h[0][0] && h[0][1], "병합 셀 상변");
+        assert!(h[2][0] && h[2][1], "병합 셀 하변");
+        assert!(v[0][0] && v[0][1], "병합 셀 좌변");
+        assert!(v[2][0] && v[2][1], "병합 셀 우변");
+
+        // 단일 셀들 사이 실제 경계
+        assert!(h[1][2], "(2,0)-(2,1) 사이 가로 경계");
+        assert!(h[3][0] && h[3][1] && h[3][2], "마지막 행 하변");
+        assert!(v[3][0] && v[3][1] && v[3][2], "마지막 열 우변");
+    }
+
+    /// 분할 표 조각: render_rows 매핑에서도 병합 내부가 제외되는지.
+    /// 행 1·2만 렌더하는 조각에서 (0,0) rowspan 3 셀은 조각 전체(행 0..2)를 덮고,
+    /// 그 내부 행 경계 1에는 마스크가 서지 않아야 한다.
+    #[test]
+    fn cell_edge_mask_partial_maps_render_rows() {
+        use crate::model::table::{Cell, Table};
+
+        let mut table = Table::default();
+        let mk = |col: u16, row: u16, cs: u16, rs: u16| Cell {
+            col,
+            row,
+            col_span: cs,
+            row_span: rs,
+            ..Default::default()
+        };
+        table.cells = vec![
+            mk(0, 0, 1, 3), // 세로 병합 — 조각 범위를 관통
+            mk(1, 0, 1, 1),
+            mk(1, 1, 1, 1),
+            mk(1, 2, 1, 1),
+        ];
+
+        let render_rows = [1usize, 2usize];
+        let (h, v) = build_cell_edge_masks_partial(&table, 2, &render_rows);
+
+        // 병합 셀: fri=0(행1), lri=1(행2) → 조각 안 span 2. 내부 경계(조각 행 경계 1) 제외
+        assert!(!h[1][0], "세로 병합 내부의 조각 행 경계는 변이 아님");
+        // 오른쪽 단일 셀 열은 행마다 경계가 실재
+        assert!(h[1][1], "(1,1)-(1,2) 사이 가로 경계");
+        // 조각 상·하변과 세로 변들
+        assert!(h[0][0] && h[0][1], "조각 상변");
+        assert!(h[2][0] && h[2][1], "조각 하변");
+        assert!(v[0][0] && v[0][1], "좌변");
+        assert!(v[1][0] && v[1][1], "가운데 세로 경계");
+        assert!(v[2][0] && v[2][1], "우변");
     }
 }

@@ -7,7 +7,8 @@ use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
+    build_cell_edge_masks_partial, build_row_col_x, collect_cell_borders, render_edge_borders,
+    render_transparent_borders,
 };
 use super::table_layout::{calc_nested_split_rows, NestedTableSplit};
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
@@ -2110,10 +2111,13 @@ impl LayoutEngine {
             table_y,
         ));
         if self.show_transparent_borders.get() {
+            let (h_mask, v_mask) = build_cell_edge_masks_partial(table, col_count, &render_rows);
             table_node.children.extend(render_transparent_borders(
                 tree,
                 &h_edges,
                 &v_edges,
+                &h_mask,
+                &v_mask,
                 &row_col_x,
                 &grid_row_y,
                 table_x,
