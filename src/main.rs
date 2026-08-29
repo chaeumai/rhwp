@@ -86,6 +86,7 @@ fn print_help() {
     );
     println!("      --show-para-marks       문단부호(↵/↓) 표시");
     println!("      --show-control-codes    조판부호 보이기 (문단부호 + 개체 마커 등)");
+    println!("      --field-guides          빈 누름틀 안내문 표시 (화면 전용 — 기본 끔, 한컴 인쇄와 동일)");
     println!("      --debug-overlay         디버그 오버레이 (문단/표 경계 + 인덱스 라벨)");
     println!("      --respect-vpos-reset    LINE_SEG vpos=0 리셋을 단/페이지 강제 경계로 처리");
     println!("      --show-grid[=Nmm]       격자 오버레이 (기본: 1mm, 예: --show-grid=3mm)");
@@ -102,6 +103,7 @@ fn print_help() {
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
     println!("      --show-para-marks       문단부호(↵/↓) 표시 상태의 트리 생성");
     println!("      --show-control-codes    조판부호 보이기 상태의 트리 생성");
+    println!("      --field-guides          빈 누름틀 안내문 표시 (화면 전용 — 기본 끔, 한컴 인쇄와 동일)");
     println!("      --respect-vpos-reset    LINE_SEG vpos=0 리셋을 단/페이지 강제 경계로 처리");
     println!();
     println!("  export-structure <파일> [--mode auto|outline|clause] [-o out.json]");
@@ -115,6 +117,7 @@ fn print_help() {
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!("      --field-guides          빈 누름틀 안내문 표시 (화면 전용 — 기본 끔, 한컴 인쇄와 동일)");
     println!(
         "      --profile <프로필>      출력 프로필: screen|print|high-quality|fast-preview (기본: high-quality)"
     );
@@ -142,12 +145,14 @@ fn print_help() {
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!("      --field-guides          빈 누름틀 안내문 포함 (화면 전용 — 기본 끔)");
     println!();
     println!("  export-markdown <파일.hwp> [옵션]");
     println!("      페이지별 텍스트를 Markdown(.md)으로 내보내기");
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!("      --field-guides          빈 누름틀 안내문 포함 (화면 전용 — 기본 끔)");
     println!();
     println!("  export-pdf <파일.hwp|파일.hwpx|파일.hml> [옵션]");
     println!("      HWP/HWPX/HML 문서를 PDF로 내보내기 (svg2pdf + pdf-writer)");
@@ -164,6 +169,7 @@ fn print_help() {
     println!("      --equation-font <명>    PDF 수식 SVG 우선 font-family");
     println!("      --text-as-paths         텍스트를 폰트 임베드 대신 path로 변환");
     println!("                              (메모리 대폭 절감, 텍스트 선택·검색 불가)");
+    println!("      --field-guides          빈 누름틀 안내문 표시 (화면 전용 — 기본 끔, 한컴 인쇄와 동일)");
     println!(
         "                              <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않음"
     );
@@ -308,7 +314,9 @@ fn export_svg(args: &[String]) {
     let mut target_page: Option<u32> = None;
     let mut show_para_marks = false;
     let mut show_control_codes = false;
-    let mut show_field_guides = true;
+    // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+    // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+    let mut show_field_guides = false;
     let mut debug_overlay = false;
     let mut grid_mm: Option<f64> = None;
     let mut grid_origin = GridOriginOption::Fixed((0.0_f64, 0.0_f64));
@@ -367,7 +375,12 @@ fn export_svg(args: &[String]) {
                 show_control_codes = true;
                 i += 1;
             }
+            "--field-guides" => {
+                show_field_guides = true;
+                i += 1;
+            }
             "--no-field-guides" => {
+                // [T5-b] 기본 OFF 로 바뀌어 no-op — 종전 스크립트 호환용으로만 수용.
                 show_field_guides = false;
                 i += 1;
             }
@@ -495,9 +508,7 @@ fn export_svg(args: &[String]) {
     if show_control_codes {
         doc.set_show_control_codes(true);
     }
-    if !show_field_guides {
-        doc.set_show_field_guides(false);
-    }
+    doc.set_show_field_guides(show_field_guides);
     if debug_overlay {
         doc.set_debug_overlay(true);
     }
@@ -607,7 +618,9 @@ fn export_render_tree(args: &[String]) {
     let mut target_page: Option<u32> = None;
     let mut show_para_marks = false;
     let mut show_control_codes = false;
-    let mut show_field_guides = true;
+    // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+    // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+    let mut show_field_guides = false;
     let mut respect_vpos_reset = false;
 
     let mut i = 1;
@@ -645,7 +658,12 @@ fn export_render_tree(args: &[String]) {
                 show_control_codes = true;
                 i += 1;
             }
+            "--field-guides" => {
+                show_field_guides = true;
+                i += 1;
+            }
             "--no-field-guides" => {
+                // [T5-b] 기본 OFF 로 바뀌어 no-op — 종전 스크립트 호환용으로만 수용.
                 show_field_guides = false;
                 i += 1;
             }
@@ -689,9 +707,7 @@ fn export_render_tree(args: &[String]) {
     if show_control_codes {
         doc.set_show_control_codes(true);
     }
-    if !show_field_guides {
-        doc.set_show_field_guides(false);
-    }
+    doc.set_show_field_guides(show_field_guides);
     if respect_vpos_reset {
         doc.set_respect_vpos_reset(true);
     }
@@ -987,7 +1003,9 @@ fn export_png(args: &[String]) {
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
     let mut dpi: Option<f64> = None;
-    let mut show_field_guides = true;
+    // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+    // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+    let mut show_field_guides = false;
     // PNG export is print-equivalent output. Editor visuals require an explicit screen profile.
     let mut render_profile = rhwp::paint::RenderProfile::HighQuality;
 
@@ -1107,7 +1125,12 @@ fn export_png(args: &[String]) {
                     return;
                 }
             }
+            "--field-guides" => {
+                show_field_guides = true;
+                i += 1;
+            }
             "--no-field-guides" => {
+                // [T5-b] 기본 OFF 로 바뀌어 no-op — 종전 스크립트 호환용으로만 수용.
                 show_field_guides = false;
                 i += 1;
             }
@@ -1141,9 +1164,7 @@ fn export_png(args: &[String]) {
             return;
         }
     };
-    if !show_field_guides {
-        core.set_show_field_guides(false);
-    }
+    core.set_show_field_guides(show_field_guides);
 
     let page_count = core.page_count();
     println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
@@ -1253,6 +1274,9 @@ fn export_pdf(args: &[String]) {
         let mut target_page: Option<u32> = None;
         let mut pdf_options = rhwp::renderer::pdf::PdfExportOptions::default();
         let mut render_profile: Option<rhwp::paint::RenderProfile> = None;
+        // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+        // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+        let mut show_field_guides = false;
 
         let mut i = 1;
         while i < args.len() {
@@ -1366,6 +1390,14 @@ fn export_pdf(args: &[String]) {
                     pdf_options.embed_text = false;
                     i += 1;
                 }
+                "--field-guides" => {
+                    show_field_guides = true;
+                    i += 1;
+                }
+                "--no-field-guides" => {
+                    show_field_guides = false;
+                    i += 1;
+                }
                 "--equation-font" | "--equation-font-family" => {
                     if i + 1 < args.len() {
                         pdf_options.equation_font = Some(args[i + 1].clone());
@@ -1411,13 +1443,14 @@ fn export_pdf(args: &[String]) {
             }
         };
 
-        let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+        let mut doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("오류: 문서 파싱 실패 - {}", e);
                 return;
             }
         };
+        doc.set_show_field_guides(show_field_guides);
 
         let page_count = doc.page_count();
         println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
@@ -1486,6 +1519,7 @@ fn print_export_pdf_usage() {
     eprintln!("      --fallback-sans <명>");
     eprintln!("      --fallback-mono <명>");
     eprintln!("      --equation-font <명>");
+    eprintln!("      --field-guides       빈 누름틀 안내문 표시 (화면 전용 — 기본 끔, 한컴 인쇄와 동일)");
     eprintln!("  참고: <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않습니다.");
     eprintln!("        공백 없는 값: --font-path ./ttfs");
     eprintln!(
@@ -1542,7 +1576,9 @@ fn export_text(args: &[String]) {
     let file_path = &args[0];
     let mut output_dir = "output".to_string();
     let mut target_page: Option<u32> = None;
-    let mut show_field_guides = true;
+    // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+    // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+    let mut show_field_guides = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -1571,7 +1607,12 @@ fn export_text(args: &[String]) {
                     return;
                 }
             }
+            "--field-guides" => {
+                show_field_guides = true;
+                i += 1;
+            }
             "--no-field-guides" => {
+                // [T5-b] 기본 OFF 로 바뀌어 no-op — 종전 스크립트 호환용으로만 수용.
                 show_field_guides = false;
                 i += 1;
             }
@@ -1597,9 +1638,7 @@ fn export_text(args: &[String]) {
             return;
         }
     };
-    if !show_field_guides {
-        doc.set_show_field_guides(false);
-    }
+    doc.set_show_field_guides(show_field_guides);
 
     let page_count = doc.page_count();
     println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
@@ -1680,6 +1719,9 @@ fn export_markdown(args: &[String]) {
     let file_path = &args[0];
     let mut output_dir = "output".to_string();
     let mut target_page: Option<u32> = None;
+    // [T5-b] 빈 누름틀 안내문은 화면 전용 오버레이 — 한컴은 인쇄·PDF 에 찍지 않는다.
+    // export 계열은 인쇄 의미론이므로 기본 OFF, --field-guides 로만 켠다.
+    let mut show_field_guides = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -1708,6 +1750,14 @@ fn export_markdown(args: &[String]) {
                     return;
                 }
             }
+            "--field-guides" => {
+                show_field_guides = true;
+                i += 1;
+            }
+            "--no-field-guides" => {
+                show_field_guides = false;
+                i += 1;
+            }
             _ => {
                 eprintln!("알 수 없는 옵션: {}", args[i]);
                 i += 1;
@@ -1723,13 +1773,14 @@ fn export_markdown(args: &[String]) {
         }
     };
 
-    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+    let mut doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("오류: HWP 파싱 실패 - {}", e);
             return;
         }
     };
+    doc.set_show_field_guides(show_field_guides);
 
     let page_count = doc.page_count();
     println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
