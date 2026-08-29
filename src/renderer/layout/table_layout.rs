@@ -2636,7 +2636,21 @@ impl LayoutEngine {
                 if allow_rowbreak_object_bottom_bleed {
                     pushed.max(min_y)
                 } else {
-                    pushed.clamp(min_y, body_bottom.max(min_y))
+                    let clamped = pushed.clamp(min_y, body_bottom.max(min_y));
+                    // [T6-c] 자리차지 표는 하단 클램프가 흐름 시작점(y_start) 위로
+                    // 끌어올리면 이미 배치된 호스트 제목/본문과 겹침이 확정된다 —
+                    // 한컴은 이 경우 표를 위로 당기지 않고 본문 바닥 아래로 흘린다
+                    // (complex p58 「중요성」 표: 제목 위로 클램프되어 첫 행과 겹치던
+                    // 결함, 한컴 PDF 는 표 하단이 본문 바닥을 ~34px 넘어 bleed).
+                    // 글뒤로/글앞으로는 절대 오버레이라 종전 클램프 유지.
+                    if matches!(
+                        table_text_wrap,
+                        crate::model::shape::TextWrap::TopAndBottom
+                    ) {
+                        clamped.max(y_start.min(pushed))
+                    } else {
+                        clamped
+                    }
                 }
             } else {
                 raw_y

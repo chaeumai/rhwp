@@ -15029,6 +15029,33 @@ impl TypesetEngine {
                 declared_object_total, table.page_break,
             );
         }
+        // [T6-c] 페이지 바닥을 넘는(bleed) visible-host float 존은 표 경로도
+        // **실높이 probe** 로 소비한다. 진입 시 probe 0.0 소비(#2322)는 시작점이
+        // 존 안일 때만 점프해서, 존 top 직전(p58: 호스트 제목 뒤 cur_h 694.1 vs
+        // 존 top 708.7 — 0.8px 차)에서 시작해 존을 관통하는 표를 못 잡았다 —
+        // 신규성 표가 중요성 표 존 [708.7..903.1, avail 895.7] 위에 분할 배치되어
+        // p58 에 한컴보다 +425자 (T6-c). 존 하단이 페이지 안에 드는 경우까지
+        // 일반화하면 550 이 F 91→69·+2쪽으로 회귀(과점프) — 존 아래에 어떤
+        // 배치도 불가능한 bleed 존으로 한정한다. 비-TAC 블록 표 + HWPX 한정.
+        if !table.common.treat_as_char && st.is_hwpx_source {
+            let probe = host_spacing_total + ft.effective_height;
+            let cur = st.current_height;
+            let mut jump = cur;
+            for z in &st.visible_float_exclusions {
+                if z.bottom <= available + 0.5 || cur >= z.bottom - 0.5 {
+                    continue;
+                }
+                let starts_in = jump + 0.5 >= z.top && jump < z.bottom;
+                let overlaps = jump < z.top && jump + probe > z.top + 0.5;
+                if starts_in || overlaps {
+                    jump = jump.max(z.bottom);
+                }
+            }
+            if jump > cur + 0.5 {
+                st.current_height = jump;
+            }
+        }
+
         // [Task #1027 Stage E1] treat_as_char 인라인 표 advance 정합.
         // 렌더러는 글자처럼취급 표를 호스트 문단의 한 LINE_SEG(line_height+line_spacing)로
         // advance 하나(=fmt.total_height), 페이지네이터는 측정된 표 effective_height 만
