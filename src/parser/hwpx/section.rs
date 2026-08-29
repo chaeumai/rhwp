@@ -1514,14 +1514,22 @@ fn read_text_content_with_tabs(
     let mut text = String::new();
     let mut tab_ext_buf: Vec<[u16; 7]> = Vec::new();
     let mut buf = Vec::new();
+    // 변경추적 삭제 구간 <hp:deleteBegin/>…<hp:deleteEnd/> 깊이. 한컴은 최종본을
+    // 그릴 때 이 구간의 글자·탭·줄바꿈을 찍지 않는다 (jbnu-550 [서식 7-1]
+    // 'ChonbukJeonbuk'→'Jeonbuk'). 삽입 구간(insertBegin/End)은 보통 글자.
+    let mut deleted_depth: usize = 0;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Text(ref t)) => {
-                text.push_str(&t.decode().unwrap_or_default());
+                if deleted_depth == 0 {
+                    text.push_str(&t.decode().unwrap_or_default());
+                }
             }
             Ok(Event::GeneralRef(ref r)) => {
-                text.push_str(&decode_xml_general_ref(r));
+                if deleted_depth == 0 {
+                    text.push_str(&decode_xml_general_ref(r));
+                }
             }
             Ok(Event::End(ref e)) => {
                 let tn = e.name();
@@ -1533,6 +1541,9 @@ fn read_text_content_with_tabs(
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
                 match local {
+                    b"deleteBegin" => deleted_depth += 1,
+                    b"deleteEnd" => deleted_depth = deleted_depth.saturating_sub(1),
+                    _ if deleted_depth > 0 => {}
                     b"lineBreak" | b"columnBreak" => text.push('\n'),
                     b"tab" => {
                         text.push('\t');
@@ -6566,6 +6577,44 @@ mod tests {
         let para = &section.paragraphs[0];
         assert_eq!(para.text, "줄바꿈A\n줄바꿈B");
         assert_eq!(para.char_offsets, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_parse_track_change_delete_span_excluded_from_final_text() {
+        // 변경추적 삭제 구간은 최종본에서 미출력 (jbnu-550 [서식 7-1]:
+        // ChonbukJeonbuk → Jeonbuk). 삽입 구간 마커는 무시하고 글자는 살린다.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:t>at <hp:deleteBegin Id="1" TcId="1"/>Chonbuk<hp:deleteEnd Id="2" TcId="1"/><hp:insertBegin Id="3" TcId="2"/>Jeonbuk<hp:insertEnd Id="4" TcId="2"/> National</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "at Jeonbuk National");
+    }
+
+    #[test]
+    fn test_parse_track_change_delete_span_skips_tab_and_linebreak() {
+        // 삭제 구간 안의 탭·줄바꿈도 찍지 않는다 (hwpx2pdf 동일 규칙).
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:t>A<hp:deleteBegin/>X<hp:tab width="1000" leader="0" type="0"/><hp:lineBreak/>Y<hp:deleteEnd/>B</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert!(para.tab_extended.is_empty());
     }
 
     #[test]
