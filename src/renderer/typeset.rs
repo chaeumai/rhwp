@@ -54,6 +54,12 @@ struct BlockRowScanVars {
     can_intra_split: bool,
     is_continuation: bool,
     avail_for_rows: f64,
+    /// [T6-e] 셀 내부 컷(줄 단위 분할)용 예산. `avail_for_rows` 가 선언 프레임
+    /// 높이로 상한될 때도 이쪽은 **상한 전 값**을 쓴다 — 선언 높이가 증언하는
+    /// 것은 한컴이 어느 **행**에서 끊었는가이지 행 안의 줄 위치가 아니다.
+    /// 컷까지 상한하면 3.3px 축소가 줄 하나(18.3px)를 통째로 밀어낸다
+    /// (complex-full sec8 pi=6 실측). 상한이 없을 때는 avail_for_rows 와 같다.
+    avail_for_cut: f64,
     header_overhead: f64,
     landscape_rowbreak_bleed: bool,
     landscape_whole_row_tolerance: f64,
@@ -14264,6 +14270,7 @@ impl TypesetEngine {
             can_intra_split,
             is_continuation,
             avail_for_rows,
+            avail_for_cut,
             header_overhead,
             landscape_rowbreak_bleed,
             landscape_whole_row_tolerance,
@@ -14426,7 +14433,7 @@ impl TypesetEngine {
                 // page 에도 안 들어가는 경우만 페이지 중간에서 쪼갠다. RowBreak
                 // rowspan 블록은 hard-break(vpos reset)를 만난 경우에만 중간
                 // 분할을 허용해 일반 RowBreak 행 경계 정책의 blast radius 를 줄인다.
-                let budget = (avail_for_rows - consumed - cs_before).max(0.0);
+                let budget = (avail_for_cut - consumed - cs_before).max(0.0);
                 let res = if rowbreak_use_row_offsets {
                     layout_engine.advance_row_block_cut_with_row_offsets(
                         table,
@@ -14824,7 +14831,7 @@ impl TypesetEngine {
             } else {
                 mt.max_padding_for_row(r)
             };
-            let budget = (avail_for_rows - consumed - cs_before - padding).max(0.0);
+            let budget = (avail_for_cut - consumed - cs_before - padding).max(0.0);
             let res = layout_engine.advance_row_cut(table, r, row_start_cut, budget, styles);
             // [#2236 진단] 인트라 컷 시도 결과 — 동작 불변.
             if std::env::var("RHWP_DIAG_SCAN").is_ok() {
@@ -16349,6 +16356,9 @@ impl TypesetEngine {
                 } else {
                     0.0
                 };
+            // [T6-e] 선언 프레임 상한 **전** 예산. 셀 내부 컷은 이쪽을 쓴다
+            // (BlockRowScanVars::avail_for_cut 주석 참조).
+            let avail_for_rows_uncapped = (page_avail - header_overhead).max(0.0);
             let avail_for_rows = {
                 // [Task #1831] 단 상단에서 시작하는 첫 fragment 가 표 **전체** 기준
                 // 근소(≤2px) 오차로만 넘치면 전체 배치를 허용한다 — 행높이 측정
@@ -16357,7 +16367,50 @@ impl TypesetEngine {
                 // 인데 한글은 한 쪽(p2)에 통째 배치. 전체가 들어갈 때만 적용하므로
                 // 분할 경계 산정에는 영향 없음.
                 const WHOLE_TABLE_FIT_TOLERANCE_PX: f64 = 2.0;
-                let base = (page_avail - header_overhead).max(0.0);
+                let base = avail_for_rows_uncapped;
+
+                // [T6-e] HWPX 첫 조각의 행 예산을 **문서가 선언한 표 프레임 높이**로
+                // 상한한다. 한컴은 분할 표의 첫 조각을 자기가 그린 프레임 바닥에서
+                // 끊고 그 높이를 `hp:sz height` 로 저장한다 — 파일이 한컴의 컷을
+                // 직접 적고 있다.
+                //
+                // 실측 (complex-full p54, 표 2112725781, 36x7 RowBreak):
+                //   선언 40464HU 는 r0..r16(39409)은 담고 r0..r17(40489)은 못 담는다.
+                //   프레임 바닥 266.135mm 는 한컴 정본 PDF 벡터 괘선과 0.005mm 일치.
+                //   반면 rhwp 행 영역은 본문 바닥 266.99mm 까지 달려(예산 542.7px vs
+                //   선언 539.5px) r17 을 0.688mm 여유로 더 담았다 — T6-e ∓42자.
+                // 선언이 첫 조각 높이라는 것은 같은 문서 표 18개 전수에서 확인했다
+                // (일치 오차 ±0.2px 다수: pi=18 sec=0 · pi=88 sec=4 · pi=60 sec=10 …).
+                //
+                // ⚠ 표 **위** 간격은 건드리지 않는다 — `cur_h` 는 한컴 저장 사다리로
+                // 스냅되므로(첫 조각 18건 중 14건이 ±3.5HU) 위쪽을 고쳐도 예산은
+                // 1HU 도 움직이지 않는다. 근거·기각 이력 전문은 docs/T6-e-실측.md §5-d.
+                //
+                // 좁게 건다: HWPX · 첫 조각 · 실제로 분할되는 표 · 선언이 예산보다
+                // **작을 때만**. 선언 높이는 편집 후 재레이아웃되지 않았을 수 있어
+                // (stale) 차이가 큰 경우는 신뢰하지 않는다.
+                const DECLARED_FIRST_FRAGMENT_CAP_PX: f64 = 8.0;
+                let declared_rows_h = (declared_object_total - host_spacing_total).max(0.0);
+                let base = if st.is_hwpx_source
+                    && !is_continuation
+                    && cursor_row == 0
+                    && declared_rows_h > 0.0
+                    && total_rows_h > declared_rows_h
+                    && declared_rows_h < base
+                    && base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
+                {
+                    if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
+                        eprintln!(
+                            "TABLE_DECL_CAP: pi={} sec={} base={:.1} -> declared={:.1} (shrink {:.1})",
+                            para_idx, st.section_index, base, declared_rows_h,
+                            base - declared_rows_h,
+                        );
+                    }
+                    declared_rows_h
+                } else {
+                    base
+                };
+
                 if !is_continuation
                     && cursor_row == 0
                     && start_cut.is_empty()
@@ -16440,6 +16493,7 @@ impl TypesetEngine {
                     can_intra_split,
                     is_continuation,
                     avail_for_rows,
+                    avail_for_cut: avail_for_rows_uncapped,
                     header_overhead,
                     landscape_rowbreak_bleed,
                     landscape_whole_row_tolerance,
@@ -16532,6 +16586,7 @@ impl TypesetEngine {
                                 can_intra_split,
                                 is_continuation,
                                 avail_for_rows: avail_refit,
+                                avail_for_cut: avail_refit,
                                 header_overhead,
                                 landscape_rowbreak_bleed,
                                 landscape_whole_row_tolerance,
