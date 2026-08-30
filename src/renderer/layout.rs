@@ -682,6 +682,11 @@ pub(crate) fn empty_host_float_om_gate(
     next_para: Option<&Paragraph>,
     t: &crate::model::table::Table,
 ) -> bool {
+    // [파리티 라운드4 T6-b R1b] 다음 문단이 topbottom 빈 표 앵커(스택)여도 HWPX 는
+    // 게이트를 연다 — complex sec10 저장 lineseg 실측: 스택 앵커 사이 vp 차
+    // [15]→[16] = voff+표높이+80HU 로 sb·host_line_spacing 미기여. 종전 예외(#1880
+    // sb 보존 오라클)는 HWP5-native 파스 경로의 실측이라 HWPX 에 적용하지 않는다.
+    // TAC 표 앵커가 다음에 오는 형상은 종전대로 제외(실측 없음).
     is_hwpx_source
         && std::env::var_os("RHWP_C2097_OFF").is_none()
         && is_para_topbottom_float(&t.common)
@@ -690,11 +695,10 @@ pub(crate) fn empty_host_float_om_gate(
         && !para.line_segs.is_empty()
         && !next_para
             .map(|p| {
-                para_is_empty_topbottom_table_anchor(p)
-                    || (!para_has_visible_text(p)
-                        && p.controls.iter().any(
-                            |c| matches!(c, Control::Table(t) if t.common.treat_as_char),
-                        ))
+                !para_has_visible_text(p)
+                    && p.controls.iter().any(
+                        |c| matches!(c, Control::Table(t) if t.common.treat_as_char),
+                    )
             })
             .unwrap_or(false)
 }
@@ -7273,8 +7277,11 @@ impl LayoutEngine {
                     .get(para_index + 1)
                     .map(para_is_empty_topbottom_table_anchor)
                     .unwrap_or(false);
-                let suppress_empty_anchor_spacing =
-                    is_current_empty_para_float && !next_is_empty_topbottom_table_anchor;
+                // [파리티 라운드4 T6-b R1b] HWPX 는 표-표 스택 사이에도 line_spacing 미기여
+                // (complex sec10 저장 lineseg: 스택 앵커 vp 차 = voff+표높이+80HU 뿐).
+                // #1133 보존 오라클은 HWP5-native — HWPX 에선 다음이 앵커여도 억제한다.
+                let suppress_empty_anchor_spacing = is_current_empty_para_float
+                    && (!next_is_empty_topbottom_table_anchor || self.is_hwpx_source.get());
                 // [파리티 라운드3 J3] 호스트 텍스트가 표 위에 그려진 문단(voff ≥ 첫 줄
                 // 높이)은 그 줄이 이미 소비됐으므로 표 뒤에 line_height 폴백을 다시
                 // 더하지 않는다 — complex p52 제목(1400HU, spacing 0) 이 표마다 +18.7px
@@ -8523,13 +8530,20 @@ impl LayoutEngine {
                             // 그림 다음에 paragraph 의 line baseline 1줄(line_height + line_spacing)
                             // 을 추가 진행하나 rhwp 기본 layout 은 image_height 만 진행하여
                             // cluster 거리가 1 line 부족 (pr-149.hwp 18864 HU vs 17280 HU 결함).
-                            if matches!(
-                                pic.common.text_wrap,
-                                crate::model::shape::TextWrap::TopAndBottom
-                            ) && matches!(
-                                pic.common.vert_rel_to,
-                                crate::model::shape::VertRelTo::Para
-                            ) && pic.caption.is_none()
+                            // [파리티 라운드4 T6-b R1a] HWP5-native 한정 — HWPX 는 저장 lineseg
+                            // 실측(complex sec10 pic 앵커 vp 차 = 그림 높이 정확히)대로 앵커
+                            // 줄이 흐름에 미기여라 이 보정이 곧 초과분(+6.2mm)이 된다.
+                            // typeset R1a(빈 앵커 전진 억제)와 동일 근거의 layout 미러.
+                            if !self.is_hwpx_source.get()
+                                && matches!(
+                                    pic.common.text_wrap,
+                                    crate::model::shape::TextWrap::TopAndBottom
+                                )
+                                && matches!(
+                                    pic.common.vert_rel_to,
+                                    crate::model::shape::VertRelTo::Para
+                                )
+                                && pic.caption.is_none()
                             {
                                 let has_visible_text =
                                     para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}');

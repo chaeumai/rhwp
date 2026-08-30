@@ -2373,3 +2373,94 @@ fn tac_table_later_lineseg_shift_follows_stored_second_line() {
     };
     assert_eq!(tac_table_later_lineseg_shift(&para_text, 1, DEFAULT_DPI), 0.0);
 }
+
+/// [파리티 라운드4 T6-b R1b] HWPX 표-표 스택 앵커도 C-2097 게이트를 연다.
+///
+/// 근거: complex-full sec10 저장 lineseg — 스택 앵커 [15] vp 14300 → [16] vp 51283,
+/// 차 36983 = voff 235 + 표 높이 36668 + 80HU 로 호스트 spacing_after·다음 문단
+/// spacing_before·host_line_spacing 이 전혀 기여하지 않는다. #1880/#1863 의 sb 보존
+/// 오라클은 HWP5-native 파스 경로 실측이라 HWPX 에는 적용하지 않는다.
+#[test]
+fn t6b_r1b_hwpx_stacked_empty_anchor_opens_c2097_gate() {
+    use crate::model::shape::{TextWrap, VertRelTo};
+    use crate::model::table::Table;
+
+    let mut make_float_table = || {
+        let mut t = Table::default();
+        t.common.treat_as_char = false;
+        t.common.text_wrap = TextWrap::TopAndBottom;
+        t.common.vert_rel_to = VertRelTo::Para;
+        t.common.vertical_offset = 235;
+        t.common.height = 36668;
+        t
+    };
+    let t_cur = make_float_table();
+    let t_next = make_float_table();
+
+    let anchor = Paragraph {
+        line_segs: vec![LineSeg {
+            line_height: 1100,
+            line_spacing: 660,
+            ..Default::default()
+        }],
+        controls: vec![Control::Table(Box::new(t_cur.clone()))],
+        ..Default::default()
+    };
+    let next_anchor = Paragraph {
+        line_segs: vec![LineSeg {
+            line_height: 1100,
+            line_spacing: 660,
+            ..Default::default()
+        }],
+        controls: vec![Control::Table(Box::new(t_next))],
+        ..Default::default()
+    };
+
+    assert!(
+        empty_host_float_om_gate(true, &anchor, Some(&next_anchor), &t_cur),
+        "HWPX 는 다음이 빈 표 앵커여도 게이트가 열려야 한다(스택 사이 sb 미기여)"
+    );
+    assert!(
+        !empty_host_float_om_gate(false, &anchor, Some(&next_anchor), &t_cur),
+        "HWP5-native 스택은 종전대로 게이트 닫힘(#1880 sb 보존)"
+    );
+}
+
+/// [파리티 라운드4 T6-b R1b] 다음이 **TAC 표** 앵커인 형상은 HWPX 에서도 종전대로
+/// 게이트를 닫는다 — 그 축은 실측이 없어 blast radius 를 넓히지 않는다.
+#[test]
+fn t6b_r1b_next_tac_table_anchor_still_closes_gate() {
+    use crate::model::shape::{TextWrap, VertRelTo};
+    use crate::model::table::Table;
+
+    let mut t_cur = Table::default();
+    t_cur.common.treat_as_char = false;
+    t_cur.common.text_wrap = TextWrap::TopAndBottom;
+    t_cur.common.vert_rel_to = VertRelTo::Para;
+    t_cur.common.height = 36668;
+
+    let mut t_tac = Table::default();
+    t_tac.common.treat_as_char = true;
+
+    let anchor = Paragraph {
+        line_segs: vec![LineSeg {
+            line_height: 1100,
+            ..Default::default()
+        }],
+        controls: vec![Control::Table(Box::new(t_cur.clone()))],
+        ..Default::default()
+    };
+    let next_tac_anchor = Paragraph {
+        line_segs: vec![LineSeg {
+            line_height: 1100,
+            ..Default::default()
+        }],
+        controls: vec![Control::Table(Box::new(t_tac))],
+        ..Default::default()
+    };
+
+    assert!(
+        !empty_host_float_om_gate(true, &anchor, Some(&next_tac_anchor), &t_cur),
+        "다음이 TAC 표 앵커면 HWPX 도 게이트 닫힘 유지"
+    );
+}

@@ -407,6 +407,13 @@ const BOTTOM_SQUEEZE_MAX_REST_PX: f64 = 100.0;
 /// [파리티 라운드3 C-2097] 10→5: complex-full sec10 「적합성」 표 r2(선언 89.1, 한컴 잔여 88.6,
 /// 콘텐츠 80.0+pad 3.8 → 여유 4.8~8.6px)를 한컴이 같은 쪽에 압축 실측(p52 통째, 마지막 줄
 /// yMax 1003.9 < 본문 하단 1009.1). 이월 실측 1.3px 과는 여전히 분리된다.
+/// [파리티 라운드4 T6-b 기각] 5→2 실험(complex p67 r29 잔여 41.3·콘텐츠 38.4 여유
+/// 2.9px 를 압축하려던 안)은 complex p14~17 대파손으로 F 53→13 — 즉시 기각.
+/// 이 상수는 문서 전역에 걸리므로 국소 경계 조정 수단이 아니다.
+/// [기각 2] 저장 사다리 증거(셀 안 vpos 리셋 부재 = 그 행은 분할 안 됨)로 좁게
+/// 게이트해 2.0 으로 낮추는 안(R2b)도 **같은 p14~17 파손·F 53→13**. 리셋 부재는
+/// "이 쪽에 담김"과 "통째 이월"을 구분하지 못한다 — 두 경우 다 리셋이 없다.
+/// complex p67 r29(여유 2.9px) 경계는 다른 판별 축을 찾기 전까지 잔여로 둔다.
 const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 5.0;
 const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
 /// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
@@ -1541,6 +1548,58 @@ fn para_controls_only_topbottom_floats(para: &Paragraph) -> bool {
             Control::Shape(s) => is_para_topbottom_float(s.common()),
             _ => false,
         })
+}
+
+/// [파리티 라운드4 T6-b R1a] HWPX 빈 앵커 자리차지 그림/도형 문단의 흐름 전진 억제.
+/// 한컴 저장 lineseg 실측(complex sec10: pic 앵커 [14]→다음 앵커 [15] vp 차 = pic
+/// 높이 19826HU **정확히**)대로, 빈 문단에 앵커된 TopAndBottom·vert=PARA float 의
+/// 흐름 소비는 개체 높이(#409 pushdown)뿐이다 — 앵커 빈 줄 높이·문단 간격은
+/// 미기여(줄은 float top 에 겹쳐 놓임). 종전엔 둘 다 쌓아 float 당 ~6.2mm 초과,
+/// p53 하단 77자 이월의 주성분. 파일 vpos 가 이미 개체 공간을 반영해 pushdown 이
+/// 붙지 않는 형상(#1079 already_accounted)은 문단 전진을 유지해야 하므로 제외.
+fn t6b_empty_float_anchor_advance_suppressed(
+    is_hwpx: bool,
+    paragraphs: &[Paragraph],
+    para_idx: usize,
+    dpi: f64,
+) -> bool {
+    if !is_hwpx || std::env::var_os("RHWP_T6B_R1A_OFF").is_some() {
+        return false;
+    }
+    let Some(para) = paragraphs.get(para_idx) else {
+        return false;
+    };
+    if para_has_non_whitespace_text(para)
+        || para.line_segs.is_empty()
+        || !para_controls_only_topbottom_floats(para)
+    {
+        return false;
+    }
+    let obj_h = para
+        .controls
+        .iter()
+        .filter_map(|c| match c {
+            Control::Picture(p) => Some(hwpunit_to_px(p.common.height as i32, dpi)),
+            Control::Shape(s) => Some(hwpunit_to_px(s.common().height as i32, dpi)),
+            _ => None,
+        })
+        .fold(0.0f64, f64::max);
+    if obj_h <= 0.5 {
+        return false;
+    }
+    // #1079 already_accounted 미러 (typeset pushdown·layout vpos_accounts_for_height 와
+    // 동일 조건): 파일 vpos 가 개체 공간을 이미 반영하면 pushdown 미가산 — 전진 유지.
+    const PUSHDOWN_GAP_TOL_PX: f64 = 8.0;
+    let already_accounted = para_idx > 0 && {
+        let v_cur = para.line_segs.first().map(|s| s.vertical_pos);
+        let prev_end = paragraphs[para_idx - 1]
+            .line_segs
+            .last()
+            .map(|s| s.vertical_pos + s.line_height);
+        matches!((v_cur, prev_end), (Some(vc), Some(pe)) if vc > pe
+            && hwpunit_to_px((vc - pe) as i32, dpi) >= obj_h - PUSHDOWN_GAP_TOL_PX)
+    };
+    !already_accounted
 }
 
 /// [#2137] 단일 줄의 treat_as_char TopAndBottom 그림/도형만 가진 문단.
@@ -11810,9 +11869,22 @@ impl TypesetEngine {
             //   - 다단 (col_count > 1): height_for_fit (exam_eng 8p 정상 단 채움 복원)
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
-            let advance = fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+            let advance = if t6b_empty_float_anchor_advance_suppressed(
+                st.is_hwpx_source,
+                paragraphs,
+                para_idx,
+                self.dpi,
+            ) {
+                // [파리티 라운드4 T6-b R1a] 빈 앵커 float 문단: 흐름 전진은 #409
+                // pushdown(개체 높이+하단여백)만 — 앵커 빈 줄·간격 미기여 (헬퍼 주석).
+                0.0
+            } else {
+                fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow)
+            };
             st.current_height += advance;
-            st.flow_underrun += (fmt.total_height - advance).max(0.0);
+            if advance > 0.0 {
+                st.flow_underrun += (fmt.total_height - advance).max(0.0);
+            }
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
             }
@@ -14184,6 +14256,15 @@ impl TypesetEngine {
             mut split_end_limit,
         } = scan;
         let mut r = cursor_row;
+        // [T6-b 진단] 스캔 식별 — row_count/cursor/avail 로 대상 표 특정 (동작 불변).
+        // DIAG_SCAN 의 행 단위 로그는 어느 표의 스캔인지 구분이 안 돼 경계 추적이
+        // 어렵다 (complex sec10 은 한 쪽에 표 스캔이 10건 넘게 뜬다).
+        if std::env::var("RHWP_DIAG_T6B").is_ok() {
+            eprintln!(
+                "DIAG_T6B SCAN_ENTER rows={} cursor={} avail={:.1} consumed0={:.1} cont={} hdr_ovh={:.1}",
+                row_count, cursor_row, avail_for_rows, consumed, is_continuation, header_overhead
+            );
+        }
         while r < row_count {
             let cs_before = if r > cursor_row { cs } else { 0.0 };
             // rowspan 보호 블록 — 블록 전체를 분할 없이 한 단위로.
@@ -14830,7 +14911,37 @@ impl TypesetEngine {
             }
             // [Task #713] sliver(orphan) 회피 — 페이지 시작 행이 아니면서
             // 너무 적게 들어가면 행 전체를 다음 페이지로 미룬다.
-            if r > cursor_row && res.consumed_height < MIN_TOP_KEEP_PX {
+            // [파리티 라운드4 T6-b R2] 예외: 한컴 저장 사다리가 이 행의 첫 조각을 쪽
+            // 끝자락에 실제로 걸쳤다는 증거(첫 vpos 리셋 전 높이 ≤ budget)가 있으면
+            // orphan 회피를 접고 사다리를 따른다 — complex p61 신유정 대표성과 셀:
+            // 컷 16.5px < MIN_TOP_KEEP 25 로 통이월되어 p62 가 +5.3mm 내려가 마지막
+            // 행(rest 1.0px 부족) → p63 stub 87자 → 문서 끝 +1쪽 사슬. 한컴
+            // pageBreak=CELL 실측은 첫 줄만 p61 에 걸친다. HWPX·RowBreak·새 행·쪽
+            // 끝자락 한정 (B-T4 저장 사다리 신뢰와 동일 게이트).
+            let t6b_ladder_keep = r > cursor_row
+                && res.consumed_height < MIN_TOP_KEEP_PX
+                && st.is_hwpx_source
+                && mt.allows_row_break_split()
+                && row_start_cut.is_empty()
+                && budget <= BOTTOM_SQUEEZE_MAX_REST_PX
+                && !res.end_cut.is_empty()
+                && res.consumed_height > 0.5
+                && layout_engine
+                    .row_stored_first_fragment_height(table, r, styles)
+                    // 한컴 첫 조각이 budget 을 소폭 넘는 경우도 쪽 하단 압축 허용치
+                    // 안이면 한컴처럼 압축해 걸친다 (complex p67 r69: budget 9.3 에
+                    // 사다리 1줄 13.9 — 한컴은 그 줄을 p67 에 유지, #2097 압축 계열).
+                    .is_some_and(|ladder_h| {
+                        ladder_h <= budget + BOTTOM_SQUEEZE_TOLERANCE_PX
+                            && res.consumed_height <= ladder_h + 2.0
+                    });
+            if t6b_ladder_keep && std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                eprintln!(
+                    "DIAG_SCAN T6B_LADDER_KEEP r={} budget={:.1} cut_h={:.1}",
+                    r, budget, res.consumed_height
+                );
+            }
+            if r > cursor_row && res.consumed_height < MIN_TOP_KEEP_PX && !t6b_ladder_keep {
                 end_row = r;
             } else {
                 // 분할 행의 행 총 높이(per-cell content+pad) 를 consumed 에 가산.
@@ -19253,6 +19364,94 @@ mod tests {
             "[#1995] 전면 non-TAC 이미지 3장은 각각 한 페이지에 단독 배치되어야 함(>= 3 페이지). \
              실제 {} 페이지 — 미수정 시 한 앵커에 스택",
             typeset_result.pages.len(),
+        );
+    }
+
+    /// [파리티 라운드4 T6-b R1a] HWPX 빈 앵커 자리차지 그림 문단의 흐름 전진 억제.
+    ///
+    /// 한컴 저장 lineseg 실측(complex-full sec10: 그림 앵커 문단 vp 8802 → 다음 앵커
+    /// vp 28628, 차 19826HU = 그림 높이 **정확히**)이 근거 — 앵커 빈 줄 높이·문단
+    /// 간격은 흐름에 기여하지 않는다. 미수리 시 float 당 ~6.2mm 초과 누적.
+    #[test]
+    fn t6b_r1a_empty_pic_anchor_suppresses_flow_advance() {
+        use crate::model::shape::{TextWrap, VertRelTo};
+        let mut pic = crate::model::image::Picture::default();
+        pic.common.treat_as_char = false;
+        pic.common.text_wrap = TextWrap::TopAndBottom;
+        pic.common.vert_rel_to = VertRelTo::Para;
+        pic.common.height = 19826;
+
+        // 앞 문단이 끝난 직후에 앵커가 있다(gap 0 < 그림 높이) — #1079 미해당.
+        let prev = Paragraph {
+            line_segs: vec![LineSeg {
+                vertical_pos: 6842,
+                line_height: 1100,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                vertical_pos: 8802,
+                line_height: 1100,
+                line_spacing: 660,
+                ..Default::default()
+            }],
+            controls: vec![crate::model::control::Control::Picture(Box::new(pic))],
+            ..Default::default()
+        };
+        let paras = vec![prev, anchor];
+        let dpi = crate::renderer::DEFAULT_DPI;
+
+        assert!(
+            t6b_empty_float_anchor_advance_suppressed(true, &paras, 1, dpi),
+            "HWPX 빈 앵커 TopAndBottom·vert=PARA 그림 문단은 흐름 전진을 억제해야 한다"
+        );
+        assert!(
+            !t6b_empty_float_anchor_advance_suppressed(false, &paras, 1, dpi),
+            "HWP5-native 는 종전 동작(#683 오라클) 유지 — 억제 대상 아님"
+        );
+    }
+
+    /// [파리티 라운드4 T6-b R1a] 저장 vpos 가 이미 그림 공간을 반영한 형상(#1079
+    /// already_accounted)은 pushdown 이 붙지 않으므로 문단 전진을 유지해야 한다.
+    #[test]
+    fn t6b_r1a_vpos_accounted_anchor_keeps_flow_advance() {
+        use crate::model::shape::{TextWrap, VertRelTo};
+        let mut pic = crate::model::image::Picture::default();
+        pic.common.treat_as_char = false;
+        pic.common.text_wrap = TextWrap::TopAndBottom;
+        pic.common.vert_rel_to = VertRelTo::Para;
+        pic.common.height = 19826;
+
+        // 앞 문단 끝(1000+1100=2100) → 앵커 vp 22000: gap 19900 ≥ 그림 높이.
+        let prev = Paragraph {
+            line_segs: vec![LineSeg {
+                vertical_pos: 1000,
+                line_height: 1100,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                vertical_pos: 22000,
+                line_height: 1100,
+                ..Default::default()
+            }],
+            controls: vec![crate::model::control::Control::Picture(Box::new(pic))],
+            ..Default::default()
+        };
+        let paras = vec![prev, anchor];
+
+        assert!(
+            !t6b_empty_float_anchor_advance_suppressed(
+                true,
+                &paras,
+                1,
+                crate::renderer::DEFAULT_DPI
+            ),
+            "#1079 already_accounted 형상은 억제 대상이 아니다(이중 차감 방지)"
         );
     }
 }
