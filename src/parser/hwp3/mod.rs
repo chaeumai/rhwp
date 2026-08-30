@@ -468,6 +468,41 @@ struct Hwp3DrawingCarry<'a> {
     info_buf: &'a mut Vec<u8>,
 }
 
+/// HWP3 셀 패딩 바이트(부호 있는 16비트, 단위 1/100mm)를 IR HU(1/7200inch)
+/// 스케일(×4)로 변환한다.
+///
+/// [부호 확장 결함] 종전엔 `read_i16(..) as u32 * 4` 로 계산했다. 음수 i16 를
+/// 곧바로 `as u32` 로 캐스팅하면 부호 확장된 큰 양수(예: -5 → 4294967291)가
+/// 되고, 거기에 `* 4` 를 곱하면 release 빌드에서는 오버플로가 랩어라운드돼
+/// 엉뚱한 패딩 값이 나오고 debug 빌드(오버플로 체크 on, 테스트가 기본으로
+/// 도는 프로필)에서는 곱셈 자체가 패닉한다. 음수 셀 패딩(HWP3 문서에서
+/// 드물지만 유효한 값)을 만나면 파서가 죽거나 표가 깨지는 결함이었다.
+/// `i32` 중간값을 거치면 부호가 보존되고 오버플로 없이 계산된다.
+///
+/// [upstream 손이식] chaeumai/rhwp cdd55c838 — 판정은 `docs/upstream-이식-대장.md` §3-2.
+fn read_hwp3_padding_scaled(mut bytes: &[u8]) -> i16 {
+    use byteorder::{LittleEndian, ReadBytesExt};
+    let raw = bytes.read_i16::<LittleEndian>().unwrap_or(0) as i32;
+    (raw * 4) as i16
+}
+
+/// HWP3 표/그림 바깥여백·안여백 필드(부호 있는 16비트, 단위 1/100mm)를 IR HU
+/// (1/7200inch) 스케일(×4)로 변환한다.
+///
+/// [오버플로 결함] 종전엔 `read_i16(..) * 4` 로 직접 계산했다. `i16 * i16` 연산은
+/// 결과가 여전히 `i16` 인데, 절댓값이 8192 이상인 입력(HWP3 문서에서 드물지만
+/// 파일 포맷상 유효한 범위, 또는 손상/적대적 입력)에서 곱셈이 `i16` 범위를
+/// 넘으면 debug 빌드(오버플로 체크 on, 테스트가 기본으로 도는 프로필)에서
+/// 곧바로 패닉한다. `read_hwp3_padding_scaled` 와 동형으로 `i32` 중간값을 거쳐
+/// 오버플로 패닉 없이 계산한다.
+///
+/// [upstream 손이식] chaeumai/rhwp e288b0a7f — 판정은 `docs/upstream-이식-대장.md` §3-2.
+fn read_hwp3_margin_scaled(mut bytes: &[u8]) -> i16 {
+    use byteorder::{LittleEndian, ReadBytesExt};
+    let raw = bytes.read_i16::<LittleEndian>().unwrap_or(0) as i32;
+    (raw * 4) as i16
+}
+
 /// [#2003 추출] 개체 컨트롤 디스패치 — ch==10(표/글상자/수식/버튼)·11(그리기)·
 /// 14~17·29·5~8 의 if-else 체인 전체. 원본 무변경 이동 (셀·캡션은
 /// `parse_paragraph_list` 재귀). 반환 `Some(중단여부)` = 호출자 조기 return,
@@ -530,19 +565,19 @@ fn parse_hwp3_object_dispatch(
         // 이들은 모두 같은 구조를 가집니다: 84바이트 정보 -> 각 셀당 27바이트 -> 셀당 문단 리스트 -> 캡션 문단.
         let mut table = crate::model::table::Table::default();
 
-        table.outer_margin_left = (&info_buf[18..20]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.outer_margin_right = (&info_buf[20..22]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.outer_margin_top = (&info_buf[22..24]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.outer_margin_bottom = (&info_buf[24..26]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
+        table.outer_margin_left = read_hwp3_margin_scaled(&info_buf[18..20]);
+        table.outer_margin_right = read_hwp3_margin_scaled(&info_buf[20..22]);
+        table.outer_margin_top = read_hwp3_margin_scaled(&info_buf[22..24]);
+        table.outer_margin_bottom = read_hwp3_margin_scaled(&info_buf[24..26]);
         table.common.margin.left = table.outer_margin_left;
         table.common.margin.right = table.outer_margin_right;
         table.common.margin.top = table.outer_margin_top;
         table.common.margin.bottom = table.outer_margin_bottom;
 
-        table.padding.left = (&info_buf[26..28]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.padding.right = (&info_buf[28..30]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.padding.top = (&info_buf[30..32]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        table.padding.bottom = (&info_buf[32..34]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
+        table.padding.left = read_hwp3_margin_scaled(&info_buf[26..28]);
+        table.padding.right = read_hwp3_margin_scaled(&info_buf[28..30]);
+        table.padding.top = read_hwp3_margin_scaled(&info_buf[30..32]);
+        table.padding.bottom = read_hwp3_margin_scaled(&info_buf[32..34]);
 
         table.common.width =
             ((&info_buf[42..44]).read_u16::<LittleEndian>().unwrap_or(0) as u32) * 4;
@@ -608,19 +643,15 @@ fn parse_hwp3_object_dispatch(
         // 미리 채워두면 serializer/hwpx_to_hwp 수정 없이 attr가 올바르게 저장된다.
         table.raw_ctrl_data = build_raw_ctrl_data(&table.common);
 
-        let cell_padding_left =
-            (&info_buf[34..36]).read_i16::<LittleEndian>().unwrap_or(0) as u32 * 4;
-        let cell_padding_right =
-            (&info_buf[36..38]).read_i16::<LittleEndian>().unwrap_or(0) as u32 * 4;
-        let cell_padding_top =
-            (&info_buf[38..40]).read_i16::<LittleEndian>().unwrap_or(0) as u32 * 4;
-        let cell_padding_bottom =
-            (&info_buf[40..42]).read_i16::<LittleEndian>().unwrap_or(0) as u32 * 4;
+        let cell_padding_left = read_hwp3_padding_scaled(&info_buf[34..36]);
+        let cell_padding_right = read_hwp3_padding_scaled(&info_buf[36..38]);
+        let cell_padding_top = read_hwp3_padding_scaled(&info_buf[38..40]);
+        let cell_padding_bottom = read_hwp3_padding_scaled(&info_buf[40..42]);
 
-        table.padding.left = cell_padding_left as i16;
-        table.padding.right = cell_padding_right as i16;
-        table.padding.top = cell_padding_top as i16;
-        table.padding.bottom = cell_padding_bottom as i16;
+        table.padding.left = cell_padding_left;
+        table.padding.right = cell_padding_right;
+        table.padding.top = cell_padding_top;
+        table.padding.bottom = cell_padding_bottom;
 
         let caption_width = (&info_buf[46..48]).read_u16::<LittleEndian>().unwrap_or(0) as u32 * 4;
         let caption_pos = (&info_buf[70..72]).read_u16::<LittleEndian>().unwrap_or(0);
@@ -720,10 +751,10 @@ fn parse_hwp3_object_dispatch(
             cell.width = w as u32;
             cell.height = h as u32;
 
-            cell.padding.left = cell_padding_left as i16;
-            cell.padding.right = cell_padding_right as i16;
-            cell.padding.top = cell_padding_top as i16;
-            cell.padding.bottom = cell_padding_bottom as i16;
+            cell.padding.left = cell_padding_left;
+            cell.padding.right = cell_padding_right;
+            cell.padding.top = cell_padding_top;
+            cell.padding.bottom = cell_padding_bottom;
 
             let v_align = cell_info[19];
             cell.vertical_align = match v_align {
@@ -918,15 +949,15 @@ fn parse_hwp3_object_dispatch(
             pic.common.text_wrap = crate::model::shape::TextWrap::TopAndBottom;
         }
 
-        pic.common.margin.left = (&info_buf[18..20]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.common.margin.right = (&info_buf[20..22]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.common.margin.top = (&info_buf[22..24]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.common.margin.bottom = (&info_buf[24..26]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
+        pic.common.margin.left = read_hwp3_margin_scaled(&info_buf[18..20]);
+        pic.common.margin.right = read_hwp3_margin_scaled(&info_buf[20..22]);
+        pic.common.margin.top = read_hwp3_margin_scaled(&info_buf[22..24]);
+        pic.common.margin.bottom = read_hwp3_margin_scaled(&info_buf[24..26]);
 
-        pic.padding.left = (&info_buf[26..28]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.padding.right = (&info_buf[28..30]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.padding.top = (&info_buf[30..32]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
-        pic.padding.bottom = (&info_buf[32..34]).read_i16::<LittleEndian>().unwrap_or(0) * 4;
+        pic.padding.left = read_hwp3_margin_scaled(&info_buf[26..28]);
+        pic.padding.right = read_hwp3_margin_scaled(&info_buf[28..30]);
+        pic.padding.top = read_hwp3_margin_scaled(&info_buf[30..32]);
+        pic.padding.bottom = read_hwp3_margin_scaled(&info_buf[32..34]);
 
         let horz_align = (&info_buf[10..12]).read_i16::<LittleEndian>().unwrap_or(0);
         if horz_align == -1 {
@@ -2900,7 +2931,30 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
     cursor.set_position(info_block_end);
 
     // 4. 본문 텍스트 압축 해제 (`doc_info.compressed` 확인 후 `flate2` 사용)
-    let remaining_data = &data[(30 + current_pos as usize + doc_info.info_block_length as usize)..];
+    //
+    // [보안] `info_block_length` 는 u16 이지만 **문서가 정하는 값**이라, 짧은/손상된
+    // 파일에서 본문 시작 오프셋이 파일 끝을 넘길 수 있다. 종전엔 `&data[start..]` 가
+    // 그대로 슬라이싱해 `range start index N out of range` 패닉(DoS)이었다 — 신뢰 경계
+    // 밖 `.hwp` 로 `parse_hwp3` 를 부르는 라이브러리·MCP 소비자를 죽인다. 경계를 확인해
+    // 파싱 오류로 끝낸다(오버플로 방지 위해 saturating_add).
+    //
+    // [upstream 손이식] chaeumai/rhwp 19aaf9398 — 판정은 `docs/upstream-이식-대장.md` §3-2.
+    let body_start = 30usize
+        .saturating_add(current_pos as usize)
+        .saturating_add(doc_info.info_block_length as usize);
+    let remaining_data = match data.get(body_start..) {
+        Some(slice) => slice,
+        None => {
+            return Err(Hwp3Error::ParseError {
+                message: format!(
+                    "정보 블록 길이({})가 파일 범위를 벗어납니다 (본문 시작 {} > 파일 크기 {})",
+                    doc_info.info_block_length,
+                    body_start,
+                    data.len()
+                ),
+            });
+        }
+    };
 
     let mut decompressed_data = Vec::new();
     let body_data = if doc_info.compressed != 0 {
@@ -3048,7 +3102,13 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
                     next_id
                 };
 
-                let img_data = block.data[32..].to_vec();
+                // [보안] `block.data.len()` 은 문서가 정한 length 라 24~31 일 수 있다.
+                // 위 `>= 24` 가드는 name(`[0..16]`)만 보장하므로 `[32..]` 슬라이스는
+                // 별도로 경계를 확인한다 — 종전엔 24~31 바이트 블록에서 슬라이스 시작
+                // OOB 패닉(DoS)이었다. 이미지 데이터가 없는 짧은 블록은 빈 바이트로 둔다.
+                //
+                // [upstream 손이식] chaeumai/rhwp 19aaf9398.
+                let img_data = block.data.get(32..).unwrap_or(&[]).to_vec();
 
                 // [Task #877 Stage 4] WMF/EMF magic detection 추가.
                 // sample16 의 16쪽 다이어그램 등은 WMF format (magic 01 00 09 00 = 표준 WMF
@@ -3890,6 +3950,96 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Read;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // [upstream 손이식] HWP3 스케일 곱셈 오버플로 회귀 (cdd55c838·e288b0a7f·77627e953)
+    // 판정: docs/upstream-이식-대장.md §3-2
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_hwp3_padding_scaled_preserves_negative_values_without_overflow() {
+        // [부호 확장 결함] 종전 `read_i16(..) as u32 * 4` 는 음수 셀 패딩을
+        // 부호 확장된 거대한 u32 로 만들어 debug 빌드에서 곱셈 오버플로 패닉,
+        // release 빌드에서는 랩어라운드된 엉뚱한 값을 만들었다. 이 회귀 테스트는
+        // 음수 입력이 패닉 없이 부호를 보존한 채 ×4 스케일된 결과를 내는지 확인한다.
+        let negative_five: [u8; 2] = (-5i16).to_le_bytes();
+        assert_eq!(
+            read_hwp3_padding_scaled(&negative_five),
+            -20,
+            "음수 셀 패딩은 부호를 보존한 채 ×4 스케일돼야 함"
+        );
+
+        let positive: [u8; 2] = 30i16.to_le_bytes();
+        assert_eq!(read_hwp3_padding_scaled(&positive), 120);
+
+        let zero: [u8; 2] = 0i16.to_le_bytes();
+        assert_eq!(read_hwp3_padding_scaled(&zero), 0);
+    }
+
+    #[test]
+    fn read_hwp3_padding_scaled_preserves_large_negative_values_without_overflow_panic() {
+        // 절댓값이 큰 음수 패딩도 패닉 없이 wrapping 스케일된다.
+        let large_negative: [u8; 2] = (-9000i16).to_le_bytes();
+        assert_eq!(
+            read_hwp3_padding_scaled(&large_negative),
+            (-36000i32) as i16
+        );
+        assert_eq!(read_hwp3_padding_scaled(&(-1i16).to_le_bytes()), -4);
+    }
+
+    #[test]
+    fn read_hwp3_margin_scaled_preserves_large_negative_values_without_overflow_panic() {
+        // [오버플로 결함] 종전 `read_i16(..) * 4` 는 `i16 * i16` 그대로였다. 절댓값이
+        // 8192 이상인 표 바깥여백/안여백·그림 여백/안여백(HWP3 문서 상 유효한 범위,
+        // 또는 손상/적대적 입력)을 만나면 곱셈이 i16 범위를 넘어 debug 빌드(오버플로
+        // 체크 on, 테스트 기본 프로필)에서 파서 전체가 패닉했다. 이 회귀 테스트는
+        // 그런 큰 음수 입력이 패닉 없이 wrapping 스케일된 결과를 내는지 확인한다.
+        let large_negative: [u8; 2] = (-9000i16).to_le_bytes();
+        // -9000 * 4 = -36000 은 i16(최소 -32768)에 안 들어가 i32→i16 캐스팅으로 wrap 된다.
+        assert_eq!(
+            read_hwp3_margin_scaled(&large_negative),
+            (-36000i32) as i16,
+            "8192 이상 절댓값의 음수 여백은 패닉 없이 wrapping 스케일돼야 함"
+        );
+
+        let small_negative: [u8; 2] = (-100i16).to_le_bytes();
+        assert_eq!(read_hwp3_margin_scaled(&small_negative), -400);
+
+        let positive: [u8; 2] = 200i16.to_le_bytes();
+        assert_eq!(read_hwp3_margin_scaled(&positive), 800);
+
+        let zero: [u8; 2] = 0i16.to_le_bytes();
+        assert_eq!(read_hwp3_margin_scaled(&zero), 0);
+    }
+
+    /// [upstream 손이식 19aaf9398] `info_block_length` 가 파일 범위를 넘으면
+    /// 슬라이스 시작 OOB 패닉 대신 `ParseError` 로 끝난다.
+    #[test]
+    fn oversized_info_block_length_is_rejected_not_panicked() {
+        let mut data = match std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/samples/hwp3-pagedef-1915.hwp"
+        )) {
+            Ok(d) => d,
+            Err(_) => return, // 샘플이 없는 체크아웃에서는 건너뛴다
+        };
+        // 양성 대조 — 유효 파일은 여전히 파싱된다(가드가 정상 경로를 막지 않음).
+        assert!(
+            parse_hwp3(&data).is_ok(),
+            "유효 HWP3 파싱이 실패했습니다(가드가 정상 경로를 막음)"
+        );
+
+        // info_block_length: doc_info off 126 = 파일 off 156 (u16 LE).
+        data[156] = 0xFF;
+        data[157] = 0xFF;
+        let r = std::panic::catch_unwind(|| {
+            let _ = parse_hwp3(&data);
+        });
+        assert!(
+            r.is_ok(),
+            "info_block_length 가 파일 범위를 넘을 때 패닉했습니다 (DoS)"
+        );
+    }
 
     #[test]
     fn test_alloc_record_buf_overflow_returns_err() {

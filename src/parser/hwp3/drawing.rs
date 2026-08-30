@@ -569,6 +569,16 @@ use std::collections::HashMap;
 
 const HWP3_UNIT_SCALE: i32 = 4;
 
+/// 신뢰할 수 없는 파일에서 읽은 HWP3 raw margin(u32)을 `* HWP3_UNIT_SCALE` 스케일 후
+/// `i16` 필드(`TextBox::margin_*`)에 담는다. 곱셈이 `i32`/`i16` 범위를 넘으면 그대로
+/// 캐스팅하는 대신 클램프해 오버플로 panic(malformed/fuzzed 파일에서의 DoS)을 막는다.
+///
+/// [upstream 손이식] chaeumai/rhwp 6bcbadcd1 — 판정은 `docs/upstream-이식-대장.md` §3-2.
+fn hwp3_margin_to_i16(raw_margin: u32) -> i16 {
+    let scaled = raw_margin as i64 * HWP3_UNIT_SCALE as i64;
+    scaled.clamp(i16::MIN as i64, i16::MAX as i64) as i16
+}
+
 pub fn parse_drawing_object_tree(
     cursor: &mut std::io::Cursor<&[u8]>,
     doc_char_shapes: &mut Vec<crate::model::style::CharShape>,
@@ -598,6 +608,7 @@ pub fn parse_drawing_object_tree(
         doc_border_fills,
         doc_tab_defs,
         pic_name_to_id,
+        0,
     )?;
 
     if root_nodes.is_empty() {
@@ -615,6 +626,15 @@ pub fn parse_drawing_object_tree(
     }
 }
 
+/// `has_child`(connection_info bit 1)는 파일에서 그대로 온 값이라, 재귀 깊이에
+/// 상한이 없으면 중첩된 Container 객체 체인 하나로 네이티브 스택을 고갈시켜
+/// 프로세스를 죽일 수 있다(패닉과 달리 `catch_unwind` 로 못 잡음). 최소 92바이트짜리
+/// Container 객체를 수만 겹 중첩해도 HWP3 레코드 상한 안에 들어간다.
+///
+/// [upstream 손이식] chaeumai/rhwp 278d1b297 — 판정은 `docs/upstream-이식-대장.md` §3-2.
+const MAX_DRAWING_OBJECT_DEPTH: u32 = 256;
+
+#[allow(clippy::too_many_arguments)]
 fn parse_shape_list(
     cursor: &mut std::io::Cursor<&[u8]>,
     doc_char_shapes: &mut Vec<crate::model::style::CharShape>,
@@ -622,7 +642,16 @@ fn parse_shape_list(
     doc_border_fills: &mut Vec<crate::model::style::BorderFill>,
     doc_tab_defs: &mut Vec<crate::model::style::TabDef>,
     pic_name_to_id: &mut HashMap<String, u16>,
+    depth: u32,
 ) -> Result<Vec<ShapeObject>, Hwp3Error> {
+    if depth > MAX_DRAWING_OBJECT_DEPTH {
+        return Err(Hwp3Error::ParseError {
+            message: format!(
+                "Drawing object nesting exceeds {} levels",
+                MAX_DRAWING_OBJECT_DEPTH
+            ),
+        });
+    }
     let mut list = Vec::new();
     loop {
         let raw_obj =
@@ -648,6 +677,7 @@ fn parse_shape_list(
                 doc_border_fills,
                 doc_tab_defs,
                 pic_name_to_id,
+                depth + 1,
             )?;
             if let ShapeObject::Group(ref mut g) = node {
                 g.children = children;
@@ -722,8 +752,8 @@ fn map_to_shape_object(
     let mut final_shape = shape;
 
     let common = CommonObjAttr {
-        width: (header.object_size[0] as u32 * HWP3_UNIT_SCALE as u32),
-        height: (header.object_size[1] as u32 * HWP3_UNIT_SCALE as u32),
+        width: header.object_size[0].saturating_mul(HWP3_UNIT_SCALE as u32),
+        height: header.object_size[1].saturating_mul(HWP3_UNIT_SCALE as u32),
         ..Default::default()
     };
 
@@ -746,19 +776,22 @@ fn map_to_shape_object(
     }
 
     let shape_attr = ShapeComponentAttr {
-        offset_x: header.relative_pos[0] as i32 * HWP3_UNIT_SCALE,
-        offset_y: header.relative_pos[1] as i32 * HWP3_UNIT_SCALE,
-        original_width: (header.object_size[0] as u32 * HWP3_UNIT_SCALE as u32),
-        original_height: (header.object_size[1] as u32 * HWP3_UNIT_SCALE as u32),
-        current_width: (header.object_size[0] as u32 * HWP3_UNIT_SCALE as u32),
-        current_height: (header.object_size[1] as u32 * HWP3_UNIT_SCALE as u32),
+        offset_x: (header.relative_pos[0] as i64 * HWP3_UNIT_SCALE as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        offset_y: (header.relative_pos[1] as i64 * HWP3_UNIT_SCALE as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        original_width: header.object_size[0].saturating_mul(HWP3_UNIT_SCALE as u32),
+        original_height: header.object_size[1].saturating_mul(HWP3_UNIT_SCALE as u32),
+        current_width: header.object_size[0].saturating_mul(HWP3_UNIT_SCALE as u32),
+        current_height: header.object_size[1].saturating_mul(HWP3_UNIT_SCALE as u32),
         rotation_angle,
         ..Default::default()
     };
 
     let border_line = ShapeBorderLine {
         color: header.basic_attr.line_color,
-        width: header.basic_attr.line_width as i32 * HWP3_UNIT_SCALE,
+        width: (header.basic_attr.line_width as i64 * HWP3_UNIT_SCALE as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         // [Task #877 Stage 3] HWP3 drawing line_style = 0 (= "선 종류 없음") 인데
         // line_width > 0 인 경우 → 실제 한컴 viewer 는 실선으로 표시. (sample16 RFP
         // 박스 외곽선 회귀: raw line_style=0, line_width=84, line_color=0 검정)
@@ -841,10 +874,10 @@ fn map_to_shape_object(
     let text_box = if (header.basic_attr.options & (1 << 19)) != 0 || !parsed_paragraphs.is_empty()
     {
         Some(TextBox {
-            margin_left: (header.basic_attr.textbox_margin[0] as i32 * HWP3_UNIT_SCALE) as i16,
-            margin_top: (header.basic_attr.textbox_margin[1] as i32 * HWP3_UNIT_SCALE) as i16,
-            margin_right: (header.basic_attr.textbox_margin[0] as i32 * HWP3_UNIT_SCALE) as i16,
-            margin_bottom: (header.basic_attr.textbox_margin[1] as i32 * HWP3_UNIT_SCALE) as i16,
+            margin_left: hwp3_margin_to_i16(header.basic_attr.textbox_margin[0]),
+            margin_top: hwp3_margin_to_i16(header.basic_attr.textbox_margin[1]),
+            margin_right: hwp3_margin_to_i16(header.basic_attr.textbox_margin[0]),
+            margin_bottom: hwp3_margin_to_i16(header.basic_attr.textbox_margin[1]),
             paragraphs: parsed_paragraphs,
             ..Default::default()
         })
@@ -893,4 +926,118 @@ fn map_to_shape_object(
     }
 
     Ok((final_shape, connection_info))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [upstream 손이식] HWP3 그리기 개체 강건성 회귀 (6bcbadcd1·278d1b297)
+// 판정: docs/upstream-이식-대장.md §3-2
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod drawing_robustness_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // [POC] textbox_margin/line_width/object_size 는 파일에서 그대로 읽은 신뢰
+    // 불가 u32 값이다. `* HWP3_UNIT_SCALE(4)` 를 i32/i16 로 계산·캐스팅하는
+    // 과정에서 큰 값(예: u32::MAX)이 들어오면 곱셈이 i32 오버플로를 일으켜
+    // debug 빌드에서 panic 한다(fuzzing/악성 파일 경로에서 서비스 거부).
+    #[test]
+    fn map_to_shape_object_does_not_panic_on_huge_margins() {
+        let header = Hwp3DrawingObjectCommonHeader {
+            object_type: 6, // TextBox
+            object_size: [u32::MAX, u32::MAX],
+            relative_pos: [u32::MAX, u32::MAX],
+            basic_attr: Hwp3DrawingObjectBasicAttr {
+                line_width: u32::MAX,
+                textbox_margin: [u32::MAX, u32::MAX],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let raw = Hwp3DrawingObject::TextBox(
+            header,
+            Hwp3DrawingTextBox {
+                info1_len: 0,
+                info2_len: 0,
+                paragraph_list_data: Vec::new(),
+            },
+        );
+        let mut doc_char_shapes = Vec::new();
+        let mut doc_para_shapes = Vec::new();
+        let mut doc_border_fills = Vec::new();
+        let mut doc_tab_defs = Vec::new();
+        let mut pic_name_to_id = HashMap::new();
+        let result = map_to_shape_object(
+            raw,
+            &mut doc_char_shapes,
+            &mut doc_para_shapes,
+            &mut doc_border_fills,
+            &mut doc_tab_defs,
+            &mut pic_name_to_id,
+        );
+        assert!(
+            result.is_ok(),
+            "거대한 margin/width 값에서도 panic 없이 처리되어야 함"
+        );
+    }
+
+    /// object_type=0(Container)에 connection_info=0x0002(has_child, no
+    /// sibling)만 실은 최소 92바이트 공통 헤더를 만든다.
+    fn container_block() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // header_length
+        buf.extend_from_slice(&0u16.to_le_bytes()); // object_type = 0 (Container)
+        buf.extend_from_slice(&0x0002u16.to_le_bytes()); // connection_info: has_child, !has_sibling
+        buf.extend_from_slice(&[0u8; 8]); // relative_pos
+        buf.extend_from_slice(&[0u8; 8]); // object_size
+        buf.extend_from_slice(&[0u8; 8]); // absolute_pos
+        buf.extend_from_slice(&[0u8; 16]); // bounds
+        buf.extend_from_slice(&[0u8; 32]); // basic_attr: line_style..pattern_color
+        buf.extend_from_slice(&[0u8; 8]); // basic_attr: textbox_margin
+        buf.extend_from_slice(&0u32.to_le_bytes()); // basic_attr: options
+        buf
+    }
+
+    // has_child 는 파일에서 그대로 온 값이라 재귀 깊이 상한이 없으면 Container
+    // 객체를 깊이 중첩한 파일 하나로 네이티브 스택을 고갈시켜 프로세스를
+    // 죽인다(catch_unwind 로 못 잡음). MAX_DRAWING_OBJECT_DEPTH 를 넘는 중첩이
+    // 패닉/abort 대신 파싱 오류로 거부되는지 확인한다.
+    #[test]
+    fn deeply_nested_container_chain_is_rejected_not_stack_overflowed() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&24u32.to_le_bytes()); // frame header_length (<=24: 하이퍼텍스트 없음)
+        buf.extend_from_slice(&0u32.to_le_bytes()); // z_order
+        buf.extend_from_slice(&1u32.to_le_bytes()); // object_count
+        buf.extend_from_slice(&[0u8; 16]); // bounds
+
+        for _ in 0..(MAX_DRAWING_OBJECT_DEPTH as usize + 4) {
+            buf.extend_from_slice(&container_block());
+        }
+
+        let mut doc_char_shapes = Vec::new();
+        let mut doc_para_shapes = Vec::new();
+        let mut doc_border_fills = Vec::new();
+        let mut doc_tab_defs = Vec::new();
+        let mut pic_name_to_id = HashMap::new();
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let result = parse_drawing_object_tree(
+            &mut cursor,
+            &mut doc_char_shapes,
+            &mut doc_para_shapes,
+            &mut doc_border_fills,
+            &mut doc_tab_defs,
+            &mut pic_name_to_id,
+        );
+
+        // 깊이 상한이 EOF 보다 먼저 발화해야 한다 — 오류 종류까지 단언해
+        // "버퍼 소진으로 인한 IoError" 와 구분한다(우리 강화).
+        match result {
+            Err(Hwp3Error::ParseError { ref message }) if message.contains("nesting exceeds") => {}
+            other => panic!(
+                "상한을 넘는 중첩은 깊이 초과 ParseError 로 거부되어야 함: {:?}",
+                other.map(|_| "Ok")
+            ),
+        }
+    }
 }
