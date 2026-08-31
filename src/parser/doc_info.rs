@@ -643,6 +643,8 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape, DocInfoError> {
         strike_shape,
         kerning,
         use_font_space,
+        // [#2364] HWP5 경로에는 HWPX shadow@type 원문이 없다 — None → 종전 규칙.
+        shadow_type_raw: None,
     })
 }
 
@@ -768,6 +770,10 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape, DocInfoError> {
         line_wrap: None,
         text_dir: None,
         checked: None,
+        // [#2364] HWP5 경로에는 autoSpacing 원문이 없다 — None → 직렬화 "0" 기본
+        // (종전 동작 유지). HWPX 원본이 있을 때만 왕복 보존한다.
+        auto_spacing_easian_eng: None,
+        auto_spacing_easian_num: None,
     })
 }
 

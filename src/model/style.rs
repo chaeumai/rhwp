@@ -159,6 +159,16 @@ pub struct CharShape {
     pub kerning: bool,
     /// 글꼴에 어울리는 빈칸 사용 여부 (bit 25)
     pub use_font_space: bool,
+    /// [#2364 한채움 fidelity] HWPX `shadow@type` 원문 보존 (NONE/DROP/CONTINUOUS).
+    ///
+    /// HWP 의 그림자는 **1비트 플래그**라 `DROP` 과 `CONTINUOUS` 를 구분하지 못한다.
+    /// 파서가 둘 다 `shadow_type = 1` 로 접고 직렬화기가 항상 `CONTINUOUS` 를 내보내
+    /// **`DROP` 문단이 왕복 후 `CONTINUOUS` 가 됐다**(충실도 라운드 L1 진짜 손실 2건 —
+    /// 글자 그림자 종류가 바뀐다).
+    ///
+    /// `shadow_type` 은 그대로 두고(레이아웃·HWP5 경로 불변) 원문만 따로 왕복시킨다.
+    /// 파서 미수집 시 None → 종전 규칙(0 이면 NONE, 아니면 CONTINUOUS).
+    pub shadow_type_raw: Option<String>,
 }
 
 /// CharShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
@@ -176,6 +186,7 @@ impl PartialEq for CharShape {
             && self.underline_type == other.underline_type
             && self.outline_type == other.outline_type
             && self.shadow_type == other.shadow_type
+            && self.shadow_type_raw == other.shadow_type_raw
             && self.shadow_offset_x == other.shadow_offset_x
             && self.shadow_offset_y == other.shadow_offset_y
             && self.text_color == other.text_color
@@ -277,6 +288,19 @@ pub struct ParaShape {
     pub text_dir: Option<String>,
     /// [한채움 fidelity] paraPr@checked 원문 보존.
     pub checked: Option<String>,
+    /// [#2364 한채움 fidelity] HWPX `autoSpacing@eAsianEng`/`@eAsianNum` 원문 보존.
+    ///
+    /// 한글–영문 / 한글–숫자 **자동 간격**이다. 파서는 이 값을 어디에도 담지 않았고
+    /// 직렬화기는 `"0"` 을 하드코딩해서, `1` 로 저장된 문단이 왕복 후 `0` 이 됐다
+    /// (충실도 라운드 L1 미분류 4건 = 진짜 의미 손실). 간격이 꺼지면 줄나눔이 달라진다.
+    ///
+    /// ⚠ **HWP `ParaShape.attr1` 로는 옮기지 않는다** — 그 비트(20..21)는 문단 세로
+    /// 정렬이고, autoSpacing 의 HWP 저장 위치는 아직 검증되지 않았다(파서 주석 참조).
+    /// 그래서 `break_latin_word`·`line_wrap` 과 같은 **원문 보존** 방식으로 왕복만 시킨다
+    /// — HWP5 경로와 레이아웃 의미론은 건드리지 않는다.
+    pub auto_spacing_easian_eng: Option<String>,
+    /// [#2364] `autoSpacing@eAsianNum` 원문 보존. `auto_spacing_easian_eng` 와 동일.
+    pub auto_spacing_easian_num: Option<String>,
 }
 
 /// ParaShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
@@ -304,6 +328,8 @@ impl PartialEq for ParaShape {
             && self.line_wrap == other.line_wrap
             && self.text_dir == other.text_dir
             && self.checked == other.checked
+            && self.auto_spacing_easian_eng == other.auto_spacing_easian_eng
+            && self.auto_spacing_easian_num == other.auto_spacing_easian_num
     }
 }
 

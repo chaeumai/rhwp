@@ -762,6 +762,9 @@ fn parse_char_shape(
                                             "DROP" | "CONTINUOUS" => 1,
                                             _ => 0,
                                         };
+                                        // [#2364] HWP 그림자는 1비트라 DROP/CONTINUOUS 를
+                                        // 구분 못 한다 — 원문을 따로 보존해 왕복시킨다.
+                                        cs.shadow_type_raw = Some(val);
                                     }
                                     b"color" => cs.shadow_color = parse_color(&attr),
                                     b"offsetX" => cs.shadow_offset_x = parse_i8(&attr),
@@ -1043,6 +1046,17 @@ fn parse_para_shape_child(
             // HWPX autoSpacing은 HWP ParaShape.attr1 bits 20..21이 아니다.
             // 해당 비트는 문단 세로 정렬이며, <align vertical="...">에서 채운다.
             // autoSpacing의 HWP 저장 위치는 별도 검증 전까지 attr1에 반영하지 않는다.
+            //
+            // [#2364] 다만 **버리지도 않는다** — 종전에는 값을 어디에도 담지 않아
+            // 직렬화기의 하드코딩 "0" 과 만나 `1` 이 왕복 후 `0` 이 됐다(자동 간격이
+            // 꺼져 줄나눔이 달라진다). attr1 로 옮기는 대신 원문 그대로 보존해 왕복시킨다.
+            for attr in ce.attributes().flatten() {
+                match attr.key.as_ref() {
+                    b"eAsianEng" => ps.auto_spacing_easian_eng = Some(attr_str(&attr)),
+                    b"eAsianNum" => ps.auto_spacing_easian_num = Some(attr_str(&attr)),
+                    _ => {}
+                }
+            }
             ParaShapeChildKind::Other
         }
         b"switch" => ParaShapeChildKind::Switch,

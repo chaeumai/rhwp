@@ -650,13 +650,18 @@ fn write_char_pr<W: Write>(
         w,
         "hh:shadow",
         &[
+            // [#2364] 원문 보존값 우선 — 종전에는 shadow_type != 0 을 전부
+            // "CONTINUOUS" 로 내보내 DROP 이 왕복에서 바뀌었다.
+            // 미수집(HWP5 경로 등)이면 종전 규칙 그대로.
             (
                 "type",
-                if cs.shadow_type == 0 {
-                    "NONE"
-                } else {
-                    "CONTINUOUS"
-                },
+                cs.shadow_type_raw.as_deref().unwrap_or({
+                    if cs.shadow_type == 0 {
+                        "NONE"
+                    } else {
+                        "CONTINUOUS"
+                    }
+                }),
             ),
             ("color", &color_hex(cs.shadow_color)),
             ("offsetX", &cs.shadow_offset_x.to_string()),
@@ -1087,10 +1092,21 @@ fn write_para_pr<W: Write>(
         ],
     )?;
 
+    // [#2364] 원문 보존값 방출 — 종전 하드코딩 "0" 은 `1` 로 저장된 문단의
+    // 한글–영문/숫자 자동 간격을 왕복에서 꺼뜨렸다. 파서 미수집이면 종전대로 "0".
     empty_tag(
         w,
         "hh:autoSpacing",
-        &[("eAsianEng", "0"), ("eAsianNum", "0")],
+        &[
+            (
+                "eAsianEng",
+                ps.auto_spacing_easian_eng.as_deref().unwrap_or("0"),
+            ),
+            (
+                "eAsianNum",
+                ps.auto_spacing_easian_num.as_deref().unwrap_or("0"),
+            ),
+        ],
     )?;
 
     // margin + lineSpacing 은 한컴 원본과 동일하게 <hp:switch>(case/default)로 감싼다.

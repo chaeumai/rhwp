@@ -164,6 +164,7 @@ fn test_serialize_char_shape_roundtrip() {
         strike_shape: 0,
         kerning: false,
         use_font_space: false,
+        shadow_type_raw: None,
     };
 
     let data = serialize_char_shape(&cs);
@@ -207,6 +208,7 @@ fn test_serialize_char_shape_use_font_space_bit() {
         shade_color: 0x00FFFFFF,
         shadow_color: 0x00B2B2B2,
         use_font_space: true,
+        shadow_type_raw: None,
         ..Default::default()
     };
 
@@ -249,6 +251,8 @@ fn test_serialize_para_shape_roundtrip() {
         para_level: 0,
         break_latin_word: None,
         line_wrap: None,
+        auto_spacing_easian_eng: None,
+        auto_spacing_easian_num: None,
         text_dir: None,
         checked: None,
     };
@@ -536,6 +540,7 @@ fn test_serialize_doc_info_roundtrip() {
         strike_shape: 0,
         kerning: false,
         use_font_space: false,
+        shadow_type_raw: None,
     });
     doc_info.para_shapes.push(ParaShape {
         raw_data: None,
@@ -559,6 +564,8 @@ fn test_serialize_doc_info_roundtrip() {
         para_level: 0,
         break_latin_word: None,
         line_wrap: None,
+        auto_spacing_easian_eng: None,
+        auto_spacing_easian_num: None,
         text_dir: None,
         checked: None,
     });
