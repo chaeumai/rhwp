@@ -16725,43 +16725,51 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 //   korea p17·p18 을 정확히 예측하지만(각각 1.40pt·0.24pt 차로 기각)
                 //   complex-full 73→66 · jbnu-550 91→49 · synam-001 35→11 로 3문서를
                 //   무너뜨렸다. 한컴이 바깥 여백을 항상 예약하는 것은 아니다.
-                let declared_row_boundary_snap: Option<f64> = (declared_rows_h > 0.0)
-                    .then(|| {
-                        let mut acc = 0.0f64;
-                        let mut at_boundary: Option<f64> = None;
-                        for r in cursor_row..row_count {
-                            if r > cursor_row {
-                                acc += cs;
-                            }
-                            acc += cut_row_h[r];
-                            if let Some(snap) = at_boundary {
-                                // ② 경계 다음 행: 우리 예산은 담는가(담아야 발화),
-                                //    그 다음 행까지 담으면 1행 차가 아니므로 기각.
-                                return if acc <= base {
-                                    // 한 행 더 담았다 — 그 다음 행도 담기는지 확인
-                                    let mut acc2 = acc;
-                                    if let Some(&h2) = cut_row_h.get(r + 1) {
-                                        acc2 += cs + h2;
-                                        if acc2 <= base {
-                                            return None; // 2행 이상 차 — 신뢰하지 않는다
-                                        }
-                                    }
-                                    Some(snap)
-                                } else {
-                                    None // 우리도 그 행을 안 담는다 — 상한이 무의미
-                                };
-                            }
-                            if (acc - declared_rows_h).abs() <= DECLARED_ROW_BOUNDARY_EPS_PX {
-                                at_boundary = Some(acc);
-                                continue;
-                            }
-                            if acc > declared_rows_h + DECLARED_ROW_BOUNDARY_EPS_PX {
-                                return None;
-                            }
+                // 선언이 겹치는 행 경계 — **우리 누적합**과 그 다음 행 인덱스.
+                //
+                // 상한이 걸릴 때 예산은 선언값이 아니라 이 누적합을 쓴다. 둘은 부동소수
+                // 끝자리에서 갈리고, 선언값을 그대로 쓰면 자기 경계 행이 못 들어간다.
+                // ⚠ [#2366-d] 스냅은 **어느 경로로 상한이 걸리든** 적용한다. 종전엔
+                //   조건 ② 를 만족할 때만 계산해서, 8px 근접 경로로 걸린 표가 자기 경계
+                //   행을 부동소수 차로 놓쳤다 — 실측: 표 2084162751(pi=479) 선언 808.0
+                //   = 42행 누적 808.00 인데 `over=0.00` 으로 REJECT → p25 Δ −19.
+                let declared_boundary: Option<(f64, usize)> = if declared_rows_h > 0.0 {
+                    let mut acc = 0.0f64;
+                    let mut found = None;
+                    for r in cursor_row..row_count {
+                        if r > cursor_row {
+                            acc += cs;
                         }
-                        None
-                    })
-                    .flatten();
+                        acc += cut_row_h[r];
+                        if (acc - declared_rows_h).abs() <= DECLARED_ROW_BOUNDARY_EPS_PX {
+                            found = Some((acc, r + 1));
+                            break;
+                        }
+                        if acc > declared_rows_h + DECLARED_ROW_BOUNDARY_EPS_PX {
+                            break;
+                        }
+                    }
+                    found
+                } else {
+                    None
+                };
+                let declared_row_boundary_acc = declared_boundary.map(|(acc, _)| acc);
+                // ② 그 경계가 우리 예산보다 **정확히 한 행 앞**인가 — 8px 근접이 아닌
+                //    표의 상한을 신뢰할 자격. ①(경계 일치)만으로는 모든 접두합을 훑어
+                //    거의 항상 맞아 사실상 가드 해제가 된다(complex-full 73→74쪽 실증).
+                let declared_one_row_ahead = declared_boundary.is_some_and(|(acc, next)| {
+                    let Some(&h1) = cut_row_h.get(next) else {
+                        return false; // 경계가 마지막 행 — 더 담을 것이 없다
+                    };
+                    let one_more = acc + cs + h1;
+                    if one_more > base {
+                        return false; // 우리도 그 행을 안 담는다 — 상한이 무의미
+                    }
+                    match cut_row_h.get(next + 1) {
+                        Some(&h2) => one_more + cs + h2 > base, // 두 행째는 안 담겨야 한다
+                        None => true,
+                    }
+                });
                 let base = if st.is_hwpx_source
                     && !is_continuation
                     && cursor_row == 0
@@ -16769,7 +16777,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     && total_rows_h > declared_rows_h
                     && declared_rows_h < base
                     && (base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
-                        || declared_row_boundary_snap.is_some())
+                        || declared_one_row_ahead)
                 {
                     if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
                         eprintln!(
@@ -16778,8 +16786,9 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                             base - declared_rows_h,
                         );
                     }
-                    // 경계 스냅이 있으면 그것을 쓴다(부동소수 끝자리 회피).
-                    declared_row_boundary_snap.unwrap_or(declared_rows_h)
+                    // 경계 누적합이 있으면 그것을 쓴다(부동소수 끝자리 회피) —
+                    // 상한이 8px 경로로 걸렸든 행 경계 경로로 걸렸든 동일하다(#2366-d).
+                    declared_row_boundary_acc.unwrap_or(declared_rows_h)
                 } else {
                     base
                 };
