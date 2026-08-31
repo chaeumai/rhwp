@@ -16580,6 +16580,66 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     .max(0.0)
             };
 
+            // 선언 높이가 '우리 행 누적합과 겹치는가'의 허용폭 — 반올림 드리프트 급.
+            const DECLARED_ROW_BOUNDARY_EPS_PX: f64 = 0.5;
+
+            // [#2366-c] **연속 조각**의 표 바깥 여백(outMargin) — 선언이 검증된 표 한정.
+            //
+            // 한컴은 이어지는 쪽에서 표 프레임을 본문 상단이 아니라 **본문 상단 +
+            // outMargin.top** 에 다시 그리고, 프레임 바닥 + outMargin.bottom 이 본문
+            // 안에 들어갈 때만 그 행을 담는다. 우리 연속 예산은 신선 full-page 라
+            // 위·아래 둘 다 빠져 있지 않았다.
+            //
+            // 실측 (korea-0005 표 1945909506, outMargin top=bottom=140HU=1.40pt,
+            //       한컴 정본 벡터 괘선 좌표):
+            //   p18 프레임 상단 100.559pt = 본문상단 99.20 + 1.40 ✓
+            //   담은 프레임 642.28pt · 다음 행 12.80 → 655.08 > 654.84 로 0.24pt 차 기각
+            //   → 이 모델로 **4조각 전부 정본과 일치**한다: 컷 0 → 43 → 79 → 124.
+            //
+            // ⚠ **그런데 이 모델은 보편이 아니다.** 전 표에 걸면
+            //   complex-full 73→66 · jbnu-550 91→49 · synam-001 35→11 로 무너진다.
+            //   한컴이 바깥 여백을 항상 예약하지는 않는다 — 그래서 **자격**을 요구한다:
+            //
+            //   **이 표의 선언(hp:sz height)이 우리 행 누적합과 정확히 겹칠 것.**
+            //   (#2366 이 첫 조각에서 쓰는 것과 같은 정합 검사. 그 표는 한컴이 자기
+            //   레이아웃을 파일에 정확히 적어 둔 표이므로, 같은 기하 모델을 그 표의
+            //   연속 조각에도 적용할 근거가 된다.) HWPX 한정도 T6-e 와 같은 이유다
+            //   — 선언 높이를 신뢰하는 것은 HWPX 원본에서만 확인됐다.
+            //
+            // ⚠ 자격 없이 `start_cut` 유무로만 좁힌 안은 **게이트 12문서를 전부
+            //   통과하고도** 코퍼스가 반증했다(issue1937_rowbreak_footnote_overpagination
+            //   50→51쪽 · table_scattered_header_rowbreak 52→54쪽). 게이트만 보지 마라.
+            let page_avail = if is_continuation && st.is_hwpx_source {
+                let declared_rows_h0 = (declared_object_total - host_spacing_total).max(0.0);
+                let declared_coherent = declared_rows_h0 > 0.0 && {
+                    let mut acc = 0.0f64;
+                    let mut hit = false;
+                    for r in 0..row_count {
+                        if r > 0 {
+                            acc += cs;
+                        }
+                        acc += cut_row_h[r];
+                        if (acc - declared_rows_h0).abs() <= DECLARED_ROW_BOUNDARY_EPS_PX {
+                            hit = true;
+                            break;
+                        }
+                        if acc > declared_rows_h0 + DECLARED_ROW_BOUNDARY_EPS_PX {
+                            break;
+                        }
+                    }
+                    hit
+                };
+                if declared_coherent {
+                    let om = hwpunit_to_px(table.outer_margin_top as i32, self.dpi).max(0.0)
+                        + hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi).max(0.0);
+                    (page_avail - om).max(0.0)
+                } else {
+                    page_avail
+                }
+            } else {
+                page_avail
+            };
+
             // [Task #1022] 머리행 반복 overhead — 렌더러(layout_partial_table)는
             // start_row 이전의 반복 제목행을 다시 그리므로(다중 머리행: rs>=2 헤더 셀 등),
             // 페이지네이터도 동일 제목행 전체 높이 + 각 행 뒤 cs 를 계산한다.
@@ -16665,7 +16725,6 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 //   korea p17·p18 을 정확히 예측하지만(각각 1.40pt·0.24pt 차로 기각)
                 //   complex-full 73→66 · jbnu-550 91→49 · synam-001 35→11 로 3문서를
                 //   무너뜨렸다. 한컴이 바깥 여백을 항상 예약하는 것은 아니다.
-                const DECLARED_ROW_BOUNDARY_EPS_PX: f64 = 0.5;
                 let declared_row_boundary_snap: Option<f64> = (declared_rows_h > 0.0)
                     .then(|| {
                         let mut acc = 0.0f64;
