@@ -14872,6 +14872,17 @@ headroom={:.1} nested={} gate={}",
                 // 강제 없음).
                 layout_engine.row_cut_content_height(table, r, row_start_cut, &[], styles)
             };
+            // [진단] 일반 행 수용/기각 판정 덤프 (동작 불변) — 표 행이 어느 쪽에
+            // 실리는지의 최종 결정점이다. korea-0005 p17 조사에서 추가.
+            if std::env::var("RHWP_DIAG_T6B").is_ok() {
+                let rem = avail_for_rows - consumed - cs_before;
+                eprintln!(
+                    "DIAG_T6B SCAN_ROW tid={} r={} row_total={:.2} cs={:.2} consumed={:.2} avail={:.2} rem={:.2} over={:.2} {}",
+                    table.common.instance_id, r, row_total, cs_before, consumed,
+                    avail_for_rows, rem, row_total - rem,
+                    if consumed + cs_before + row_total <= avail_for_rows { "ACCEPT" } else { "REJECT" }
+                );
+            }
             if consumed + cs_before + row_total <= avail_for_rows {
                 // 행 전체가 예산 안에 들어감.
                 consumed += cs_before + row_total;
@@ -16628,13 +16639,78 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 // (stale) 차이가 큰 경우는 신뢰하지 않는다.
                 const DECLARED_FIRST_FRAGMENT_CAP_PX: f64 = 8.0;
                 let declared_rows_h = (declared_object_total - host_spacing_total).max(0.0);
+                // [#2366] 근접(8px) 대신 **행 경계 일치 + 1행 차**로도 선언을 신뢰한다.
+                //
+                // 8px 근접 가드는 stale 선언(편집 후 재레이아웃 안 된 값)을 걸러내려는
+                // 것인데, 근접은 신선함의 대리 지표일 뿐이다. 더 강한 증거 둘을 쓴다:
+                //   ① 선언 높이가 **우리 자신의 행 누적합과 정확히 겹친다**
+                //      (stale 값이 행 경계에 0.5px 안으로 떨어질 이유가 없다)
+                //   ② 그 경계가 우리 예산보다 **정확히 한 행 앞**이다
+                //      (= 파일은 "여기서 끊었다"고 하고 우리는 한 행을 더 담고 있다)
+                // ⚠ ① 만으로는 안 된다 — 모든 접두합을 훑으면 거의 항상 어딘가 맞는다.
+                //    실증: ① 만 걸었더니 complex-full 이 73→74쪽·F 73→8 로 무너졌다
+                //    (선언 상한 발화가 8건 → 13건). ② 가 그 8건을 다시 닫는다.
+                //
+                // 실측 (korea-0005 표 1945909506, 134행 4쪽 분할, HWPX):
+                //   선언 58340HU = 777.87px = **r0..r42(43행) 누적합과 일치**,
+                //   우리 예산 795.0 은 44행(794.93)을 **여유 0.05px** 로 담는다.
+                //   한컴 정본 p17 벡터 괘선도 정확히 43행에서 끊긴다(583.44pt 실측).
+                //   → 44번째 행의 글자수 16이 그대로 p17 Δ+16 이었다.
+                //
+                // 예산은 선언값이 아니라 **누적합**으로 스냅한다 — 둘은 부동소수
+                // 끝자리에서 갈리고(선언 777.8666 vs 누적 777.8667), 선언을 그대로
+                // 쓰면 경계 행이 0.0001px 차로 밀려 42행이 된다(실측).
+                //
+                // ⚠ 함께 실험하고 **기각한 안**: outMargin.bottom 을 예산에서 빼는 모델.
+                //   korea p17·p18 을 정확히 예측하지만(각각 1.40pt·0.24pt 차로 기각)
+                //   complex-full 73→66 · jbnu-550 91→49 · synam-001 35→11 로 3문서를
+                //   무너뜨렸다. 한컴이 바깥 여백을 항상 예약하는 것은 아니다.
+                const DECLARED_ROW_BOUNDARY_EPS_PX: f64 = 0.5;
+                let declared_row_boundary_snap: Option<f64> = (declared_rows_h > 0.0)
+                    .then(|| {
+                        let mut acc = 0.0f64;
+                        let mut at_boundary: Option<f64> = None;
+                        for r in cursor_row..row_count {
+                            if r > cursor_row {
+                                acc += cs;
+                            }
+                            acc += cut_row_h[r];
+                            if let Some(snap) = at_boundary {
+                                // ② 경계 다음 행: 우리 예산은 담는가(담아야 발화),
+                                //    그 다음 행까지 담으면 1행 차가 아니므로 기각.
+                                return if acc <= base {
+                                    // 한 행 더 담았다 — 그 다음 행도 담기는지 확인
+                                    let mut acc2 = acc;
+                                    if let Some(&h2) = cut_row_h.get(r + 1) {
+                                        acc2 += cs + h2;
+                                        if acc2 <= base {
+                                            return None; // 2행 이상 차 — 신뢰하지 않는다
+                                        }
+                                    }
+                                    Some(snap)
+                                } else {
+                                    None // 우리도 그 행을 안 담는다 — 상한이 무의미
+                                };
+                            }
+                            if (acc - declared_rows_h).abs() <= DECLARED_ROW_BOUNDARY_EPS_PX {
+                                at_boundary = Some(acc);
+                                continue;
+                            }
+                            if acc > declared_rows_h + DECLARED_ROW_BOUNDARY_EPS_PX {
+                                return None;
+                            }
+                        }
+                        None
+                    })
+                    .flatten();
                 let base = if st.is_hwpx_source
                     && !is_continuation
                     && cursor_row == 0
                     && declared_rows_h > 0.0
                     && total_rows_h > declared_rows_h
                     && declared_rows_h < base
-                    && base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
+                    && (base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
+                        || declared_row_boundary_snap.is_some())
                 {
                     if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
                         eprintln!(
@@ -16643,7 +16719,8 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                             base - declared_rows_h,
                         );
                     }
-                    declared_rows_h
+                    // 경계 스냅이 있으면 그것을 쓴다(부동소수 끝자리 회피).
+                    declared_row_boundary_snap.unwrap_or(declared_rows_h)
                 } else {
                     base
                 };
