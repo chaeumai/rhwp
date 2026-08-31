@@ -437,7 +437,7 @@ const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 5.0;
 /// (headroom 2.0: 2.9 ↔ 1.3, air 1.0: 2.2 ↔ 0.0).
 /// ⚠ air 는 **우리 측정 기준**으로 계산한다. 파일의 저장 줄흐름 기준으로 계산하면
 /// p14 가 +3.69 로 뒤집혀 축이 무너진다(대장 §3 인용의 계산 기준 오류).
-/// 판정 정본 `rhwp-cai/docs/개선-계획-20260831.md` §1.
+/// 판정 정본 `rhwp-cai/docs/개선-계획-20260831-1219.md` §1.
 const BOTTOM_SQUEEZE_DECLARED_AIR_HEADROOM_PX: f64 = 2.0;
 const BOTTOM_SQUEEZE_DECLARED_AIR_MIN_PX: f64 = 1.0;
 const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
