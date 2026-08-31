@@ -1976,6 +1976,10 @@ impl TypesetState {
     /// 렌더러 build_single_column 진입 정합: page/lazy base·prev 초기화,
     /// anchor 를 현 current_height(컬럼 시작값)로 설정.
     fn reset_vpos_cursor(&mut self) {
+        // [#2362 진단] 저장 앵커 소실 추적 — 동작 불변.
+        if std::env::var("RHWP_DIAG_ANCHOR").is_ok() && self.vpos_page_base_stored {
+            eprintln!("DIAG_ANCHOR RESET cur_h={:.1} items={}", self.current_height, self.current_items.len());
+        }
         self.vpos_page_base = None;
         self.vpos_lazy_base = None;
         self.vpos_page_base_stored = false;
@@ -11602,6 +11606,14 @@ impl TypesetEngine {
         };
         let prev_is_partial_table =
             matches!(st.current_items.last(), Some(PageItem::PartialTable { .. }));
+        // [#2362 진단] safety 면제 판정 입력 — 동작 불변.
+        // 면제 조건은 `stored && base.is_some()` **둘 다**다. 한쪽만 참인 짝 어긋남
+        // (표 뒤 base 무효화가 stored 는 남기는 경로)이 실제 결함이었으므로 함께 찍는다.
+        if std::env::var("RHWP_DIAG_ANCHOR").is_ok() {
+            eprintln!("DIAG_ANCHOR SAFETY? pi={} stored={} base={:?} skip_once={} prev_partial={}",
+                para_idx, st.vpos_page_base_stored, st.vpos_page_base,
+                st.skip_safety_margin_once, prev_is_partial_table);
+        }
         let safety = if st.skip_safety_margin_once {
             st.skip_safety_margin_once = false;
             0.0
@@ -11893,6 +11905,45 @@ impl TypesetEngine {
                     )
                 });
 
+        // [#2362] 저장 flow 가 "쪽 마지막"으로 인코딩한 **다중 줄** 문단 구제.
+        //
+        // 기존 구제 둘(`saved_single_line_bottom_fits`·`saved_list_tail_body_vpos_fits`)은
+        // **1줄 문단 전용**이라, 2줄 이상 문단이 쪽 하단에서 `safety` 마진에만 걸려 기각되면
+        // 마지막 줄 하나가 새 쪽으로 밀려 **가짜 쪽**이 생긴다.
+        //   실문서: 2022년 국립국어원 업무계획 pi=39 — 파일이 ls[1] vpos 68681 + lh 1300
+        //   = 69981 HU 로 본문(70012 HU) 안에 두라고 선언하는데(여유 31.5HU), rhwp 는
+        //   880.4 + 49.3 = 929.7 > 929.5(= 933.5 − safety 4.0) 로 **0.2px 차 기각** →
+        //   22자짜리 p4 가 생기고 이후 전 쪽이 1칸씩 밀린다(F 2/35).
+        //
+        // 발화 범위를 "safety 마진만이 기각 사유인 경우"로 못박는다 — 마지막 조건이
+        // `<= available + safety` 이므로 **진짜 본문을 넘는 문단은 손대지 않는다.**
+        // 저장 근거도 두 겹으로 요구한다: 다음 실줄이 새 쪽으로 리셋(page-last 증거)이고,
+        // **모든 줄의 저장 바닥이 본문 안**(`saved_line_range_fits_body_tail`).
+        //
+        // ⚠ 앵커 경로(`is_hwpx_source` 게이트 2곳)를 푸는 대안은 **기각**했다 —
+        // 국립국어원은 고쳐지지만 `2026_oss_rst.hwp` 가 6→7쪽으로 무너진다(코드 주석의
+        // issue_1418 경고가 그대로 재현). 그 경로는 vpos 사다리 전체를 흔든다.
+        let saved_multiline_body_tail_fits = forced_page_break_line.is_none()
+            && st.col_count == 1
+            && fmt.line_heights.len() >= 2
+            && para.controls.is_empty()
+            && !st.current_items.is_empty()
+            && safety > 0.0
+            && saved_flow_marks_page_last(paragraphs, para_idx)
+            && saved_line_range_fits_body_tail(
+                para,
+                0,
+                para.line_segs.len(),
+                st.base_available_height(),
+                self.dpi,
+            )
+            // 저장 위치와 누적 흐름이 어긋나 있으면 저장값을 믿지 않는다.
+            && para.line_segs.first().is_some_and(|s| {
+                (hwpunit_to_px(s.vertical_pos, self.dpi) - st.current_height).abs() <= 16.0
+            })
+            // **핵심 가드** — safety 마진만 아니었으면 들어갔을 때에만.
+            && st.current_height + fmt.height_for_fit <= available + safety;
+
         // [파리티 라운드3 T3 진단] fit 판정 분해 — 동작 불변.
         if std::env::var("RHWP_DIAG_FIT").is_ok() {
             eprintln!(
@@ -11916,7 +11967,8 @@ impl TypesetEngine {
         if forced_page_break_line.is_none()
             && (st.current_height + fmt.height_for_fit <= available
                 || saved_single_line_bottom_fits
-                || saved_list_tail_body_vpos_fits)
+                || saved_list_tail_body_vpos_fits
+                || saved_multiline_body_tail_fits)
         {
             // place: 전체 배치
             st.current_items.push(PageItem::FullParagraph {
