@@ -6713,6 +6713,34 @@ impl LayoutEngine {
                     break;
                 }
                 if j > start && h + u.height > avail_height {
+                    // [#2363] 저장 vpos 가 **바로 다음 유닛**을 쪽 경계로 못박았고
+                    // (`hard_break_before`), 우리 측정이 **근소하게** 넘친 경우 —
+                    // 그 유닛은 파일 기준 이 쪽 소속이다. 밀면 한 줄짜리 고아가 생기고
+                    // 이후 전 쪽이 1칸씩 밀린다.
+                    //   실문서: synam-001 row=2 cell=1 — 파일이 19유닛을 이 쪽에 두라고
+                    //   하는데(20번째 유닛에 hb) 18유닛에서 끊긴다. 475.2 + 26.4 = 501.6 vs
+                    //   avail 501.2 — **0.4px 초과**. 밀린 줄은 18자, Δ −18 과 정확히 일치.
+                    //
+                    // 허용폭은 누적 반올림 드리프트 급(2px)으로 못박는다 — 줄 높이 26.4px
+                    // 대비 1.5% 다. 한 줄 이상 진짜로 넘치는 유닛은 종전대로 민다.
+                    // 발화 조건이 "다음 유닛이 **파일이 선언한** 쪽 경계"라 임의 위치에서는
+                    // 발동하지 않는다.
+                    const SAVED_BREAK_TAIL_TOLERANCE_PX: f64 = 0.5;
+                    let saved_break_right_after = !u.empty_spacer
+                        && u.vis_start < u.vis_end
+                        && units.get(j + 1).is_some_and(|n| n.hard_break_before)
+                        && h + u.height <= avail_height + SAVED_BREAK_TAIL_TOLERANCE_PX;
+                    if saved_break_right_after {
+                        if std::env::var("RHWP_CUT_DBG").is_ok() {
+                            eprintln!(
+                                "CUT_DBG_SAVED_TAIL j={j} h={h:.1} u={:.1} avail={avail_height:.1} (다음 유닛이 저장 쪽경계)",
+                                u.height
+                            );
+                        }
+                        h += u.height;
+                        j += 1;
+                        continue;
+                    }
                     let visible_tail_before_spacer = relaxed_hard_break
                         && !u.empty_spacer
                         && u.vis_start < u.vis_end
