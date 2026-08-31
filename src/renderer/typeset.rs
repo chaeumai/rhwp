@@ -13094,6 +13094,11 @@ impl TypesetEngine {
             .find(|&i| matches!(para.controls[i], Control::Table(_)));
 
         let mut break_after_current_table = false;
+        // [#2361] #703 데코레이션 단축 분기 계수 — 아래 루프 뒤 호스트 텍스트 구제 판정용.
+        // overlay_shortcut_count: zero-height Shape 로만 나간 글뒤로/글앞으로 표 수.
+        // flow_placed: 흐름을 소비하는 배치(블록 표·TAC·빈-host float·그림/도형)가 1건이라도 있었나.
+        let mut overlay_shortcut_count = 0usize;
+        let mut flow_placed = false;
         for (order_pos, ctrl_idx) in ctrl_order.iter().copied().enumerate() {
             let ctrl = &para.controls[ctrl_idx];
             match ctrl {
@@ -13202,8 +13207,10 @@ impl TypesetEngine {
                             para_index: para_idx,
                             control_index: ctrl_idx,
                         });
+                        overlay_shortcut_count += 1;
                         continue;
                     }
+                    flow_placed = true;
                     let is_column_top = st.current_height < 1.0;
                     let ft = self.format_table(
                         para,
@@ -13338,6 +13345,7 @@ impl TypesetEngine {
                     }
                 }
                 Control::Shape(_) | Control::Picture(_) | Control::Equation(_) => {
+                    flow_placed = true;
                     // Task #402: 같은 paragraph의 선행 TAC 컨트롤이 있는 TAC 그림은
                     // 자기 line_seg에 위치하므로 그 line의 높이를 페이지 누적에 반영해야 함.
                     // 누락 시 후속 항목이 페이지 끝을 넘어 그려져 겹침/오버플로 발생 (#402).
@@ -13430,6 +13438,45 @@ impl TypesetEngine {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // [#2361] 데코레이션(글뒤로/글앞으로) 표만 가진 호스트 문단의 텍스트 구제.
+        //
+        // 위 #703 단축 분기는 데코레이션 표를 zero-height Shape 로 내보내고 `continue`
+        // 한다 — 그 경로에는 호스트 텍스트를 내보내는 지점이 **없다**(텍스트는 원래
+        // typeset_block_table → place_table_with_text 가 pre/post 로 방출한다). 따라서
+        // 문단의 모든 표가 이 단축 분기로 빠지면 **문단의 텍스트 런이 통째로 사라진다.**
+        //   knu-628 pi=125 「[별지 제2호 서식] (규정 제17조) <개정 2024. 5. 17.>」 31자
+        //   — 같은 문서의 별지 머리표 24개 중 이 문단만 「검인」 박스(글뒤로 1×1 표,
+        //   treatAsChar=0 / vertRelTo=PARA)를 품고 있어 이 문단만 소실됐다.
+        //
+        // 데코레이션 표는 흐름을 소비하지 않으므로, 남은 호스트는 **평범한 본문 문단**
+        // 이다. 그대로 흘려보내고 높이도 누적한다(후속 문단·표가 그만큼 내려간다).
+        //
+        // 순서: Shape 를 **먼저** 넣고 텍스트를 나중에 넣는다. layout_shape_item 이
+        // `para_start_y.entry(pi).or_insert(y_offset)` 로 앵커를 잡으므로, 텍스트를
+        // 앞에 넣으면 vertRelTo=PARA 부동 개체가 텍스트 높이만큼 함께 내려간다.
+        //
+        // 가드 — 빈 데코레이션 호스트(워터마크/배경 래퍼 등 #703 본래 대상)와
+        // 흐름 배치가 섞인 문단은 종전 동작 그대로다:
+        //   · 단축 분기가 1건 이상 발동했고
+        //   · 흐름을 소비하는 배치(블록 표·TAC 표·빈-host float·그림/도형)가 0건이며
+        //   · 호스트에 보이는 텍스트가 있고
+        //   · 같은 문단의 문단 항목이 아직 없을 때만.
+        if overlay_shortcut_count > 0 && !flow_placed && para_has_visible_text(para) {
+            let already_emitted = st.current_items.iter().any(|item| {
+                matches!(item, PageItem::FullParagraph { para_index }
+                    | PageItem::PartialParagraph { para_index, .. }
+                    if *para_index == para_idx)
+            });
+            let host_lines = fmt.line_heights.len();
+            if !already_emitted && host_lines > 0 {
+                st.ensure_page();
+                st.current_items.push(PageItem::FullParagraph {
+                    para_index: para_idx,
+                });
+                st.current_height += fmt.line_advances_sum(0..host_lines);
             }
         }
 
@@ -19520,6 +19567,106 @@ mod tests {
             1,
             "[BUG #703] typeset 도 1 페이지여야 함. 결함 시 BehindText 표 height ≈800 px 가 \
              cur_h 에 가산되어 후속 paragraph 가 다음 페이지로 밀림 (RED)",
+        );
+    }
+
+    /// [#2361] 글뒤로(BehindText) 데코레이션 표를 품은 **텍스트 있는** 호스트 문단의
+    /// 텍스트가 통째로 사라지지 않아야 한다.
+    ///
+    /// 결함(수정 전): #703 단축 분기가 데코레이션 표를 zero-height Shape 로 내보내고
+    /// `continue` 하는데 그 경로에 호스트 텍스트 방출 지점이 없어(텍스트는 원래
+    /// typeset_block_table → place_table_with_text 가 방출), 문단의 모든 표가 이 분기로
+    /// 빠지면 텍스트 런이 전부 증발했다.
+    ///   실문서: knu-628 p6 「[별지 제2호 서식] (규정 제17조) <개정 2024. 5. 17.>」 31자
+    ///   — 별지 머리표 24개 중 「검인」 박스(글뒤로 1×1 표)를 품은 이 문단만 소실.
+    ///
+    /// 검증축 둘:
+    ///   ① 호스트 문단 항목이 방출된다 (텍스트 소실 없음)
+    ///   ② 흐름 누적은 **호스트 텍스트 높이만** — 데코레이션 표 높이(≈800px)는 안 든다
+    ///      (#703 시멘틱 유지: 후속 문단이 같은 쪽에 남는다)
+    #[test]
+    fn test_typeset_2361_behind_text_table_keeps_host_text() {
+        use crate::model::shape::TextWrap;
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let composed: Vec<ComposedParagraph> = Vec::new();
+
+        let mut table = crate::model::table::Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![crate::model::table::Cell {
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: 7442,
+                height: 9674,
+                paragraphs: vec![Paragraph::default()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        table.common.text_wrap = TextWrap::BehindText;
+        table.common.treat_as_char = false;
+        table.common.width = 7442;
+        table.common.height = 60000; // ≈800px — 흐름에 들면 후속 문단이 다음 쪽으로 밀린다
+
+        // knu-628 pi=125 형상: 텍스트 런 + 글뒤로 부동 표가 같은 문단에 공존.
+        let host_para = Paragraph {
+            text: "[별지 제2호 서식] (규정 제17조)".to_string(),
+            line_segs: vec![LineSeg {
+                line_height: 1200,
+                text_height: 1200,
+                line_spacing: 480,
+                ..Default::default()
+            }],
+            controls: vec![crate::model::control::Control::Table(Box::new(table))],
+            ..Default::default()
+        };
+
+        let mut paras = vec![host_para];
+        for _ in 0..5 {
+            paras.push(make_paragraph_with_height(1000));
+        }
+
+        let paginator = Paginator::with_default_dpi();
+        let (_, measured) =
+            paginator.paginate(&paras, &composed, &styles, &page_def, &col_def, 0);
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        // ① 호스트 문단(pi=0)의 텍스트 항목이 방출됐는가
+        let host_emitted = result.pages.iter().any(|page| {
+            page.column_contents.iter().any(|col| {
+                col.items.iter().any(|item| {
+                    matches!(item, PageItem::FullParagraph { para_index: 0 }
+                        | PageItem::PartialParagraph { para_index: 0, .. })
+                })
+            })
+        });
+        assert!(
+            host_emitted,
+            "[#2361] 글뒤로 데코레이션 표 호스트의 텍스트 문단 항목이 방출되어야 한다 \
+             (결함 시 텍스트 런이 통째로 사라진다)",
+        );
+
+        // ② #703 시멘틱 유지 — 데코레이션 표 높이는 흐름에 들지 않는다
+        assert_eq!(
+            result.pages.len(),
+            1,
+            "[#2361] 호스트 텍스트(≈22px)만 누적되어야 하므로 6 문단이 1 쪽에 들어간다 \
+             — 표 높이 800px 가 흐름에 들면 쪽이 갈린다(#703 회귀)",
         );
     }
 
