@@ -421,6 +421,25 @@ const BOTTOM_SQUEEZE_MAX_REST_PX: f64 = 100.0;
 /// "이 쪽에 담김"과 "통째 이월"을 구분하지 못한다 — 두 경우 다 리셋이 없다.
 /// complex p67 r29(여유 2.9px) 경계는 다른 판별 축을 찾기 전까지 잔여로 둔다.
 const BOTTOM_SQUEEZE_MIN_HEADROOM_PX: f64 = 5.0;
+/// [파리티 라운드5 T6-f] 압축의 **두 번째 문**: 선언 행높이 안에 실제로 빈 자리가
+/// 남는 행에 한해 headroom 문턱을 5.0 → 2.0 으로 낮춘다. 상수 하향(전역 5→2)이 두 번
+/// 기각된 이유는 headroom 단독으로는 한컴이 압축하는 행과 이월하는 행을 **원리적으로**
+/// 가를 수 없기 때문이다 — complex-full 실측에서 이월된 p14 r25 의 headroom(3.2)이
+/// 압축된 p67 r29(2.9)보다 크다.
+///
+/// 판별축은 `air = 선언 행높이 − (콘텐츠 + 셀 여백)` 이다. complex-full 압축 후보 8건
+/// 전수(진단 `SQUEEZE_ROW?`/`SQUEEZE_BAND?`, 표 id·쪽 확정):
+///
+///   한컴 압축: p21 air +25.3 · p52 +5.3 · **p67 +2.2**
+///   한컴 이월: p14 −0.6 · p15 0.0 · p16 0.0 · p59 +7.5(headroom 1.3) · p66 −0.0
+///
+/// 두 문턱은 통과해야 할 값과 막아야 할 값 사이에 여유를 두고 잡았다
+/// (headroom 2.0: 2.9 ↔ 1.3, air 1.0: 2.2 ↔ 0.0).
+/// ⚠ air 는 **우리 측정 기준**으로 계산한다. 파일의 저장 줄흐름 기준으로 계산하면
+/// p14 가 +3.69 로 뒤집혀 축이 무너진다(대장 §3 인용의 계산 기준 오류).
+/// 판정 정본 `rhwp-cai/docs/개선-계획-20260831.md` §1.
+const BOTTOM_SQUEEZE_DECLARED_AIR_HEADROOM_PX: f64 = 2.0;
+const BOTTOM_SQUEEZE_DECLARED_AIR_MIN_PX: f64 = 1.0;
 const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
 /// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
 /// 제한된 tail 경로에만 허용하는 누적 높이 drift 완화값.
@@ -14817,13 +14836,38 @@ headroom={:.1} over={:.1} decl={:.1} slack={:.1} fully={} nested={} gate={}",
                         probe.fully_consumed
                             && !row_has_nested
                             && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
-                            && rest - probe.consumed_height >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                            && (rest - probe.consumed_height >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                                || (rest - probe.consumed_height
+                                    >= BOTTOM_SQUEEZE_DECLARED_AIR_HEADROOM_PX
+                                    && slack >= BOTTOM_SQUEEZE_DECLARED_AIR_MIN_PX))
                     );
                 }
+                // [T6-f] 선언 행높이의 빈 자리(air) 기준 두 번째 문 — 위 상수 주석 참조.
+                // 선언이 이미 콘텐츠로 꽉 찬 행(air ≤ 0)은 누르지 않는다.
+                let declared_air = {
+                    let row_decl_max = table
+                        .cells
+                        .iter()
+                        .filter(|c| {
+                            c.row as usize == r && c.row_span == 1 && c.height < 0x8000_0000
+                        })
+                        .map(|c| hwpunit_to_px(c.height as i32, self.dpi))
+                        .fold(0.0f64, f64::max);
+                    let pad = layout_engine.row_remaining_visible_padding_height(
+                        table,
+                        r,
+                        row_start_cut,
+                        styles,
+                    );
+                    row_decl_max - (probe.consumed_height + pad)
+                };
+                let headroom = rest - probe.consumed_height;
                 if probe.fully_consumed
                     && !row_has_nested
                     && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
-                    && rest - probe.consumed_height >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                    && (headroom >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                        || (headroom >= BOTTOM_SQUEEZE_DECLARED_AIR_HEADROOM_PX
+                            && declared_air >= BOTTOM_SQUEEZE_DECLARED_AIR_MIN_PX))
                 {
                     consumed += cs_before + row_total;
                     r += 1;
