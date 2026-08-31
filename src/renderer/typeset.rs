@@ -4629,6 +4629,16 @@ impl TypesetEngine {
             section_index,
         );
 
+        // [T6-f 진단] 섹션별 쪽수 — DIAG_SCAN 의 page 는 **섹션 로컬**이다.
+        // 이 줄들을 순서대로 누적하면 문서 절대 쪽으로 환산된다 (동작 불변).
+        if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+            eprintln!(
+                "DIAG_SCAN SECTION_END sec={} pages={}",
+                section_index,
+                st.pages.len()
+            );
+        }
+
         PaginationResult {
             pages: st.pages,
             wrap_around_paras: Vec::new(),
@@ -14286,12 +14296,49 @@ impl TypesetEngine {
             mut split_end_limit,
         } = scan;
         let mut r = cursor_row;
+        // [T6-f 진단] 스캔 정체 — HWPX `hp:tbl@id`(instance_id)·섹션·현재 쪽.
+        // 종전 DIAG_SCAN 은 행 번호만 찍어 "r=25 가 어느 표의 어느 쪽인가"가 추정으로
+        // 서 있었다 (기각 실험 2건의 파손 경로가 아직 특정되지 않은 이유). 동작 불변.
+        let diag_scan = std::env::var("RHWP_DIAG_SCAN").is_ok();
+        let diag_tag = if diag_scan {
+            format!(
+                "tid={} sec={} page={}",
+                table.common.instance_id,
+                st.section_index,
+                // 쪽은 **섹션 로컬**. push_new_page 가 쪽 시작에 push 하므로
+                // 채우는 중인 쪽 번호 = pages.len() (CUT_DBG_DEFER 와 같은 규약).
+                st.pages.len().max(1)
+            )
+        } else {
+            String::new()
+        };
+        // [T6-f 진단] 압축 판별 후보 축 — 선언 행높이(decl) 와
+        // slack = decl - (저장 줄흐름 + 셀 여백). 대장 §3 이 인용한 축이며
+        // 진단에서만 계산한다(동작 불변).
+        let diag_row_decl_slack = |row: usize| -> (f64, f64) {
+            if !diag_scan {
+                return (0.0, 0.0);
+            }
+            let decl = table
+                .cells
+                .iter()
+                .filter(|c| c.row as usize == row && c.row_span == 1 && c.height < 0x8000_0000)
+                .map(|c| hwpunit_to_px(c.height as i32, self.dpi))
+                .fold(0.0f64, f64::max);
+            // 저장 줄흐름 = 예산 무제한 컷의 소진 높이, 여백 = 행 표시 패딩.
+            // row_cut_content_height 는 비분할 행에서 선언 높이로 강제될 수 있어
+            // slack 이 항상 0 으로 보인다 — 축 계산에 쓰면 안 된다.
+            let full = layout_engine.advance_row_cut(table, row, &[], 1.0e9, styles);
+            let pad = layout_engine.row_remaining_visible_padding_height(table, row, &[], styles);
+            (decl, decl - (full.consumed_height + pad))
+        };
         // [T6-b 진단] 스캔 식별 — row_count/cursor/avail 로 대상 표 특정 (동작 불변).
-        // DIAG_SCAN 의 행 단위 로그는 어느 표의 스캔인지 구분이 안 돼 경계 추적이
-        // 어렵다 (complex sec10 은 한 쪽에 표 스캔이 10건 넘게 뜬다).
         if std::env::var("RHWP_DIAG_T6B").is_ok() {
             eprintln!(
-                "DIAG_T6B SCAN_ENTER rows={} cursor={} avail={:.1} consumed0={:.1} cont={} hdr_ovh={:.1}",
+                "DIAG_T6B SCAN_ENTER tid={} sec={} page={} rows={} cursor={} avail={:.1} consumed0={:.1} cont={} hdr_ovh={:.1}",
+                table.common.instance_id,
+                st.section_index,
+                st.pages.len().max(1),
                 row_count, cursor_row, avail_for_rows, consumed, is_continuation, header_overhead
             );
         }
@@ -14460,9 +14507,9 @@ impl TypesetEngine {
                 // 페이지 시작 행(r==cursor_row)은 더 미룰 수 없으므로 무조건 분할.
                 let genuinely_page_larger = block_h > st.base_available_height();
                 // [#2097 진단] 블록 컷/이월 결정 입력 — 동작 불변.
-                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                if diag_scan {
                     eprintln!(
-                        "DIAG_SCAN BLOCK_DECIDE r={} b={}..{} block_h={:.1} rest={:.1} budget={:.1} cut_h={:.1} fully={} hard={} rbrb={} pglarger={}",
+                        "DIAG_SCAN {diag_tag} BLOCK_DECIDE r={} b={}..{} block_h={:.1} rest={:.1} budget={:.1} cut_h={:.1} fully={} hard={} rbrb={} pglarger={}",
                         r,
                         b_start,
                         b_end,
@@ -14520,9 +14567,9 @@ impl TypesetEngine {
                         &offsets,
                         styles,
                     );
-                    if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                    if diag_scan {
                         eprintln!(
-                            "DIAG_SCAN BLOCK_BAND? r={} b={}..{} budget={:.1} cut_h={:.1} fully={} end_cut={:?}",
+                            "DIAG_SCAN {diag_tag} BLOCK_BAND? r={} b={}..{} budget={:.1} cut_h={:.1} fully={} end_cut={:?}",
                             r,
                             b_start,
                             b_end,
@@ -14629,10 +14676,20 @@ impl TypesetEngine {
                                     .any(|ctrl| matches!(ctrl, Control::Table(_)))
                             })
                     });
-                    if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                    if diag_scan {
                         eprintln!(
-                            "DIAG_SCAN SQUEEZE_BLOCK? r={}..{} block_h={:.1} content={:.1} rest={:.1} nested={}",
-                            r, b_end, block_h, block_content, rest, block_has_nested
+                            "DIAG_SCAN {diag_tag} SQUEEZE_BLOCK? r={}..{} block_h={:.1} content={:.1} rest={:.1} \
+headroom={:.1} nested={} gate={}",
+                            r,
+                            b_end,
+                            block_h,
+                            block_content,
+                            rest,
+                            rest - block_content,
+                            block_has_nested,
+                            rest - block_content >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
+                                && !block_has_nested
+                                && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
                         );
                     }
                     // [#2097 프로브 기록] 쪽 끝자락 한정(rest ≤ MAX_REST) 완화는 반증됨:
@@ -14672,9 +14729,9 @@ impl TypesetEngine {
                     continue;
                 }
                 // [#2236 진단] rowspan 행 경계 정지 — 동작 불변.
-                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                if diag_scan {
                     eprintln!(
-                        "DIAG_SCAN RSPAN_STOP r={} consumed={:.1} h={:.1} avail={:.1} rest={:.1}",
+                        "DIAG_SCAN {diag_tag} RSPAN_STOP r={} consumed={:.1} h={:.1} avail={:.1} rest={:.1}",
                         r,
                         consumed,
                         h,
@@ -14742,10 +14799,25 @@ impl TypesetEngine {
                                 .any(|ctrl| matches!(ctrl, Control::Table(_)))
                         })
                 });
-                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                if diag_scan {
+                    let (decl, slack) = diag_row_decl_slack(r);
                     eprintln!(
-                        "DIAG_SCAN SQUEEZE_ROW? r={} row_total={:.1} content={:.1} rest={:.1} fully={} nested={}",
-                        r, row_total, probe.consumed_height, rest, probe.fully_consumed, row_has_nested
+                        "DIAG_SCAN {diag_tag} SQUEEZE_ROW? r={} row_total={:.1} content={:.1} rest={:.1} \
+headroom={:.1} over={:.1} decl={:.1} slack={:.1} fully={} nested={} gate={}",
+                        r,
+                        row_total,
+                        probe.consumed_height,
+                        rest,
+                        rest - probe.consumed_height,
+                        consumed + cs_before + row_total - avail_for_rows,
+                        decl,
+                        slack,
+                        probe.fully_consumed,
+                        row_has_nested,
+                        probe.fully_consumed
+                            && !row_has_nested
+                            && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
+                            && rest - probe.consumed_height >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
                     );
                 }
                 if probe.fully_consumed
@@ -14808,9 +14880,9 @@ impl TypesetEngine {
             let splittable = can_intra_split && mt.is_row_splittable(r);
             if !splittable {
                 // [#2236 진단] 분할 불가 정지 — 동작 불변.
-                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                if diag_scan {
                     eprintln!(
-                        "DIAG_SCAN UNSPLITTABLE r={} consumed={:.1} row_total={:.1} rest={:.1}",
+                        "DIAG_SCAN {diag_tag} UNSPLITTABLE r={} consumed={:.1} row_total={:.1} rest={:.1}",
                         r,
                         consumed,
                         row_total,
@@ -14834,9 +14906,9 @@ impl TypesetEngine {
             let budget = (avail_for_cut - consumed - cs_before - padding).max(0.0);
             let res = layout_engine.advance_row_cut(table, r, row_start_cut, budget, styles);
             // [#2236 진단] 인트라 컷 시도 결과 — 동작 불변.
-            if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+            if diag_scan {
                 eprintln!(
-                    "DIAG_SCAN CUT_TRY r={} budget={:.1} padding={:.1} consumed_h={:.1} fully={} end_cut={:?}",
+                    "DIAG_SCAN {diag_tag} CUT_TRY r={} budget={:.1} padding={:.1} consumed_h={:.1} fully={} end_cut={:?}",
                     r, budget, padding, res.consumed_height, res.fully_consumed, res.end_cut
                 );
             }
@@ -14883,6 +14955,28 @@ impl TypesetEngine {
                                 })
                         })
                 };
+                // [T6-f 진단] 밴드 컷 게이트 — 발화(BAND_CUT)만 찍던 종전 진단은
+                // **기각된 후보를 안 보여 줬다**. 상수 하향 실험이 어느 행을 새로
+                // 열었는지 사후 특정할 수 없었던 구멍이 여기다. 동작 불변.
+                if diag_scan {
+                    let (decl, slack) = diag_row_decl_slack(r);
+                    let rest = (avail_for_rows - consumed - cs_before).max(0.0);
+                    eprintln!(
+                        "DIAG_SCAN {diag_tag} SQUEEZE_BAND? r={} row_total={:.1} content={:.1} rest={:.1} \
+headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_cut={}",
+                        r,
+                        row_total,
+                        res.consumed_height,
+                        rest,
+                        rest - res.consumed_height,
+                        budget,
+                        decl,
+                        slack,
+                        rowspan_touched[r],
+                        squeeze_band,
+                        !res.end_cut.is_empty()
+                    );
+                }
                 let band_cut_ok = (rowspan_touched[r] || squeeze_band)
                     && mt.allows_row_break_split()
                     && r > cursor_row
@@ -14895,9 +14989,9 @@ impl TypesetEngine {
                     split_end_cut = res.end_cut.clone();
                     split_end_limit = budget.max(res.consumed_height);
                     consumed += cs_before + split_end_limit;
-                    if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                    if diag_scan {
                         eprintln!(
-                            "DIAG_SCAN BAND_CUT r={} limit={:.1} content={:.1} row_total={:.1}",
+                            "DIAG_SCAN {diag_tag} BAND_CUT r={} limit={:.1} content={:.1} row_total={:.1}",
                             r, split_end_limit, res.consumed_height, row_total
                         );
                     }
@@ -14928,9 +15022,9 @@ impl TypesetEngine {
                 {
                     let hb_tol = HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX;
                     if ladder_h > budget + hb_tol && ladder_h > res.consumed_height + hb_tol {
-                        if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                        if diag_scan {
                             eprintln!(
-                                "DIAG_SCAN LADDER_DEFER r={} budget={:.1} cut_h={:.1} ladder={:.1}",
+                                "DIAG_SCAN {diag_tag} LADDER_DEFER r={} budget={:.1} cut_h={:.1} ladder={:.1}",
                                 r, budget, res.consumed_height, ladder_h
                             );
                         }
@@ -14965,9 +15059,9 @@ impl TypesetEngine {
                         ladder_h <= budget + BOTTOM_SQUEEZE_TOLERANCE_PX
                             && res.consumed_height <= ladder_h + 2.0
                     });
-            if t6b_ladder_keep && std::env::var("RHWP_DIAG_SCAN").is_ok() {
+            if t6b_ladder_keep && diag_scan {
                 eprintln!(
-                    "DIAG_SCAN T6B_LADDER_KEEP r={} budget={:.1} cut_h={:.1}",
+                    "DIAG_SCAN {diag_tag} T6B_LADDER_KEEP r={} budget={:.1} cut_h={:.1}",
                     r, budget, res.consumed_height
                 );
             }
@@ -15036,9 +15130,9 @@ impl TypesetEngine {
                         && (avail_for_rows - consumed) <= BOTTOM_SQUEEZE_MAX_REST_PX
                         && res.consumed_height >= MIN_TOP_KEEP_PX
                     {
-                        if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                        if diag_scan {
                             eprintln!(
-                                "DIAG_SCAN SQUEEZE_CUT r={} cand={:.1} avail={:.1} cut_h={:.1}",
+                                "DIAG_SCAN {diag_tag} SQUEEZE_CUT r={} cand={:.1} avail={:.1} cut_h={:.1}",
                                 r, split_candidate_rows_height, avail_for_rows, res.consumed_height
                             );
                         }
