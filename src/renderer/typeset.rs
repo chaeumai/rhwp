@@ -16168,12 +16168,58 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     && row_cut_h
                         > mt.row_heights[r] + HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX;
                 let allow_rowspan_content_height = row_content_significantly_exceeds_stored;
-                if rowspan_touched[r] && (!has_single_row_cells || !allow_rowspan_content_height) {
+                let h = if rowspan_touched[r]
+                    && (!has_single_row_cells || !allow_rowspan_content_height)
+                {
                     mt.row_heights[r]
                 } else if has_single_row_cells {
                     row_cut_h
                 } else {
                     mt.row_heights[r]
+                };
+                // [#2367] 쪽나눔 예산의 행높이가 **렌더러 측정치보다 작아지지 않게** 한다.
+                //
+                // 위 주석이 스스로 "HeightMeasurer 와 정합된"이라 선언하는 불변식인데,
+                // 퇴화한 선언 셀높이에서 깨진다. `resolve_cell_padding` 의 [Task #501]
+                // 가드(셀 선언 높이보다 상하 여백 합이 크거나 같으면 여백을 절반으로
+                // 압축)가 `cellSz height` 가 여백 합과 **동률**인 셀에서 발화하는데,
+                // 행의 셀이 **전부** 그런 값이면 행 max 가 구제하지 못해 예산 행높이만
+                // 줄어든다. 렌더러는 그 행을 원래 높이로 그리므로 예산이 실제보다
+                // 넓어지고, 그 가짜 여유가 다음 쪽 행을 한 칸 삼킨다.
+                //
+                // 실측 (korea-0005, HWPX):
+                //   표 1236130248(pi=545) r=42 · 표 1877878866(pi=588) r=42 —
+                //   6칸 전부 `cellSz height="280"`(2.80pt) 이고 표 inMargin top=bottom=140
+                //   → 3.7333px 여백이 3.7333px 선언과 동률 → 가드 발화 → 행높이
+                //   17.07 → **15.20px**(정확히 pad/2 = 1.87px 결손).
+                //   그 1.87px 이 r=78 판정에서 `over=-1.55 ACCEPT` 라는 가짜 여유가 되고,
+                //   보정하면 `over=+0.33 REJECT` 로 정본과 같아진다.
+                //   한컴 정본 p42 벡터 괘선: 37밴드(머리행+36행) vs 우리 38밴드 — 1행 차.
+                //   문서 전체 24개 분할 표 중 `mt_sum > cut_sum` 인 것은 이 둘뿐이다.
+                //
+                // ⚠ **#501 가드 자체는 건드리지 않는다.** 호출처 15곳이 렌더 지오메트리를
+                //   움직이고, 퇴화 cellSz 재해석은 #501 의 발단 사례(mel-001 h=1280HU,
+                //   pad=3400HU)를 되돌린다 — complex-full 의 mel-001 패턴 행이 튄다.
+                //   여기서는 **예산 축만** 렌더러 측정치로 되돌린다.
+                //
+                // ⚠ 자격 둘로 좁힌다:
+                //   ① `is_hwpx_source` — 이것은 **원인이 아니라 봉쇄 장치**다. 결함은
+                //      포맷 무관이지만, 코퍼스 340문서 전수 계측에서 `mt > cut` 인 표는
+                //      43개/19문서/288행이고 그중 알려진 지뢰가 전부 `.hwp` 다. 특히
+                //      `issue1937_rowbreak_footnote_overpagination.hwp` 는 같은 +1.87px
+                //      서명을 72행 갖고 있는데 **현재 50쪽 = 한글 2022 정본과 정확히 일치**
+                //      한다(mydocs/report/task_m100_1937_report.md). 그 문서를 건드리는
+                //      쪽이 회귀다. T6-e·#2366-c 가 이미 같은 논리로 좁혀 두었다.
+                //   ② `MAX_BUDGET_ROW_HEIGHT_LIFT_PX` — 결손이 여백 절반(≈1.87px) 급일
+                //      때만. 크게 어긋나는 행은 다른 원인이므로 이 수리의 대상이 아니다.
+                const MAX_BUDGET_ROW_HEIGHT_LIFT_PX: f64 = 2.0;
+                if st.is_hwpx_source
+                    && h < mt.row_heights[r]
+                    && mt.row_heights[r] - h <= MAX_BUDGET_ROW_HEIGHT_LIFT_PX
+                {
+                    mt.row_heights[r]
+                } else {
+                    h
                 }
             })
             .collect();
