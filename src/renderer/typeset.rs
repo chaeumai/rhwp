@@ -15151,7 +15151,29 @@ headroom={:.1} over={:.1} decl={:.1} slack={:.1} fully={} nested={} gate={}",
             }
             // 행 r 이 예산 초과 — 인트라-분할 시도.
             // [Task #77] 분할 불가 행(이미지 셀 등)은 통째 배치 / 다음 페이지.
-            let splittable = can_intra_split && mt.is_row_splittable(r);
+            //
+            // [#2374] 저장 사다리가 셀 안 쪽나눔을 하나도 기록하지 않은 표는 인트라-셀
+            // 컷을 하지 않는다 — 한컴이 그 표를 **행 경계에서만** 잘랐다는 직접 증거다.
+            // 이 판정은 `can_intra_split`(표 단위)을 뒤집지 않고 **여기 한 곳에만** 건다:
+            // Task #874 force-split(16437)과 밴드 컷 경로를 건드리지 않기 위해서다.
+            //
+            // ⚠ 모델 이름이 직관과 반대다 — `CellBreak`(1) = "셀 단위로 나눔" = 인트라-로우
+            //   분할 **허용**, `RowBreak`(2) = "나눔(행 단위)" = 행 경계만. 그래서 이 규칙은
+            //   `allows_row_break_split()` 이 **거짓**인 표(= CellBreak)에만 건다. RowBreak
+            //   표는 애초에 인트라-로우 분할을 선언하지 않았고, 게이트 문서의 사다리 리셋 0
+            //   표(complex-full sec6/pi20 · korea-0005 sec0/pi744)가 전부 그쪽이다.
+            //
+            // 실측(aift 구역2 pi=123): 셀 123개 전부 리셋 0 → r=5 통째 다음 쪽 → Δ+93 소멸.
+            let ladder_forbids_intra_cut = !mt.allows_row_break_split()
+                && layout_engine.table_ladder_forbids_intra_cell_cut(table, styles) == Some(true);
+            if diag_scan && ladder_forbids_intra_cut {
+                eprintln!(
+                    "DIAG_SCAN {diag_tag} LADDER_NO_INTRA r={} consumed={:.1} row_total={:.1}",
+                    r, consumed, row_total
+                );
+            }
+            let splittable =
+                can_intra_split && mt.is_row_splittable(r) && !ladder_forbids_intra_cut;
             if !splittable {
                 // [#2236 진단] 분할 불가 정지 — 동작 불변.
                 if diag_scan {

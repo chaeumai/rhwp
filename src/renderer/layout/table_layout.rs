@@ -5232,6 +5232,49 @@ impl LayoutEngine {
     /// [파리티 라운드3 B-T4] 새 행 첫 조각의 저장 사다리 — row_span==1 셀 중 첫 vpos 리셋
     /// (`hard_break_before`) 앞까지의 유닛 누적 높이 최댓값. 리셋이 없는 행은 None.
     /// 한컴이 이 행의 첫 조각을 얼마나 두었는지의 증거(550 p20 r4 cell2: 38유닛 = 한 쪽).
+    /// [#2374] 표 전체의 저장 사다리가 **셀 안 쪽나눔을 하나도 기록하지 않았는가.**
+    ///
+    /// 한컴이 남긴 셀 `LINE_SEG` vpos 리셋은 "여기서 쪽이 넘어갔다"는 직접 증거다 —
+    /// 라운드3 B-T4(`LADDER_DEFER`)와 라운드4 T6-b(`t6b_ladder_keep`)가 이미 그 증거로
+    /// **어디서 자를지**를 정한다. 그런데 리셋이 **하나도 없을 때**의 뜻은 안 읽고 있었다:
+    /// 표가 실제로 쪽을 넘는데 셀 안 리셋이 0 이면 **한컴은 그 표를 행 경계에서만 잘랐다.**
+    ///
+    /// 실측(2026-09-01, `samples/aift.hwp` 구역2 pi=123, 13행×10열): 셀 123개 전부 리셋 0이고
+    /// r=5 col8 은 vpos 가 `0,1040,2080,3120,4160,5200,6240` 으로 연속 증가한다. 한컴 정본은
+    /// 이 표를 실제로 쪽 넘김에도 r=5 를 통째로 다음 쪽에 둔다. 우리는 인트라-셀 컷으로
+    /// 25줄을 앞쪽에 더 담아 Δ+93 을 만들었다.
+    ///
+    /// 반환값의 `None` 이 중요하다 — **사다리가 말이 없는 것과 "리셋이 없다"는 다르다.**
+    /// 저장 lineseg 가 아예 없는 문서에서 `Some(true)` 를 돌려주면 근거 없이 컷을 막는다.
+    pub(crate) fn table_ladder_forbids_intra_cell_cut(
+        &self,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+    ) -> Option<bool> {
+        // 사다리가 실제로 채워져 있는가 — 둘째 문단 이후의 첫 seg 가 양의 vpos 를 갖는
+        // 셀이 하나라도 있어야 "리셋 0" 이 정보가 된다.
+        let ladder_populated = table.cells.iter().any(|c| {
+            c.paragraphs.iter().skip(1).any(|p| {
+                p.line_segs
+                    .first()
+                    .is_some_and(|s| s.vertical_pos > 0 && s.line_height > 0)
+            })
+        });
+        if !ladder_populated {
+            return None;
+        }
+        for cell in &table.cells {
+            if self
+                .cell_units(cell, table, styles)
+                .iter()
+                .any(|u| u.hard_break_before)
+            {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     pub(crate) fn row_stored_first_fragment_height(
         &self,
         table: &crate::model::table::Table,
