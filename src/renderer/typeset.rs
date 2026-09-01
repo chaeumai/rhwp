@@ -454,6 +454,22 @@ const TAIL_BREAK_OVERFLOW_TOLERANCE_PX: f64 = 20.0;
 const HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 64.0;
 /// [Task #2085] 표 분할 첫 조각에 남길 최소 상단 높이 / RowBreak 말미 빈 행 허용 오버플로.
 const MIN_TOP_KEEP_PX: f64 = 25.0;
+
+/// [#2375] 저장 흐름 되감김을 **강제 쪽나눔으로 읽는** 최소 채움 비율.
+///
+/// 되감김 신호 자체는 쪽 어디서나 나올 수 있는데, 쪽 **첫머리**에서 그것을 강제로 읽으면
+/// 거의 빈 쪽이 생긴다. 표적과 오탐이 `cur_h` 축에서 완전히 갈린다 (2026-09-01 실측):
+///   sungeo 표적 9곳      cur_h 791.5 ~ 869.3  (본문 876.8px 의 0.90~0.99)
+///   complex-full 오탐 2곳 cur_h  43.0 /  50.2  (0.049 / 0.057)
+/// 사이가 740px 비어 있어 0.5 는 어느 쪽으로도 여유가 크다.
+const SAVED_FLOW_PAGE_LAST_MIN_FILL_RATIO: f64 = 0.5;
+
+/// [#2375] 되감김의 **착지점이 쪽 상단인가**를 가르는 상한 (HWPUNIT).
+///
+/// sungeo 표적 9곳은 전부 착지 vpos = **400**(= 4.0pt, 쪽 첫 문단이 갖는 값)이다.
+/// 반면 오탐은 **0** 이 지배적인데, 0 은 "쪽 상단"이 아니라 "자기 좌표계의 원점"이라
+/// 쪽 경계 증거가 못 된다. 한 줄 높이(1400HU ≈ 18.7px) 근방을 상한으로 둔다.
+const SAVED_FLOW_PAGE_TOP_MAX_VPOS_HU: i32 = 1400;
 /// [#2097] 쪽 하단 압축 수용치 — 한글은 쪽 경계에서 행/블록이 잔여를 이 이내로
 /// 초과하면 압축해 끼워 넣는다 (1741000 실측 초과 10.4px 수용).
 const BOTTOM_SQUEEZE_TOLERANCE_PX: f64 = 13.0;
@@ -3467,7 +3483,57 @@ impl TypesetEngine {
                 st.behind_float_table_para = None;
             }
 
-            if (force_page_break || para_style_break || variant_vpos_reset_break)
+            // [#2375] 저장 흐름이 "직전 문단이 그 쪽의 마지막" 이라고 적었으면 여기서 끊는다.
+            //
+            // `saved_flow_marks_page_last` 는 이미 있는 판정기인데 지금까지 **직전 문단을
+            // 살려두는** 근거로만 쓰였다(`saved_single_line_bottom_fits` 등). 같은 신호를
+            // **현재 문단을 밀어내는** 근거로는 안 썼다 — 그 비대칭이 sungeo 결함 9쌍이다.
+            //
+            // 실측(2026-09-01, `samples/basic/sungeo.hwp` 94쪽): 같은 구역 안 vpos 되감김
+            // 81곳 중 우리가 쪽을 안 끊은 곳이 **정확히 9곳**이고, 그 9곳이 결함 9쌍과
+            // **1:1 대응**한다(잉여 0·누락 0). 한컴은 이 문서에서 (a) 본문문단을 쪽경계로
+            // 쪼갠 적 0회 (b) 글머리표 제목줄로 쪽을 끝낸 적 0회다.
+            //
+            // ⚠ **가드는 여유가 아니라 `cur_h` 축이다.** 여유 축으로 가르면 게이트가 깨진다 —
+            //   complex-full 의 오탐 2곳은 쪽 **첫머리**(cur_h 43.0 / 50.2)라 여유가 826~834px
+            //   이나 되어 "여유 ≥ 한 줄" 가드를 그냥 통과하고, 발화하면 거의 빈 쪽이 생긴다.
+            //   `cur_h` 로 가르면 표적(791.5~869.3)과 오탐(43.0/50.2) 사이가 **740px** 비어 있다.
+            //
+            // ⚠ HWP3 변환본은 바로 위 `variant_vpos_reset_break` 가 맡는다 — 중복 판정 금지.
+            // ⚠ 개체 문단 제외 — 앵커·그림의 vpos 는 흐름 사다리가 아니다.
+            // ⚠ **다단 문서에서는 vpos 감소가 쪽나눔이 아니라 단(column) 나눔이다.**
+            //   실측: exam-kor-2018·lang21-2018(2단 시험지)에서 되감김 직후 문단의 vpos0 이
+            //   전부 0 이고, 이 판정을 걸면 F 20→5 · 15→0 으로 무너진다. 단단 한정.
+            // ⚠ **되감김의 착지점이 쪽 상단이어야 한다.** sungeo 표적 9곳은 전부 vpos0=400
+            //   (쪽 첫 문단이 갖는 값)인데, 오탐은 vpos0=0 이 지배적이다 — 0 은 "쪽 상단"이
+            //   아니라 "자기 좌표계의 원점"이라 쪽 경계 증거가 아니다.
+            let landing_vpos = para
+                .line_segs
+                .iter()
+                .find(|ls| !is_synthetic_line_seg(ls))
+                .map(|ls| ls.vertical_pos);
+            let saved_flow_page_break_before = !is_hwp3_variant
+                && st.col_count == 1
+                && para_idx > 0
+                && !para.text.trim().is_empty()
+                && para.controls.is_empty()
+                && landing_vpos.is_some_and(|v| v > 0 && v < SAVED_FLOW_PAGE_TOP_MAX_VPOS_HU)
+                && st.current_height
+                    >= st.base_available_height() * SAVED_FLOW_PAGE_LAST_MIN_FILL_RATIO
+                && saved_flow_marks_page_last(paragraphs, para_idx - 1);
+            if saved_flow_page_break_before && std::env::var("RHWP_DIAG_FIT").is_ok() {
+                eprintln!(
+                    "DIAG_FIT SAVED_FLOW_BREAK pi={} cur_h={:.1} base_avail={:.1} text={:?}",
+                    para_idx,
+                    st.current_height,
+                    st.base_available_height(),
+                    para.text.chars().take(20).collect::<String>(),
+                );
+            }
+            if (force_page_break
+                || para_style_break
+                || variant_vpos_reset_break
+                || saved_flow_page_break_before)
                 && !st.current_items.is_empty()
             {
                 st.force_new_page();
