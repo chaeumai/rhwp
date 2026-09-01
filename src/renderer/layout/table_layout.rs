@@ -7017,6 +7017,67 @@ impl LayoutEngine {
     /// 위쪽 큰 셀이 페이지 경계에서 잘릴 때 아래 행의 짧은 셀까지 먼저 소비할 수 있다.
     /// 이 함수는 행별 top offset을 빼고 남은 예산으로 셀을 전진시켜 같은 블록 안의
     /// 아래 행 내용이 한컴처럼 다음 조각에 남도록 한다.
+    /// [#2368] 밴드 컷이 **온전한 행 경계**에서 끊겼는가.
+    ///
+    /// `advance_row_block_cut_with_row_offsets` 의 `end_cut` 을 그 함수와 **같은 셀 순서**
+    /// (`row_block_cells` → `(row, col)` 정렬)로 다시 훑어, 어떤 행 k 가 존재해서
+    ///   · 행 < k 의 모든 셀이 유닛을 **전부** 소비했고
+    ///   · 행 ≥ k 의 모든 셀이 **하나도** 소비하지 않았는가
+    /// 를 본다. 참이면 그 컷은 셀 중간을 자른 것이 아니라 행 경계에서 끊긴 것이다.
+    ///
+    /// ⚠ **`end_cut` 의 모양(값)으로 판정하면 안 된다.** 실측 반례:
+    ///   korea-0005 p89 블록 b=66..68  end_cut `[1,1,1,1,1,0,0,0]` — r66 셀 전부 유닛 1개
+    ///     → 진짜 행 경계
+    ///   pr-1674 p2 블록 b=4..7        end_cut `[1,1,1,1,1,0,0,0]` — r4 셀 유닛 1·3·3·4·3
+    ///     → 셀 중간 컷
+    /// **모양이 글자 그대로 같다.** 반드시 `cell_units(...).len()` 과 대조해야 갈린다.
+    pub(crate) fn block_cut_is_clean_row_boundary(
+        &self,
+        table: &crate::model::table::Table,
+        b_start: usize,
+        b_end: usize,
+        end_cut: &[usize],
+        styles: &ResolvedStyleSet,
+    ) -> bool {
+        let mut cells = Self::row_block_cells(table, b_start, b_end);
+        cells.sort_by_key(|c| (c.row, c.col));
+        if cells.len() != end_cut.len() {
+            return false;
+        }
+        // 소비가 끊긴 첫 행 = 경계 후보 k.
+        let mut boundary: Option<usize> = None;
+        for (i, cell) in cells.iter().enumerate() {
+            let consumed = end_cut[i];
+            let total = self.cell_units(cell, table, styles).len();
+            let row = cell.row as usize;
+            if consumed == 0 {
+                // 이 행부터는 아무것도 안 담겼어야 한다.
+                boundary = Some(boundary.map_or(row, |k| k.min(row)));
+            } else if consumed != total {
+                return false; // 셀 중간 컷 — 행 경계가 아니다
+            }
+        }
+        let Some(k) = boundary else {
+            return false; // 전부 소비 = 밴드 컷이 아니다(fully_consumed 경로)
+        };
+        if k <= b_start || k >= b_end {
+            return false; // 블록 안에서 갈리지 않았다
+        }
+        // k 를 확정했으니 양쪽 모두 검사한다.
+        for (i, cell) in cells.iter().enumerate() {
+            let consumed = end_cut[i];
+            let total = self.cell_units(cell, table, styles).len();
+            if (cell.row as usize) < k {
+                if consumed != total {
+                    return false;
+                }
+            } else if consumed != 0 {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(crate) fn advance_row_block_cut_with_row_offsets(
         &self,
         table: &crate::model::table::Table,

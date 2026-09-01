@@ -14697,7 +14697,42 @@ impl TypesetEngine {
                             res2.end_cut
                         );
                     }
-                    if !res2.fully_consumed && res2.consumed_height >= MIN_TOP_KEEP_PX {
+                    // [#2368] 밴드 컷 채택 조건에 **온전한 행 경계**를 더한다.
+                    //
+                    // 종전 조건은 "밴드가 예산 안에 `MIN_TOP_KEEP_PX`(25px) 이상 담겼는가"
+                    // 하나였다. 그런데 rowspan 보호 블록이 **행 하나만** 담기는 경우
+                    // (그 행 높이가 25px 미만이면) 밴드 채택이 거부되고 블록이 통째로
+                    // 이월된다 — 한컴은 그 행을 이 쪽에 두는데도.
+                    //
+                    // 실측 (korea-0005 p89, 표 1143381221 pi=744, 블록 b=66..68):
+                    //   budget 27.1px · 블록 콘텐츠 62.9px · 밴드 워크가 r66 한 행
+                    //   (13.3px)만 담고 `fully=false` 로 멈춘다 → 13.3 < 25.0 이라 기각.
+                    //   정본은 r66(국제법무학과…, 31자)까지 p89 에 두고 r67(경찰법학과,
+                    //   **18자**)을 p90 반복머리 아래로 넘긴다 — 그 18자가 p89 Δ+18 이다.
+                    //   음성 대조군 p67 은 같은 게이트에서 블록 전체(62.9px)가 budget
+                    //   75.5px 안에 `fully=true` 로 들어가므로 이 완화와 무관하다.
+                    //
+                    // ⚠ **`MIN_TOP_KEEP_PX` 를 낮추는 안은 불가**하다. 코퍼스 638파일에서
+                    //   `fully=false` 밴드 사이트의 cut_h 를 오름차순으로 세면
+                    //   23.5(pr-1674, 오라클 없음) → 41.1 → 42.7 → … 이라, korea 의
+                    //   13.3px 에 닿으려면 pr-1674 를 먼저 지나야 한다. 상수 창과
+                    //   목표값의 교집합이 **공집합**이다 — 술어로만 갈린다.
+                    //   그 상수는 11곳이 공유하므로 손대지 않는다.
+                    //
+                    // ⚠ **`end_cut` 의 모양으로 판정하면 안 된다** — pr-1674 p2 블록의
+                    //   end_cut 이 korea p89 와 글자 그대로 같다(`[1,1,1,1,1,0,0,0]`).
+                    //   `cell_units(...).len()` 과 대조해야 갈린다(술어 안 주석 참조).
+                    let band_is_clean_row_boundary = layout_engine
+                        .block_cut_is_clean_row_boundary(
+                            table,
+                            b_start,
+                            b_end,
+                            &res2.end_cut,
+                            styles,
+                        );
+                    if !res2.fully_consumed
+                        && (res2.consumed_height >= MIN_TOP_KEEP_PX || band_is_clean_row_boundary)
+                    {
                         band_fill = Some((res2, offsets));
                     }
                 }
