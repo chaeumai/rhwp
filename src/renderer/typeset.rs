@@ -45,6 +45,48 @@ struct BlockTableRowScan {
     split_end_limit: f64,
 }
 
+/// [#2370] `#2366-c` 자격 연속 조각의 **행 수용 판정에만** 요구하는 추가 여유 (px).
+///
+/// # 무엇을 고치나
+/// 우리 연속 표 프레임 예산이 정본보다 넓다. korea-0005 정본 132쪽에서 연속 조각
+/// 프레임 하단은 **754.320pt 를 한 번도 넘지 않고** 12쪽(p66·67·74·75·83·84·85·89·92·
+/// 94·106·113)이 정확히 그 값에 닿는다. 그 12쪽의 프레임 높이는 전부 **653.761pt** 이고
+/// 우리 예산은 654.82pt → **잔차 1.06pt**. 머리행 크기가 다른 3계열(12.72/15.60/23.76pt)
+/// 에서 +1.00/+0.98/+1.05pt 로 재현되므로 머리행 산정 오차가 아니다.
+/// **제2의 정본에서도 재현된다** — `table_scattered_header_rowbreak-2024.pdf`(HWPX,
+/// 다른 용지·다른 본문높이 756.86pt): 프레임 상단 58.017 = 본문상단 56.69 + outMargin 1.33,
+/// 하단 캡 811.153, 본문하단 813.55 → **잔차 0.99pt**. 두 문서가 ≈1.0pt 로 일치한다.
+///
+/// # 값이 왜 1.41px(=1.06pt)가 아닌가 — ⚠ 정직하게 기록한다
+/// 실측 잔차 1.06pt = **1.41px** 를 그대로 넣으면 `table_scattered_header_rowbreak`
+/// (한컴 정본 52쪽 보유)가 **52 → 53쪽**, 총 |Δ| **370 → 5142** 로 무너진다.
+/// 원인은 그 문서의 p4(여유 1.06px)·p17(1.22px) 조각이 함께 뒤집히는 것이다.
+///
+/// 그래서 **코퍼스가 정한 창**을 쓴다(§D-8: "얼마면 충분한가"가 아니라 "얼마부터 다른
+/// 경로와 어긋나는가"). 게이트 12 + 코퍼스 재귀 640문서의 `RHWP_DIAG_T6B` 여유 census:
+/// ```
+/// 하한 0.450px  korea-0005 p55   ← 넘어야 표적이 뒤집힌다
+/// 상한 1.060px  task1716/table_scattered_header_rowbreak.hwpx p4  ← 넘으면 회귀
+/// ```
+/// 창 **(0.450, 1.060)** 의 중점 부근인 **0.75** 를 쓴다 — 양 경계에서 가장 멀다.
+///
+/// ⚠ **실측 잔차(1.33~1.41px)가 이 창 밖이다.** 둘 중 하나가 미해결이다 —
+/// (a) 잔차가 표마다 다르거나 (b) task1716 p4 의 뒤집힘이 실은 옳고 그 파급이 그 문서의
+/// **다른 결함**을 드러내는 것이거나. 그 문서는 이미 F 1 / tol 밖 43쪽이라 판단 근거가
+/// 약하다. **1.06pt 의 구조적 정체도 미규명**이다(그 표의 하단 테두리는 `type="NONE"`
+/// 이라 선폭 0.4mm=1.134pt 로 설명되지 않는다).
+///
+/// # 왜 `avail_for_rows` 를 직접 깎지 않나
+/// `avail_for_cut` 이 별도인 것과 같은 이유다. 정본에서 **셀 분할 쪽의 프레임은 캡까지
+/// 늘어난다**(complex-full p4·p5·p6 하단이 전부 744.363 인데 p5 마지막 텍스트는 724.18
+/// 에서 끝난다). 이 캡이 증언하는 것은 **행 경계**이지 행 안의 줄 위치도, #2097 압축
+/// 게이트의 허용폭도 아니다. 예산을 통째로 깎으면 complex-full 이 F 73 → 4 로 무너진다.
+///
+/// # 검증
+/// 게이트 12문서: korea-0005 **F 54 → 83**(첫 어긋남 p55 → p84), 나머지 11문서 불변.
+/// 한컴 정본을 가진 코퍼스 HWPX 18문서: **전부 불변**(쪽수·F·총 |Δ|).
+const HANCOM_CONT_FRAME_RESIDUAL_PX: f64 = 0.75;
+
 /// [#2085] 표 행-스캔의 조각-스코프 읽기 스칼라 묶음.
 #[derive(Clone, Copy)]
 struct BlockRowScanVars {
@@ -60,6 +102,20 @@ struct BlockRowScanVars {
     /// 컷까지 상한하면 3.3px 축소가 줄 하나(18.3px)를 통째로 밀어낸다
     /// (complex-full sec8 pi=6 실측). 상한이 없을 때는 avail_for_rows 와 같다.
     avail_for_cut: f64,
+    /// [#2370] **행 수용 판정에만** 요구하는 추가 여유(px). 0 이면 종전과 동일.
+    ///
+    /// `#2366-c` 자격 연속 조각의 예산이 정본보다 넓다는 실측에서 나온다 —
+    /// 한컴 연속 표 프레임 높이 **653.761pt**(korea-0005 132쪽 중 12쪽이 정확히
+    /// 그 값, 초과 0쪽, 머리행 크기 3계열 전부 동일) vs 우리 654.82pt →
+    /// **잔차 1.06pt = 1.41px**.
+    ///
+    /// ⚠ **`avail_for_rows` 자체를 깎지 않는다.** `avail_for_cut` 이 별도인 것과
+    /// 같은 이유다 — 정본에서 **셀 분할 쪽의 프레임은 캡까지 늘어난다**(실측:
+    /// complex-full p4·p5·p6 하단이 전부 744.363 인데 p5 마지막 텍스트는 724.18 에서
+    /// 끝난다). 즉 이 캡이 증언하는 것은 **행 경계**이지 행 안의 줄 위치도,
+    /// 압축 게이트의 허용폭도 아니다. 예산을 통째로 깎으면
+    /// complex-full 이 F 73 → 4 로 무너진다(선행 실측).
+    row_accept_margin: f64,
     header_overhead: f64,
     landscape_rowbreak_bleed: bool,
     landscape_whole_row_tolerance: f64,
@@ -14399,6 +14455,7 @@ impl TypesetEngine {
             is_continuation,
             avail_for_rows,
             avail_for_cut,
+            row_accept_margin,
             header_overhead,
             landscape_rowbreak_bleed,
             landscape_whole_row_tolerance,
@@ -14875,7 +14932,35 @@ headroom={:.1} nested={} gate={}",
                 mt.allows_row_break_split() && can_intra_split && mt.is_row_splittable(r);
             if rowspan_touched[r] && !rowbreak_rowspan_row_splittable {
                 let h = cut_row_h[r];
-                if r == cursor_row || consumed + cs_before + h <= avail_for_rows {
+                // [#2369 계측 정정] 이 분기의 **수용**에 진단이 없었다 — 아래 RSPAN_STOP 은
+                // 정지만 찍는다. 그래서 rowspan 행이 조용히 배치되면 로그의 마지막
+                // `SCAN_ROW … ACCEPT` 가 실제 소진을 반영하지 않고, "마지막 ACCEPT 의
+                // 잔여"를 조각 여유로 읽으면 **한 행분(여기선 17.07px)만큼 과대**해진다.
+                //
+                // 실측 손해: korea-0005 p55 의 진짜 여유는 **0.44px**(문서 62개 연속 조각
+                // 중 최솟값)인데, r=72 가 이 분기로 조용히 배치돼 로그에는 r=71 의
+                // `over=-17.51` 만 남았다. 그 17.51 을 여유로 읽어 **같은 문서에서 세 번**
+                // (진단 2회 + 후속 브리프) "p55 는 아슬아슬하지 않다"는 잘못된 결론이 나왔고,
+                // 그 결론 위에서 프레임 캡 가설이 한 번 폐기됐다가 되살아났다.
+                //
+                // 그러므로 **수용도 찍는다.** 형식은 일반 행의 SCAN_ROW 와 맞춘다
+                // (r/row_total/consumed/avail/over/판정) — 두 로그를 한 줄로 이어 읽을 수
+                // 있어야 여유 census 가 정확해진다.
+                if std::env::var("RHWP_DIAG_T6B").is_ok() {
+                    let rem = avail_for_rows - consumed - cs_before - row_accept_margin;
+                    let accept = r == cursor_row
+                        || consumed + cs_before + h + row_accept_margin <= avail_for_rows;
+                    eprintln!(
+                        "DIAG_T6B SCAN_ROW tid={} r={} row_total={:.2} cs={:.2} consumed={:.2} avail={:.2} rem={:.2} over={:.2} {} RSPAN{}",
+                        table.common.instance_id, r, h, cs_before, consumed,
+                        avail_for_rows, rem, h - rem,
+                        if accept { "ACCEPT" } else { "REJECT" },
+                        if r == cursor_row { "/FORCED" } else { "" }
+                    );
+                }
+                if r == cursor_row
+                    || consumed + cs_before + h + row_accept_margin <= avail_for_rows
+                {
                     consumed += cs_before + h;
                     r += 1;
                     end_row = r;
@@ -14910,15 +14995,15 @@ headroom={:.1} nested={} gate={}",
             // [진단] 일반 행 수용/기각 판정 덤프 (동작 불변) — 표 행이 어느 쪽에
             // 실리는지의 최종 결정점이다. korea-0005 p17 조사에서 추가.
             if std::env::var("RHWP_DIAG_T6B").is_ok() {
-                let rem = avail_for_rows - consumed - cs_before;
+                let rem = avail_for_rows - consumed - cs_before - row_accept_margin;
                 eprintln!(
                     "DIAG_T6B SCAN_ROW tid={} r={} row_total={:.2} cs={:.2} consumed={:.2} avail={:.2} rem={:.2} over={:.2} {}",
                     table.common.instance_id, r, row_total, cs_before, consumed,
                     avail_for_rows, rem, row_total - rem,
-                    if consumed + cs_before + row_total <= avail_for_rows { "ACCEPT" } else { "REJECT" }
+                    if consumed + cs_before + row_total + row_accept_margin <= avail_for_rows { "ACCEPT" } else { "REJECT" }
                 );
             }
-            if consumed + cs_before + row_total <= avail_for_rows {
+            if consumed + cs_before + row_total + row_accept_margin <= avail_for_rows {
                 // 행 전체가 예산 안에 들어감.
                 consumed += cs_before + row_total;
                 r += 1;
@@ -16690,6 +16775,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             // ⚠ 자격 없이 `start_cut` 유무로만 좁힌 안은 **게이트 12문서를 전부
             //   통과하고도** 코퍼스가 반증했다(issue1937_rowbreak_footnote_overpagination
             //   50→51쪽 · table_scattered_header_rowbreak 52→54쪽). 게이트만 보지 마라.
+            let mut c2366c_applied = false;
             let page_avail = if is_continuation && st.is_hwpx_source {
                 let declared_rows_h0 = (declared_object_total - host_spacing_total).max(0.0);
                 let declared_coherent = declared_rows_h0 > 0.0 && {
@@ -16711,6 +16797,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     hit
                 };
                 if declared_coherent {
+                    c2366c_applied = true;
                     let om = hwpunit_to_px(table.outer_margin_top as i32, self.dpi).max(0.0)
                         + hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi).max(0.0);
                     (page_avail - om).max(0.0)
@@ -16957,6 +17044,12 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     is_continuation,
                     avail_for_rows,
                     avail_for_cut: avail_for_rows_uncapped,
+                    // [#2370] 정본 연속 프레임 잔차 — 행 수용 판정에만 요구한다.
+                    row_accept_margin: if c2366c_applied {
+                        HANCOM_CONT_FRAME_RESIDUAL_PX
+                    } else {
+                        0.0
+                    },
                     header_overhead,
                     landscape_rowbreak_bleed,
                     landscape_whole_row_tolerance,
@@ -17050,6 +17143,8 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                                 is_continuation,
                                 avail_for_rows: avail_refit,
                                 avail_for_cut: avail_refit,
+                                // 앵커 재적합 경로 — 프레임 캡과 무관하므로 0.
+                                row_accept_margin: 0.0,
                                 header_overhead,
                                 landscape_rowbreak_bleed,
                                 landscape_whole_row_tolerance,
