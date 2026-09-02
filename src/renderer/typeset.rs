@@ -16792,6 +16792,9 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             // 이중차감 → 분할 예산이 짧아져 RowBreak 컷이 소스 hard_break 보다 조기 발동
             // (공공데이터법 라벨 −23pt / p45 +40.8pt). 이 클래스만 current_height 대신
             // para_start_height 기준으로 예산을 잡는다.
+            // [#2377] CellBreak(셀 단위 나눔) 표는 첫·연속 조각 모두 outMargin 을 예약한다 (아래 주석).
+            let cellbreak_om =
+                matches!(table.page_break, crate::model::table::TablePageBreak::CellBreak);
             let is_empty_host_column_float = !is_continuation
                 && !table.common.treat_as_char
                 && vert_offset_overhead > 0.0
@@ -16826,11 +16829,19 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     - vert_offset_overhead)
                     .max(0.0)
             } else {
+                // [#2377] CellBreak 표의 첫 조각: 프레임 바닥 + outMargin.bottom 이 본문 안에
+                // 들어야 담는다 (위 주석 실측). outMargin.top 은 host_spacing.before 에 이미 있다.
+                let om_bottom_first = if cellbreak_om {
+                    hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi).max(0.0)
+                } else {
+                    0.0
+                };
                 (table_available
                     - st.current_height
                     - caption_extra
                     - host_before_overhead
-                    - vert_offset_overhead)
+                    - vert_offset_overhead
+                    - om_bottom_first)
                     .max(0.0)
             };
 
@@ -16863,10 +16874,22 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             // ⚠ 자격 없이 `start_cut` 유무로만 좁힌 안은 **게이트 12문서를 전부
             //   통과하고도** 코퍼스가 반증했다(issue1937_rowbreak_footnote_overpagination
             //   50→51쪽 · table_scattered_header_rowbreak 52→54쪽). 게이트만 보지 마라.
+            // [#2377] **CellBreak(셀 단위 나눔) 표는 자격 없이** 같은 모델을 쓴다 — 첫 조각은
+            // 프레임 바닥 + outMargin.bottom 이 본문 안에 들 때만 행을 담고(아래 첫 조각 예산),
+            // 연속 조각은 본문상단 + outMargin.top 에서 시작해 바닥 + outMargin.bottom 까지.
+            // 실측 (hwpctl_Action_Table__v1.1, HWP5, 313행 CellBreak, outMargin 0.5mm=1.88px,
+            //       한컴 2022 정본 괘선): p2 첫 조각 프레임 상단 58.5 = 본문상단 56.7 + 1.88 ·
+            //   헤더+28행 끝 715.6 · 다음 행 20.79 → 736.8 > 본문하단 736.6 으로 **0.13px 거부**.
+            //   우리는 예약이 없어 735.1 ≤ 737.0 으로 담았다(#2376 trail 수리 전에는 행 3개가
+            //   4px 씩 과대해 상쇄돼 있었다). 이 자격으로 hwpctl F 1 → 16 완주.
+            // ⚠ RowBreak 표에는 걸지 않는다 — 보편 적용은 jbnu-550 91→49(1×1 거대 셀 연속 조각)·
+            //   complex-full 73→66(110행 표 첫 조각)·form-002·pic-in·issue1949 를 깨고, 그 감도가
+            //   첫/연속 조각으로 갈려 판별축이 아직 없다(korea-0005 p84 는 이 모델이 맞다 — 보편
+            //   적용 시 83→132 완주). 판정 docs/표행높이-trail제외-outMargin자격-20260902-*.md §5.
             let mut c2366c_applied = false;
-            let page_avail = if is_continuation && st.is_hwpx_source {
+            let page_avail = if is_continuation && (st.is_hwpx_source || cellbreak_om) {
                 let declared_rows_h0 = (declared_object_total - host_spacing_total).max(0.0);
-                let declared_coherent = declared_rows_h0 > 0.0 && {
+                let declared_coherent = st.is_hwpx_source && declared_rows_h0 > 0.0 && {
                     let mut acc = 0.0f64;
                     let mut hit = false;
                     for r in 0..row_count {
@@ -16884,8 +16907,10 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     }
                     hit
                 };
-                if declared_coherent {
-                    c2366c_applied = true;
+                if declared_coherent || cellbreak_om {
+                    // [#2370] 추가 여유(c2366c_applied)는 선언 검증 조각에만 — CellBreak 자격은
+                    // hwpctl 실측에서 여유 없이 정합했다.
+                    c2366c_applied = declared_coherent;
                     let om = hwpunit_to_px(table.outer_margin_top as i32, self.dpi).max(0.0)
                         + hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi).max(0.0);
                     (page_avail - om).max(0.0)
