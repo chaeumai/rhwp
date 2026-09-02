@@ -380,18 +380,32 @@ impl HeightCursor {
         let compact_endnote_bottom_rewind = self.suppress_large_forward_jump
             && vpos_rewind
             && y_offset > self.col_area_y + self.col_area_height * 0.75;
-        let vpos_end = match curr_first_vpos {
+        let (vpos_end, vpos_end_is_prev_fallback) = match curr_first_vpos {
             Some(v)
                 if (self.allow_vpos_rewind
                     || compact_endnote_bottom_rewind
                     || compact_endnote_tac_picture_rewind)
                     && vpos_rewind =>
             {
-                v
+                (v, false)
             }
-            Some(v) if v > seg.vertical_pos && !curr_has_topbottom_para_table => v,
-            _ => prev_vpos_end,
+            Some(v) if v > seg.vertical_pos && !curr_has_topbottom_para_table => (v, false),
+            // 저장 vpos 가 이전 문단보다 작다 = 쪽/단 리셋 좌표라 못 쓴다 → 이전 문단 끝으로 대체.
+            // (자리차지 표 호스트의 의도적 폴백과 구분한다.)
+            Some(v) if v <= seg.vertical_pos && !curr_has_topbottom_para_table => {
+                (prev_vpos_end, true)
+            }
+            _ => (prev_vpos_end, false),
         };
+        // [#2378] vpos_end 가 **쪽 리셋 폴백**(이전 문단 끝)이면 그 값에는 현재 문단의 앞 간격이
+        // 없다 — [Task #643] 의 sb 사전 차감은 "저장 vpos 에 앞 간격이 들어 있다"는 전제라 여기서는
+        // 이중 차감이 된다. 실측 pr-1674 p11 pi=116(머리표, 저장 vpos 500 = 쪽 리셋): 자연 흐름
+        // 891.15px(=66836HU, 한컴 저장 vpos 와 일치)을 884.48 로 되감아 표가 1.37px 여유로 p11 에
+        // 남았고, 한컴은 표 top 897.8(앞 간격 500HU 적용, 오라클 p12 머리표 top = 단 top+6.5px 로
+        // 확인)이라 5.33px 초과로 p12 에 보냈다. 폴백에서는 차감을 건너뛴다 → pr-1674 F 10 → 17.
+        // ⚠ 자리차지 표 호스트의 의도적 폴백(curr_has_topbottom_para_table)은 제외 — 거기까지
+        // 걸면 complex-full 73 → 51(p52, C-2097 ② 제목-표 자리).
+        let skip_sb_for_reset_fallback = vpos_end_is_prev_fallback;
         // [Task #643] sb_N 사전 차감 대상 (vpos_corrected_end_y 내부에서 차감).
         let curr_sb = paragraphs
             .get(item_para)
@@ -414,7 +428,7 @@ impl HeightCursor {
             curr_sb,
             y_offset,
             curr_has_topbottom_para_table,
-            self.skip_spacing_before_prededuct,
+            self.skip_spacing_before_prededuct || skip_sb_for_reset_fallback,
             allow_large_backward,
             self.dpi,
         );
