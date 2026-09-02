@@ -16884,10 +16884,10 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             //   헤더+28행 끝 715.6 · 다음 행 20.79 → 736.8 > 본문하단 736.6 으로 **0.13px 거부**.
             //   우리는 예약이 없어 735.1 ≤ 737.0 으로 담았다(#2376 trail 수리 전에는 행 3개가
             //   4px 씩 과대해 상쇄돼 있었다). 이 자격으로 hwpctl F 1 → 16 완주.
-            // ⚠ RowBreak 표에는 걸지 않는다 — 보편 적용은 jbnu-550 91→49(1×1 거대 셀 연속 조각)·
-            //   complex-full 73→66(110행 표 첫 조각)·form-002·pic-in·issue1949 를 깨고, 그 감도가
-            //   첫/연속 조각으로 갈려 판별축이 아직 없다(korea-0005 p84 는 이 모델이 맞다 — 보편
-            //   적용 시 83→132 완주). 판정 docs/표행높이-trail제외-outMargin자격-20260902-*.md §5.
+            // ⚠ RowBreak 표는 **연속 조각·거대 행 없는 표**에만 건다(아래 [#2381]) — 보편 적용은
+            //   jbnu-550 91→49(1×1 거대 셀 연속 조각)·complex-full 73→66(110행 표 첫 조각)·form-002·
+            //   pic-in·issue1949 를 깬다. 판정 docs/표행높이-trail제외-outMargin자격-20260902-*.md §5,
+            //   판별축 docs/N4-판별축-거대행제외-20260902-*.md.
             let mut c2366c_applied = false;
             let page_avail = if is_continuation && (st.is_hwpx_source || cellbreak_om) {
                 let declared_rows_h0 = (declared_object_total - host_spacing_total).max(0.0);
@@ -16909,7 +16909,23 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     }
                     hit
                 };
-                if declared_coherent || cellbreak_om {
+                // [#2381] **다행 RowBreak 표의 연속 조각**도 자격 없이 같은 모델을 쓴다 — 단 **쪽보다
+                // 큰 행(거대 셀)을 가진 표는 제외**. N4 판별축 실측(2026-09-02, 게이트 12·78문서·코퍼스 640):
+                //   · 양성 korea-0005 1143381219(156행, 최대 행 212px): p84 연속 조각이 행 75 의 셀 안
+                //     컷으로 **시작**하는데도 한컴은 r=113(over 0.91 → 압축 수용)을 거부한다 → 예약 필요.
+                //     "행 경계에서 시작하는 조각만" 은 p84 에 안 걸려 83 그대로(rowstart 변형).
+                //   · 음성 jbnu-550 1×1(rows=1)·table_giant_cell_overfill(row 4 가 40쪽)·issue1949:
+                //     거대 셀의 셀 안 컷 연속에는 한컴이 예약하지 않는다 — 행 수만으로 거르면(cont 변형)
+                //     table_giant_cell_overfill F 17→7. "행 수용 예산에만 예약"(rows 변형)은 korea 83 그대로에
+                //     issue1937 50→51쪽·table_scattered 52→54쪽으로 계획의 옛 반증을 재현했다.
+                //   · 이 자격(nogiant): korea **83 → 132 완주** · 게이트 나머지 11 불변 · 78문서 1744→1793
+                //     (+49, 하락 0, 쪽수 변화 0) · 코퍼스 640 변화는 오라클 없는 2문서 줄 이동뿐.
+                //   첫 조각에는 걸지 않는다(complex-full 110행 표 첫 조각 73→66 실측). HWPX 한정은 바깥
+                //   조건(st.is_hwpx_source)을 그대로 따른 것 — HWP5 RowBreak 는 미측정.
+                let rowbreak_cont_om = !cellbreak_om
+                    && matches!(table.page_break, crate::model::table::TablePageBreak::RowBreak)
+                    && cut_row_h.iter().all(|h| *h <= page_avail);
+                if declared_coherent || cellbreak_om || rowbreak_cont_om {
                     // [#2370] 추가 여유(c2366c_applied)는 선언 검증 조각에만 — CellBreak 자격은
                     // hwpctl 실측에서 여유 없이 정합했다.
                     c2366c_applied = declared_coherent;
