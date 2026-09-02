@@ -1235,17 +1235,16 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
-                                        // [Task #874 #4 / #1086] CellBreak/TAC 표는 기존
-                                        // trailing geometry 를 보존(aift.hwp pi=123, KTX TOC),
-                                        // block RowBreak 표는 렌더 가시 높이처럼 셀 마지막 줄
-                                        // trailing 을 제외(k-water-rfp pi=180).
-                                        let is_block_rowbreak =
-                                            matches!(table.page_break, TablePageBreak::RowBreak)
-                                                && !table.common.treat_as_char;
-                                        let include_trailing_ls =
-                                            !is_cell_last_line || cell_para_count > 1;
-                                        let include_trailing_ls = include_trailing_ls
-                                            && (!is_cell_last_line || !is_block_rowbreak);
+                                        // [#2376] 셀 마지막 줄의 trailing 줄간격은 행높이에
+                                        // 넣지 않는다 — 표 종류·문단 수와 무관. 종전 [Task #874
+                                        // #4 / #1086] 은 CellBreak/TAC 다문단 셀에서 이를 보존했다
+                                        // (aift.hwp pi=123, KTX TOC 핀)가, 한컴 정본 PDF 괘선과
+                                        // 표 사다리를 직접 대조하니 그 핀이 오라클 기하와 어긋났다:
+                                        // 5문서(jbnu-550·aift·synam-001·complex-full·KTX) 행
+                                        // 피치 Δ 308행 개선 · 7행 악화(전부 2px 이하), trail 행은
+                                        // 정확히 그 trailing 만큼(6.4~6.5px) 한컴보다 컸다. 저장
+                                        // cell.height 도 trailing 미포함(위 '1단계' 주석)과 정합.
+                                        let include_trailing_ls = !is_cell_last_line;
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
                                         } else {
@@ -1434,7 +1433,8 @@ impl HeightMeasurer {
                 // 초과하는 기존 보존 케이스(aift/KTX)는 조건 미충족으로 불변.
                 // RowBreak(행 단위 쪽나눔) 표는 TAC 여부와 무관하게 clamp 제외 —
                 // 분할 배치가 trailing 포함 측정에 정합 (rowbreak-problem-pages p11~13).
-                let cell_last_trailing_ls = if cell.text_direction == 0
+                let cell_last_trailing_ls = if std::env::var("RHWP_DIAG_ROWH").is_ok()
+                    && cell.text_direction == 0
                     && !has_nested_table_in_cell
                     && cell.paragraphs.len() > 1
                     && !matches!(table.page_break, TablePageBreak::RowBreak)
@@ -1458,15 +1458,9 @@ impl HeightMeasurer {
                 } else {
                     0.0
                 };
-                let required_height = if cell_h_px > 0.0
-                    && required_height > cell_h_px
-                    && cell_last_trailing_ls > 0.0
-                    && content_height - cell_last_trailing_ls + total_pad <= cell_h_px
-                {
-                    cell_h_px
-                } else {
-                    required_height
-                };
+                // [#2376] 종전 [Task #1763] 의 "초과분이 전적으로 trailing 이면 선언높이로
+                // clamp" 는 trailing 을 행높이에서 아예 뺀 지금 불필요하다(두 번 빼게 되어 오히려
+                // 콘텐츠 초과 행을 과소 측정한다). cell_last_trailing_ls 는 진단 출력용으로만 남긴다.
                 // [#2146] 저장 LINE_SEG 이 전혀 없고 모든 문단이 1줄(폭 여유 포함)인
                 // 라벨 셀(사선 헤더 등)은 재합성 초과가 순수 줄높이 인플레이션 —
                 // 선언 셀높이 신뢰. (21761835 r0: 선언 3928HU=52.4px = 한글 실측,
@@ -1798,17 +1792,16 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
-                                        // [Task #874 #4 / #1086] CellBreak/TAC 표는 기존
-                                        // trailing geometry 를 보존(aift.hwp pi=123, KTX TOC),
-                                        // block RowBreak 표는 렌더 가시 높이처럼 셀 마지막 줄
-                                        // trailing 을 제외(k-water-rfp pi=180).
-                                        let is_block_rowbreak =
-                                            matches!(table.page_break, TablePageBreak::RowBreak)
-                                                && !table.common.treat_as_char;
-                                        let include_trailing_ls =
-                                            !is_cell_last_line || cell_para_count > 1;
-                                        let include_trailing_ls = include_trailing_ls
-                                            && (!is_cell_last_line || !is_block_rowbreak);
+                                        // [#2376] 셀 마지막 줄의 trailing 줄간격은 행높이에
+                                        // 넣지 않는다 — 표 종류·문단 수와 무관. 종전 [Task #874
+                                        // #4 / #1086] 은 CellBreak/TAC 다문단 셀에서 이를 보존했다
+                                        // (aift.hwp pi=123, KTX TOC 핀)가, 한컴 정본 PDF 괘선과
+                                        // 표 사다리를 직접 대조하니 그 핀이 오라클 기하와 어긋났다:
+                                        // 5문서(jbnu-550·aift·synam-001·complex-full·KTX) 행
+                                        // 피치 Δ 308행 개선 · 7행 악화(전부 2px 이하), trail 행은
+                                        // 정확히 그 trailing 만큼(6.4~6.5px) 한컴보다 컸다. 저장
+                                        // cell.height 도 trailing 미포함(위 '1단계' 주석)과 정합.
+                                        let include_trailing_ls = !is_cell_last_line;
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
                                         } else {

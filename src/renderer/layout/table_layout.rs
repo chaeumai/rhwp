@@ -5864,9 +5864,8 @@ impl LayoutEngine {
                             table.page_break,
                             crate::model::table::TablePageBreak::RowBreak
                         ) && !table.common.treat_as_char;
-                        let include_trailing_ls = !is_cell_last_line || para_count > 1;
-                        let include_trailing_ls =
-                            include_trailing_ls && (!is_cell_last_line || !is_block_rowbreak);
+                        // [#2376] 셀 마지막 줄 trailing 은 행높이에 넣지 않는다 (HeightMeasurer 와 정합).
+                    let include_trailing_ls = !is_cell_last_line;
                         let mut lh = if include_trailing_ls { h + ls } else { h };
                         if li == 0 {
                             lh += spacing_before;
@@ -6152,9 +6151,8 @@ impl LayoutEngine {
                                 table.page_break,
                                 crate::model::table::TablePageBreak::RowBreak
                             ) && !table.common.treat_as_char;
-                            let include_trailing_ls = !is_cell_last_line || para_count > 1;
-                            let include_trailing_ls =
-                                include_trailing_ls && (!is_cell_last_line || !is_block_rowbreak);
+                            // [#2376] 셀 마지막 줄 trailing 은 행높이에 넣지 않는다 (HeightMeasurer 와 정합).
+                        let include_trailing_ls = !is_cell_last_line;
                             let mut lh = if include_trailing_ls { h + ls } else { h };
                             if li == 0 {
                                 lh += spacing_before;
@@ -6228,9 +6226,8 @@ impl LayoutEngine {
                     let h = corrected_h(line, li);
                     let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                     let is_cell_last_line = is_last_para && li + 1 == line_count;
-                    let include_trailing_ls = !is_cell_last_line || para_count > 1;
-                    let include_trailing_ls =
-                        include_trailing_ls && (!is_cell_last_line || !is_block_rowbreak);
+                    // [#2376] 셀 마지막 줄 trailing 은 행높이에 넣지 않는다 (HeightMeasurer 와 정합).
+                let include_trailing_ls = !is_cell_last_line;
                     let mut lh = if include_trailing_ls { h + ls } else { h };
                     if collapse_empty_rowbreak_spacer {
                         lh = 0.0;
