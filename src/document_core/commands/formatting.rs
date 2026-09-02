@@ -1265,7 +1265,15 @@ impl DocumentCore {
                 cell_idx,
                 cell_para_idx,
             )?;
-            cell_para.apply_char_shape_range(start_offset, end_offset, new_id);
+            if cell_para.text.is_empty() {
+                // 빈 문단(빈 셀): 글자 범위가 없어 apply_char_shape_range 는 아무것도 안 한다.
+                // 한컴은 빈 셀을 블록 선택해 글꼴·크기를 바꾸면 그 셀에 "다음에 입력할 글자"가 새
+                // 모양으로 나오고 빈 줄 높이도 따라간다 — 문단의 유일한 CharShapeRef(문단 끝 문자의
+                // 글자 모양)를 새 ID 로 바꾼다. 컨트롤만 있는 문단은 text 가 비지 않으므로 종전대로.
+                cell_para.set_single_char_shape(new_id);
+            } else {
+                cell_para.apply_char_shape_range(start_offset, end_offset, new_id);
+            }
         }
 
         // 텍스트 폭/높이에 영향을 주는 글자 모양 변경 시 셀 내 LineSeg 재계산.
@@ -2238,5 +2246,62 @@ mod tests {
             ..Default::default()
         };
         assert!(!char_shape_mods_affect_text_flow(&mods));
+    }
+
+    /// 빈 셀(빈 문단)에 글자 서식을 적용하면 문단의 유일한 CharShapeRef 가 새 ID 로 바뀐다.
+    /// 한컴은 빈 셀을 블록 선택해 글꼴·크기를 바꾸면 "다음에 입력할 글자"가 새 모양으로 나온다 —
+    /// 종전에는 글자 범위가 없어 apply_char_shape_range 가 아무것도 안 했다.
+    #[test]
+    fn apply_char_format_in_cell_updates_empty_paragraph_char_shape() {
+        use crate::document_core::helpers::json_u32;
+        use crate::document_core::DocumentCore;
+
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        let res = core.create_table_native(0, 0, 0, 1, 2).unwrap();
+        let para_idx = json_u32(&res, "paraIdx").unwrap() as usize;
+        let ctrl_idx = json_u32(&res, "controlIdx").unwrap() as usize;
+
+        let before = core
+            .get_cell_paragraph_ref(0, para_idx, ctrl_idx, 0, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        core.apply_char_format_in_cell_native(
+            0,
+            para_idx,
+            ctrl_idx,
+            0,
+            0,
+            0,
+            0,
+            r#"{"bold":true,"fontSize":2000}"#,
+        )
+        .unwrap();
+
+        let para = core
+            .get_cell_paragraph_ref(0, para_idx, ctrl_idx, 0, 0)
+            .unwrap();
+        assert!(para.text.is_empty(), "표적은 빈 문단이어야 한다");
+        assert_eq!(para.char_shapes.len(), 1, "빈 문단의 CharShapeRef 는 하나");
+        let after = para.char_shape_id_at(0).unwrap();
+        assert_ne!(before, after, "빈 문단의 글자 모양 ID 가 바뀌어야 한다");
+
+        let json: String = core
+            .get_cell_char_properties_at_native(0, para_idx, ctrl_idx, 0, 0, 0)
+            .unwrap()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(json.contains(r#""bold":true"#), "{json}");
+        assert!(json.contains(r#""fontSize":2000"#), "{json}");
+
+        // 이웃 빈 셀은 그대로
+        let other = core
+            .get_cell_paragraph_ref(0, para_idx, ctrl_idx, 1, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        assert_eq!(other, before, "적용하지 않은 셀의 글자 모양은 불변");
     }
 }
