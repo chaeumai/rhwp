@@ -24820,9 +24820,15 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             flushed_cuts.len(),
             "{label}: page fingerprint count"
         );
+        // [A2] 로드 시 조판은 p80~86 의 셀 안 쪽경계 직전 줄을 후행 행간 안에서 담는데(A2 구제),
+        // 편집으로 줄 수가 바뀐 문단 뒤에서는 그 경계가 낡은 증거라 flush 조판이 구제를 끈다.
+        // 그 결과 +1줄 편집의 이월과 구제의 +1유닛이 p80~p84 에서 상쇄되어 컷 지문이 같다 —
+        // 그 다섯 쪽만 열거에서 빠진다(종전 기대치는 2..page_count 전부).
         assert_eq!(
             changed_pages,
-            (2..doc.page_count() as usize).collect::<Vec<_>>(),
+            (2..80)
+                .chain(85..doc.page_count() as usize)
+                .collect::<Vec<_>>(),
             "{label}: flush must realign downstream continuation cuts"
         );
         let transient_rect_json: Value =
@@ -24905,3 +24911,51 @@ fn test_paragraph_anchors_match_cursor_rect() {
     assert!(arr[0].get("kind").is_some() && arr[0].get("pageIndex").is_some());
 }
 
+
+/// [A2] 파일이 쪽경계로 못박은 줄이 후행 행간 안에서 넘치면 담는다 — 실문서 회귀 감시.
+/// pic-in-head-01 p18(0기준 17) 표(pi 65, 3행) row 2: 수리 전에는 유닛 41 에서 끊었고
+/// (초과 7.6px, 그 줄 행간 11.7px) 한컴은 42번째 줄("공동으로 연구개발 및 사업화를…")까지
+/// p18 에 둔다(한컴 PDF 마지막 글줄 하단 1042.1px, 본문 하단 1046.9px).
+/// RED 근거: 수리 전 추적 `CUT_DBG_END row=2 cell=0 start=0 j=41`
+/// (rhwp-cai `docs/A2-hb인접-후행행간-구제-20260902-1835.md` §2).
+#[test]
+fn a2_saved_break_tail_within_line_spacing_pic_in_head_01() {
+    use crate::renderer::pagination::PageItem;
+
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/pic-in-head-01.hwp");
+    let bytes = std::fs::read(path).expect("read pic-in-head-01");
+    let doc = HwpDocument::from_bytes(&bytes).expect("load pic-in-head-01");
+    assert_eq!(doc.page_count(), 22, "page count");
+    let pages = doc
+        .core
+        .pagination
+        .iter()
+        .flat_map(|section| section.pages.iter())
+        .collect::<Vec<_>>();
+    let cut_on = |page: usize| -> Option<(Vec<usize>, Vec<usize>)> {
+        pages[page]
+            .column_contents
+            .iter()
+            .flat_map(|column| column.items.iter())
+            .find_map(|item| match item {
+                PageItem::PartialTable {
+                    para_index: 65,
+                    control_index: 0,
+                    start_cut,
+                    end_cut,
+                    ..
+                } => Some((start_cut.clone(), end_cut.clone())),
+                _ => None,
+            })
+    };
+    let (start_cut, end_cut) = cut_on(17).expect("p18: pi=65 표 조각");
+    assert_eq!(start_cut, Vec::<usize>::new(), "p18: 첫 조각");
+    assert_eq!(
+        end_cut,
+        vec![42],
+        "p18: 저장 쪽경계 직전 줄(초과 7.6px < 행간 11.7px)까지 담는다 — 수리 전 [41]"
+    );
+    let (start_cut, _) = cut_on(18).expect("p19: pi=65 표 연속 조각");
+    assert_eq!(start_cut, vec![42], "p19: 42번째 유닛부터 잇는다");
+}

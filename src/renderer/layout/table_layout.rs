@@ -342,6 +342,11 @@ pub(crate) struct RowCutResult {
     pub fully_consumed: bool,
     /// 이 프래그먼트의 콘텐츠 높이 (셀별 표시 높이의 최댓값, 패딩 제외).
     pub consumed_height: f64,
+    /// [A2] 셀별로, 마지막에 담은 줄 유닛의 높이에서 깎은 후행 행간(px). 파일이 바로 다음
+    /// 유닛을 쪽경계로 못박은 줄이 근소하게 넘칠 때 그 줄의 line_spacing 만큼은 쪽 하단에
+    /// 매달아 둔다(한컴 실측: 글자 상자만 본문 안이면 담는다). `row_cut_content_height` 가
+    /// 같은 값을 빼야 예산 재시도 루프가 이 컷을 되돌리지 않는다. 빈 Vec = 깎은 것 없음.
+    pub tail_trim: Vec<f64>,
 }
 
 /// [Task #993] 한 셀의 콘텐츠 유닛 — 합성 줄 1개 또는 중첩 표 atom 1개.
@@ -365,6 +370,18 @@ pub(super) struct CellUnit {
     mixed_nested_content_height: f64,
     top_and_bottom_flow: bool,
     pub(super) empty_spacer: bool,
+    /// [A2] 텍스트 줄 유닛의 높이에 포함된 후행 행간(line_spacing, px). 파일이 바로 다음 유닛을
+    /// 쪽경계로 못박았으면(`hard_break_before`) 이 부분은 쪽 하단을 넘쳐도 된다 — 한컴은
+    /// 마지막 줄의 글자 상자만 본문 안에 두면 담는다.
+    trail_ls: f64,
+    /// [A2] 이 유닛의 문단까지 셀 앞머리 문단이 전부 저장 줄 기하 그대로인가 — 로드 뒤
+    /// 편집(`Paragraph::edited_since_load`) 0 · 합성 seg(`TAG_IMPLEMENTATION_PROPERTY`) 0 ·
+    /// 저장 줄 수 = 합성 줄 수. 거짓이면 그 뒤의 `hard_break_before` 는 **낡은 경계**다
+    /// (편집으로 앞이 늘어난 뒤에도 파일의 리셋은 그 자리에 남는다) — #2214 transient/flushed
+    /// 일관성 테스트가 이 경우를 잡는다(44자 입력 뒤 flush 에서 1쪽 컷 [37]→[38]).
+    /// 편집 reflow 는 첫 저장 seg 의 태그를 새 줄에 복사하므로 seg 만으로는 편집을 못 본다.
+    /// 구제는 참일 때만 한다.
+    saved_coherent: bool,
 }
 
 /// 중첩 표 부분 렌더링을 위한 행 범위 정보
@@ -5392,6 +5409,8 @@ impl LayoutEngine {
                         mixed_nested_content_height: 0.0,
                         top_and_bottom_flow: false,
                         empty_spacer: false,
+                        trail_ls: 0.0,
+                        saved_coherent: false,
                     });
                     non_inline_h -= h;
                 }
@@ -5413,6 +5432,8 @@ impl LayoutEngine {
                 mixed_nested_content_height: 0.0,
                 top_and_bottom_flow: true,
                 empty_spacer: false,
+                trail_ls: 0.0,
+                saved_coherent: false,
             });
         };
         let append_non_inline_units = |units: &mut Vec<CellUnit>,
@@ -5428,6 +5449,7 @@ impl LayoutEngine {
             append_fragment_units(units, para_idx, other_extra_h);
             append_atomic_unit(units, para_idx, top_extra_h);
         };
+        let mut prefix_saved_coherent = true;
         for (pi, p) in cell.paragraphs.iter().enumerate() {
             let is_block_rowbreak = matches!(
                 table.page_break,
@@ -5663,6 +5685,17 @@ impl LayoutEngine {
                     _ => false,
                 });
             let line_count = comp.lines.len();
+            // [A2] 저장 줄 기하 정합 — 이 문단까지 합성 seg 0 · 저장 줄 수 = 합성 줄 수.
+            if prefix_saved_coherent {
+                let saved_ok = !p.edited_since_load
+                    && !p.line_segs.is_empty()
+                    && p.line_segs.iter().all(|seg| !line_seg_is_synthetic(seg))
+                    && p.line_segs.len() == line_count.max(1);
+                if !saved_ok {
+                    prefix_saved_coherent = false;
+                }
+            }
+            let para_saved_coherent = prefix_saved_coherent;
             let line_core_height: f64 = comp
                 .lines
                 .iter()
@@ -5761,6 +5794,8 @@ impl LayoutEngine {
                             mixed_nested_content_height: 0.0,
                             top_and_bottom_flow: false,
                             empty_spacer: false,
+                            trail_ls: 0.0,
+                            saved_coherent: para_saved_coherent,
                         });
                         unit_cum += uh;
                     }
@@ -5829,6 +5864,8 @@ impl LayoutEngine {
                                 mixed_nested_content_height: content_h,
                                 top_and_bottom_flow: false,
                                 empty_spacer: false,
+                                trail_ls: 0.0,
+                                saved_coherent: para_saved_coherent,
                             });
                             unit_cum += uh;
                         }
@@ -5873,6 +5910,7 @@ impl LayoutEngine {
                         if li == line_count - 1 {
                             lh += spacing_after;
                         }
+                        let trail_ls = if include_trailing_ls { ls } else { 0.0 };
                         let hard_break_before = line_reset_before(li);
                         let mut vpos_gap_before = if li == 0 {
                             vpos_gap_before_para
@@ -5917,6 +5955,8 @@ impl LayoutEngine {
                             mixed_nested_content_height: 0.0,
                             top_and_bottom_flow: false,
                             empty_spacer: false,
+                            trail_ls,
+                            saved_coherent: para_saved_coherent,
                         });
                         unit_cum += lh;
                     }
@@ -6005,6 +6045,8 @@ impl LayoutEngine {
                                 mixed_nested_content_height: content_h,
                                 top_and_bottom_flow: false,
                                 empty_spacer: false,
+                                trail_ls: 0.0,
+                                saved_coherent: para_saved_coherent,
                             });
                             unit_cum += h;
                         }
@@ -6218,6 +6260,8 @@ impl LayoutEngine {
                     mixed_nested_content_height: 0.0,
                     top_and_bottom_flow: para_top_and_bottom_flow_unit,
                     empty_spacer: is_empty_spacer_para,
+                    trail_ls: 0.0,
+                    saved_coherent: para_saved_coherent,
                 });
                 unit_cum += para_h;
             } else {
@@ -6239,6 +6283,11 @@ impl LayoutEngine {
                             lh += spacing_after;
                         }
                     }
+                    let trail_ls = if collapse_empty_rowbreak_spacer || !include_trailing_ls {
+                        0.0
+                    } else {
+                        ls
+                    };
                     let hard_break_before = line_reset_before(li);
                     let mut vpos_gap_before = if li == 0 {
                         vpos_gap_before_para
@@ -6302,6 +6351,8 @@ impl LayoutEngine {
                         mixed_nested_content_height: 0.0,
                         top_and_bottom_flow: para_top_and_bottom_flow_unit,
                         empty_spacer: is_empty_spacer_para,
+                        trail_ls,
+                        saved_coherent: para_saved_coherent,
                     });
                     unit_cum += lh;
                 }
@@ -6633,6 +6684,7 @@ impl LayoutEngine {
         let mut hit_hard_break = false;
         let mut fully_consumed = true;
         let mut consumed_height = 0.0f64;
+        let mut tail_trim: Vec<f64> = Vec::new();
         // [파리티 라운드3 J9] HWPX(한컴 저장본)의 셀 내부 vpos 리셋은 실제 쪽 경계다 — 남은
         // 공간이 64px(≈2줄) 이하면 리셋을 따른다 (550 p49: 51px 남기고 Article 6 을 p50 으로,
         // 종전 32px 문턱은 리셋을 무시해 첫 줄을 조각에 넣고 렌더는 저장 vpos 로 쪽 밖에 그림).
@@ -6661,11 +6713,16 @@ impl LayoutEngine {
                     .iter()
                     .map(|u| {
                         format!(
-                            "h={:.1}{}{}{}v{}..{}",
+                            "h={:.1}{}{}{}{}v{}..{}",
                             u.height,
+                            if u.trail_ls > 0.0 { format!(" ls={:.1}", u.trail_ls) } else { String::new() },
                             if u.empty_spacer { " sp" } else { "" },
                             if u.top_and_bottom_flow { " tb" } else { "" },
-                            if u.hard_break_before { " hb " } else { " " },
+                            if u.hard_break_before {
+                                if u.saved_coherent { " hb " } else { " hb!nc " }
+                            } else {
+                                " "
+                            },
                             u.vis_start,
                             u.vis_end,
                         )
@@ -6677,6 +6734,7 @@ impl LayoutEngine {
                 );
             }
             let start = start_cut.get(i).copied().unwrap_or(0).min(units.len());
+            let mut cell_tail_trim = 0.0f64;
             let mut j = start;
             let mut h = 0.0f64;
             while j < units.len() {
@@ -6731,6 +6789,7 @@ impl LayoutEngine {
                         allow_midpage_reset_absorb,
                     ) {
                         h += u.height;
+                        cell_tail_trim = 0.0;
                         j += 1;
                         continue;
                     }
@@ -6761,23 +6820,39 @@ impl LayoutEngine {
                     //   하는데(20번째 유닛에 hb) 18유닛에서 끊긴다. 475.2 + 26.4 = 501.6 vs
                     //   avail 501.2 — **0.4px 초과**. 밀린 줄은 18자, Δ −18 과 정확히 일치.
                     //
-                    // 허용폭은 누적 반올림 드리프트 급(2px)으로 못박는다 — 줄 높이 26.4px
-                    // 대비 1.5% 다. 한 줄 이상 진짜로 넘치는 유닛은 종전대로 민다.
+                    // 종전 허용폭은 누적 반올림 드리프트 급 0.5px 였다(#2214 일관성 테스트가
+                    // 정한 값). 한 줄 이상 진짜로 넘치는 유닛은 종전대로 민다.
                     // 발화 조건이 "다음 유닛이 **파일이 선언한** 쪽 경계"라 임의 위치에서는
                     // 발동하지 않는다.
                     const SAVED_BREAK_TAIL_TOLERANCE_PX: f64 = 0.5;
+                    // [A2] 넘친 만큼이 그 줄의 **후행 행간(line_spacing) 안**이면 담는다 — 한컴은
+                    // 파일이 쪽경계로 못박은 줄의 글자 상자만 본문 안에 두면 담고, 행간은 쪽
+                    // 하단에 매달아 둔다. 실측(2026-09-02, 초과/행간 px): pic-in 7.6/11.7 ·
+                    // 80168 5.9/14.9 · issue1853 0.6~13.3/6.4~8.8 · pr-1674 1.5/4.0, 1.8/4.0 —
+                    // hb 인접 초과 17건 전부 행간 안, 문단 뒤 간격은 전부 0. 전역 적용은 코퍼스
+                    // 살아 있는 컷 248건을 뒤집으므로(감사 R2) `hard_break_before` 인접 한정.
+                    // 깎은 양은 `tail_trim` 으로 호출자에 알린다 — 호출자가
+                    // `row_cut_content_height` 로 조각 높이를 다시 재서 예산을 넘으면 예산을
+                    // 줄여 재시도하고 실패하면 행을 통이월하는데(#2070), 그 산식이 같은 양을
+                    // 빼지 않으면 이 구제가 되돌려지거나(pic-in) 행이 통째로 밀린다(80168 p4
+                    // Δ −14 → −365, 86712 65 → 66쪽).
                     let saved_break_right_after = !u.empty_spacer
                         && u.vis_start < u.vis_end
-                        && units.get(j + 1).is_some_and(|n| n.hard_break_before)
-                        && h + u.height <= avail_height + SAVED_BREAK_TAIL_TOLERANCE_PX;
+                        && units
+                            .get(j + 1)
+                            .is_some_and(|n| n.hard_break_before && n.saved_coherent)
+                        && h + u.height - u.trail_ls <= avail_height + SAVED_BREAK_TAIL_TOLERANCE_PX;
                     if saved_break_right_after {
+                        let over = h + u.height - avail_height;
+                        let trim = over.max(0.0).min(u.trail_ls);
                         if std::env::var("RHWP_CUT_DBG").is_ok() {
                             eprintln!(
-                                "CUT_DBG_SAVED_TAIL j={j} h={h:.1} u={:.1} avail={avail_height:.1} (다음 유닛이 저장 쪽경계)",
-                                u.height
+                                "CUT_DBG_SAVED_TAIL j={j} h={h:.1} u={:.1} avail={avail_height:.1} over={over:.2} ls={:.1} trim={trim:.2} (다음 유닛이 저장 쪽경계)",
+                                u.height, u.trail_ls
                             );
                         }
-                        h += u.height;
+                        h += u.height - trim;
+                        cell_tail_trim = trim;
                         j += 1;
                         continue;
                     }
@@ -6850,12 +6925,14 @@ impl LayoutEngine {
                 consumed_height = h;
             }
             end_cut.push(j);
+            tail_trim.push(cell_tail_trim);
         }
         RowCutResult {
             end_cut,
             hit_hard_break,
             fully_consumed,
             consumed_height,
+            tail_trim,
         }
     }
 
@@ -7048,6 +7125,7 @@ impl LayoutEngine {
             hit_hard_break,
             fully_consumed,
             consumed_height,
+            tail_trim: Vec::new(),
         }
     }
 
@@ -7265,6 +7343,7 @@ impl LayoutEngine {
             hit_hard_break,
             fully_consumed,
             consumed_height,
+            tail_trim: Vec::new(),
         }
     }
 
@@ -7972,6 +8051,21 @@ impl LayoutEngine {
         end_cut: &[usize],
         styles: &ResolvedStyleSet,
     ) -> f64 {
+        self.row_cut_content_height_trimmed(table, row, start_cut, end_cut, &[], styles)
+    }
+
+    /// [A2] `row_cut_content_height` 에 `advance_row_cut` 이 알려 준 셀별 `tail_trim`(쪽 하단에
+    /// 매단 마지막 줄의 후행 행간)을 반영한 판 — 컷 워크의 `consumed_height` 와 같은 값을 빼야
+    /// 예산 판정이 워크와 어긋나지 않는다.
+    pub(crate) fn row_cut_content_height_trimmed(
+        &self,
+        table: &crate::model::table::Table,
+        row: usize,
+        start_cut: &[usize],
+        end_cut: &[usize],
+        tail_trim: &[f64],
+        styles: &ResolvedStyleSet,
+    ) -> f64 {
         let mut row_cells: Vec<&crate::model::table::Cell> = table
             .cells
             .iter()
@@ -7993,8 +8087,9 @@ impl LayoutEngine {
             } else {
                 self.mixed_nested_flow_extra_from_cut(cell, table, styles, su, eu)
             };
-            let content: f64 =
-                units[su..eu].iter().map(|u| u.height).sum::<f64>() + mixed_nested_extra;
+            let content: f64 = units[su..eu].iter().map(|u| u.height).sum::<f64>()
+                + mixed_nested_extra
+                - tail_trim.get(i).copied().unwrap_or(0.0);
             let (_, _, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
             let has_visible_cut = units[su..eu]
                 .iter()
@@ -8771,6 +8866,8 @@ mod row_cut_tests {
             mixed_nested_content_height: 0.0,
             top_and_bottom_flow: false,
             empty_spacer: false,
+            trail_ls: 0.0,
+            saved_coherent: false,
         };
         // 여러 줄 케이스: 리셋(hb) 직전에 같은 문단 줄 3개 — 저장 배치 유지.
         let units_multi = vec![

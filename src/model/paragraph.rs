@@ -34,6 +34,11 @@ pub struct Paragraph {
     pub orphan_field_ends: Vec<OrphanFieldEnd>,
     /// 컨트롤 목록 (표, 그림, 각주 등)
     pub controls: Vec<Control>,
+    /// [A2] 로드 뒤 편집으로 줄이 다시 흘러갔는가(`reflow_line_segs` 가 세운다). 저장
+    /// `line_segs` 의 쪽경계(vpos 리셋)는 저장 당시 내용에 대한 한컴 조판 증거라, 참이면
+    /// 그 문단 뒤의 셀 안 쪽경계를 근거로 한 구제를 하지 않는다. 직렬화·비교에 안 쓴다.
+    #[doc(hidden)]
+    pub edited_since_load: bool,
     /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
     /// controls[i]에 대응하는 CTRL_DATA가 있으면 ctrl_data_records[i] = Some(data)
     pub ctrl_data_records: Vec<Option<Vec<u8>>>,
@@ -903,6 +908,8 @@ impl Paragraph {
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
             line_segs: new_line_segs,
+            // [A2] 분할로 생긴 문단은 편집 산물 — 저장 쪽경계 근거의 구제를 하지 않는다.
+            edited_since_load: true,
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
             orphan_field_ends: Vec::new(),

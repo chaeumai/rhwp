@@ -1087,6 +1087,23 @@ pub(crate) fn reflow_line_segs(
     styles: &ResolvedStyleSet,
     dpi: f64,
 ) {
+    let lines_before = para.line_segs.len();
+    reflow_line_segs_inner(para, available_width_px, styles, dpi);
+    // [A2] 편집으로 **줄 수가 바뀌었다** — 이 문단 뒤의 저장 쪽경계(vpos 리셋)는 저장 당시
+    // 내용에 대한 한컴 조판 증거라 이제 낡았다(`cell_units` 정합 게이트가 구제를 끈다).
+    // 줄 수가 그대로인 편집은 뒤 문단의 저장 좌표를 밀지 않으므로 경계가 유효하다.
+    // 한 번 참이면 되돌리지 않는다(줄을 넣었다 뺀 편집도 좌표 왕복이 정확하다는 보장이 없다).
+    if para.line_segs.len() != lines_before {
+        para.edited_since_load = true;
+    }
+}
+
+fn reflow_line_segs_inner(
+    para: &mut Paragraph,
+    available_width_px: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) {
     // 기존 LineSeg에서 dimension 값 보존 (원본 HWP 호환성 유지)
     let seg_width_hwp = px_to_hwpunit(available_width_px, dpi);
     let orig = para.line_segs.first().cloned();

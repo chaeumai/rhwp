@@ -15431,11 +15431,12 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 end_row = r;
             } else {
                 // 분할 행의 행 총 높이(per-cell content+pad) 를 consumed 에 가산.
-                let split_total = layout_engine.row_cut_content_height(
+                let split_total = layout_engine.row_cut_content_height_trimmed(
                     table,
                     r,
                     row_start_cut,
                     &res.end_cut,
+                    &res.tail_trim,
                     styles,
                 );
                 let split_candidate_rows_height = consumed + cs_before + split_total;
@@ -15464,11 +15465,12 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     );
                     let mut retried = false;
                     if !res2.fully_consumed && res2.consumed_height >= MIN_TOP_KEEP_PX {
-                        let split_total2 = layout_engine.row_cut_content_height(
+                        let split_total2 = layout_engine.row_cut_content_height_trimmed(
                             table,
                             r,
                             row_start_cut,
                             &res2.end_cut,
+                            &res2.tail_trim,
                             styles,
                         );
                         let cand2 = consumed + cs_before + split_total2;
