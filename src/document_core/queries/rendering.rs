@@ -4589,6 +4589,81 @@ impl DocumentCore {
     pub fn extract_page_text_native(&self, page_num: u32) -> Result<String, HwpError> {
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
+        /// [#2379 M5-b] 수식 레이아웃 트리를 평문으로 편다 — 한컴 PDF 가 HyhwpEQ 글리프로
+        /// 내는 문자(pdftotext 추출)와 개수가 맞도록 **글리프가 되는 잎만** 낸다.
+        /// 분수선·근호·행렬 괄호·장식은 선(path)이라 문자를 내지 않는다.
+        fn equation_plain_text(b: &crate::renderer::equation::layout::LayoutBox, out: &mut String) {
+            use crate::renderer::equation::layout::LayoutKind as K;
+            match &b.kind {
+                K::Row(items) => items.iter().for_each(|x| equation_plain_text(x, out)),
+                K::Text(t) | K::Number(t) | K::Symbol(t) | K::MathSymbol(t) | K::Function(t) => {
+                    out.push_str(t)
+                }
+                K::Fraction { numer, denom } | K::Atop { top: numer, bottom: denom } => {
+                    equation_plain_text(numer, out);
+                    equation_plain_text(denom, out);
+                }
+                K::Sqrt { index, body } => {
+                    if let Some(i) = index {
+                        equation_plain_text(i, out);
+                    }
+                    equation_plain_text(body, out);
+                }
+                K::Superscript { base, sup } => {
+                    equation_plain_text(base, out);
+                    equation_plain_text(sup, out);
+                }
+                K::Subscript { base, sub } => {
+                    equation_plain_text(base, out);
+                    equation_plain_text(sub, out);
+                }
+                K::SubSup { base, sub, sup } => {
+                    equation_plain_text(base, out);
+                    equation_plain_text(sub, out);
+                    equation_plain_text(sup, out);
+                }
+                K::BigOp { symbol, sub, sup } => {
+                    out.push_str(symbol);
+                    if let Some(x) = sub {
+                        equation_plain_text(x, out);
+                    }
+                    if let Some(x) = sup {
+                        equation_plain_text(x, out);
+                    }
+                }
+                K::Limit { sub, .. } => {
+                    out.push_str("lim");
+                    if let Some(x) = sub {
+                        equation_plain_text(x, out);
+                    }
+                }
+                K::Matrix { cells, .. } => cells
+                    .iter()
+                    .flatten()
+                    .for_each(|x| equation_plain_text(x, out)),
+                K::Rel { arrow, over, under } => {
+                    equation_plain_text(arrow, out);
+                    equation_plain_text(over, out);
+                    if let Some(x) = under {
+                        equation_plain_text(x, out);
+                    }
+                }
+                K::EqAlign { rows } => rows.iter().for_each(|(l, r)| {
+                    equation_plain_text(l, out);
+                    equation_plain_text(r, out);
+                }),
+                K::Paren { left, right, body } => {
+                    out.push_str(left);
+                    equation_plain_text(body, out);
+                    out.push_str(right);
+                }
+                K::Decoration { body, .. } | K::FontStyle { body, .. } => {
+                    equation_plain_text(body, out)
+                }
+                K::Space(_) | K::Newline | K::Empty => {}
+            }
+        }
+
         fn collect_line_text(node: &RenderNode, out: &mut String, has_token: &mut bool) {
             match &node.node_type {
                 RenderNodeType::TextRun(tr) => {
@@ -4608,6 +4683,16 @@ impl DocumentCore {
                         *has_token = true;
                     }
                 }
+                // [#2379 M5-b] 수식 — 종전엔 분기가 없어 통째로 버려졌다
+                // (3-09월_교육_통합_2022 p1 Equation 86개, 오라클 HyhwpEQ span 전수 189,108자).
+                RenderNodeType::Equation(eq) => {
+                    let mut t = String::new();
+                    equation_plain_text(&eq.layout_box, &mut t);
+                    if !t.is_empty() {
+                        out.push_str(&t);
+                        *has_token = true;
+                    }
+                }
                 _ => {}
             }
 
@@ -4617,6 +4702,24 @@ impl DocumentCore {
         }
 
         fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>) {
+            // [#2379 M5-a] TextLine 바깥에 직접 놓인 텍스트 노드(compact 미주의 `Column`
+            // 직속 `문N）` TextRun 등)도 자기 줄로 낸다 — 종전엔 TextLine 만 훑어 버려졌다.
+            if matches!(
+                node.node_type,
+                RenderNodeType::TextRun(_)
+                    | RenderNodeType::FootnoteMarker(_)
+                    | RenderNodeType::FormObject(_)
+                    | RenderNodeType::Equation(_)
+            ) {
+                let mut line = String::new();
+                let mut has_token = false;
+                collect_line_text(node, &mut line, &mut has_token);
+                // 빈 토큰(공백 TextRun 등)은 줄로 내지 않는다 — 게이트 문서에서 빈 줄만 늘어난다.
+                if has_token && !line.trim().is_empty() {
+                    lines.push(line);
+                }
+                return;
+            }
             if matches!(node.node_type, RenderNodeType::TextLine(_)) {
                 let mut line = String::new();
                 let mut has_token = false;
