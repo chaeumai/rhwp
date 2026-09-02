@@ -250,10 +250,12 @@ export const formatCommands: CommandDef[] = [
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
+      // F5 셀 선택: 텍스트 선택(getSelection)이 없어도 선택한 셀 전체가 대상이다 (한컴: 셀 블록 + Alt+L).
+      // 대화상자 열기 전 표적을 잡아 둔다 — 대화상자 조작 중 선택이 풀릴 수 있다.
+      const cellTarget = ih.captureCellSelectionFormatTarget('글자 모양');
+      const savedSel = cellTarget ? null : ih.getSelection();
+      if (!cellTarget && !savedSel) return;
       const charProps = ih.getCharProperties();
-      // 대화상자 열기 전 선택 범위를 저장 (대화상자 조작 중 선택이 풀릴 수 있음)
-      const savedSel = ih.getSelection();
-      if (!savedSel) return;
       const dialog = new CharShapeDialog(services.wasm, services.eventBus);
       dialog.onApply = (mods) => {
         // fontName → fontId 변환 (WASM parse_char_shape_mods는 fontId만 인식)
@@ -262,7 +264,8 @@ export const formatCommands: CommandDef[] = [
           if (fontId >= 0) mods.fontId = fontId;
           delete mods.fontName;
         }
-        ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
+        if (cellTarget) ih.applyCharPropsToCellSelection(cellTarget, mods);
+        else if (savedSel) ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
       };
       dialog.onClose = () => ih.focus();
       dialog.show(charProps);
@@ -277,13 +280,16 @@ export const formatCommands: CommandDef[] = [
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
+      // F5 셀 선택: 선택한 모든 셀의 모든 문단이 대상이다 (한컴: 셀 블록 + Alt+T). 표적은 열 때 잡아 둔다.
+      const cellTarget = ih.captureCellSelectionFormatTarget('문단 모양');
       const paraProps = ih.getParaProperties();
       const sel = ih.getSelection();
       const curPos = ih.getCursorPosition();
       const range = sel ?? { start: curPos, end: curPos };
       const dialog = new ParaShapeDialog(services.wasm, services.eventBus);
       dialog.onApply = (mods) => {
-        ih.applyParaPropsToRange(range.start, range.end, mods);
+        if (cellTarget) ih.applyParaPropsToCellSelection(cellTarget, mods);
+        else ih.applyParaPropsToRange(range.start, range.end, mods);
       };
       dialog.onClose = () => ih.focus();
       dialog.show(paraProps);

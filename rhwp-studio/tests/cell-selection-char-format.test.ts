@@ -8,7 +8,11 @@ import {
   hasCharFormatTarget,
   isNestedCellPath,
   collectSelectedCellIndices,
+  collectCellParaTargets,
   CELL_SELECTION_CHAR_FORMAT_COMMANDS,
+  CELL_SELECTION_PARA_FORMAT_COMMANDS,
+  CELL_SELECTION_FORMAT_DIALOG_COMMANDS,
+  CELL_SELECTION_FORMAT_COMMANDS,
 } from '../src/engine/cell-selection-format.ts';
 
 // 배경: F5 로 셀을 고르고 글꼴·크기·굵게를 바꾸면 서식바 숫자만 바뀌고 문서는 그대로였다.
@@ -104,18 +108,23 @@ test('글자 서식 수신부·토글·증감은 셀 선택을 대상으로 인�
   );
 });
 
-test('셀 선택 글자 서식은 빈 문단을 건너뛰고 셀 선택 오버레이를 다시 그린다', () => {
+test('셀 선택 글자 서식은 빈 문단도 (0,0) 범위로 넘기고 셀 선택 오버레이를 다시 그린다', () => {
   const ih = source('src/engine/input-handler.ts');
+  // 툴바·단축키 경로: 지금의 셀 선택을 표적으로 잡아 applyCharPropsToCellSelection 에 위임
   const start = ih.indexOf('private applyCharFormatToSelectedCells(');
   assert.ok(start >= 0);
-  const body = ih.slice(start, ih.indexOf('private resolveSelectedCellsTarget(', start));
-  assert.match(body, /operationType:\s*'charFormatCells'/);
-  assert.match(body, /this\.updateCellSelection\(\)/);
+  const body = ih.slice(start, ih.indexOf('applyCharPropsToCellSelection(target: CellSelectionFormatTarget', start));
+  assert.match(body, /resolveSelectedCellsTarget\('글자 서식'\)[\s\S]{0,200}?return this\.applyCharPropsToCellSelection\(target, props\)/);
+  // 적용 본체: snapshot 한 단계 + 오버레이 갱신
+  const apply = ih.slice(ih.indexOf('applyCharPropsToCellSelection(target: CellSelectionFormatTarget'));
+  const applyBody = apply.slice(0, apply.indexOf('applyParaPropsToCellSelection('));
+  assert.match(applyBody, /operationType:\s*'charFormatCells'/);
+  assert.match(applyBody, /this\.refreshCellSelectionAfterFormat\(\)/);
+  // 빈 문단(빈 셀)을 건너뛰지 않는다 — wasm 이 빈 문단의 CharShapeRef 를 통째로 바꾼다 (§7-3)
   const whole = ih.slice(ih.indexOf('private applyCharFormatToWholeCell('));
-  assert.match(
-    whole,
-    /if \(len <= 0\) continue;[\s\S]{0,80}?applyCharFormatInCell\(ctx\.sec, ctx\.ppi, ctx\.ci, cellIdx, p, 0, len, propsJson\)/,
-  );
+  const wholeBody = whole.slice(0, whole.indexOf('\n  }\n'));
+  assert.equal(wholeBody.includes('if (len <= 0) continue;'), false, '빈 문단 건너뜀이 남아 있다');
+  assert.match(wholeBody, /applyCharFormatInCell\(ctx\.sec, ctx\.ppi, ctx\.ci, cellIdx, p, 0, len, propsJson\)/);
 });
 
 test('모양 붙여넣기는 셀 선택에서 글자 서식도 함께 적용한다', () => {
@@ -139,25 +148,102 @@ test('서식바 동기화는 셀 선택 중 선택 범위 첫 셀을 따르고, 
   assert.match(body, /cellSelectionRenderer\.render\([\s\S]{0,200}?this\.emitCursorFormatState\(\)/);
 });
 
-test('셀 선택 유지 서식 커맨드 목록은 글자 서식만 담고 문단·스타일·대화상자는 뺀다', () => {
-  const included = ['format:bold', 'format:italic', 'format:underline', 'format:strikethrough',
+test('셀 선택 유지 서식 커맨드 목록 — 글자·문단·대화상자 세 묶음과 그 합집합', () => {
+  const chars = ['format:bold', 'format:italic', 'format:underline', 'format:strikethrough',
     'format:emboss', 'format:engrave', 'format:outline', 'format:superscript', 'format:subscript',
     'format:font-size-increase', 'format:font-size-decrease',
     'format:char-ratio-increase', 'format:char-ratio-decrease',
     'format:char-spacing-increase', 'format:char-spacing-decrease'];
-  for (const id of included) assert.equal(CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(id), true, id);
-  // 문단 서식·스타일·대화상자는 아직 다중 셀을 모르므로 목록 밖 (Finding B·C)
-  for (const id of ['format:char-shape', 'format:para-shape', 'format:apply-style',
-    'format:align-left', 'format:line-spacing-increase', 'format:style-dialog']) {
-    assert.equal(CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(id), false, id);
+  for (const id of chars) assert.equal(CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(id), true, id);
+  // 문단 서식·스타일은 getParaFormatTargetsAtCursor 가 다중 셀을 알게 되어 목록에 든다 (Finding C)
+  const paras = ['format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify',
+    'format:align-distribute', 'format:align-split', 'format:line-spacing',
+    'format:line-spacing-increase', 'format:line-spacing-decrease', 'format:apply-style'];
+  for (const id of paras) assert.equal(CELL_SELECTION_PARA_FORMAT_COMMANDS.has(id), true, id);
+  // 대화상자는 열 때 표적을 잡아 두므로 목록에 든다 (Finding B)
+  const dialogs = ['format:char-shape', 'format:para-shape', 'format:style-dialog'];
+  for (const id of dialogs) assert.equal(CELL_SELECTION_FORMAT_DIALOG_COMMANDS.has(id), true, id);
+  // 세 묶음은 서로 겹치지 않고 합집합이 키 처리용 목록이다
+  for (const id of chars) {
+    assert.equal(CELL_SELECTION_PARA_FORMAT_COMMANDS.has(id) || CELL_SELECTION_FORMAT_DIALOG_COMMANDS.has(id), false, id);
   }
+  assert.equal(CELL_SELECTION_FORMAT_COMMANDS.size, chars.length + paras.length + dialogs.length);
+  for (const id of [...chars, ...paras, ...dialogs]) assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), true, id);
+  // 커서 문단의 현재 상태로 판단하는 개요 수준·번호/글머리표 토글은 아직 밖
+  for (const id of ['format:level-increase', 'format:level-decrease', 'format:toggle-numbering', 'format:toggle-bullet']) {
+    assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), false, id);
+  }
+});
+
+test('셀 선택 문단 서식 대상은 선택한 모든 셀의 모든 문단이다 (빈 셀 포함)', () => {
+  const table = { sec: 0, ppi: 3, ci: 1 };
+  const paraCount = (cellIdx: number) => ({ 0: 2, 1: 1, 2: 0, 5: 3 } as Record<number, number>)[cellIdx] ?? 1;
+  const targets = collectCellParaTargets(table, [0, 1, 5], paraCount);
+  assert.deepEqual(targets, [
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 0, cellParaIdx: 0 },
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 0, cellParaIdx: 1 },
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 1, cellParaIdx: 0 },
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 5, cellParaIdx: 0 },
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 5, cellParaIdx: 1 },
+    { kind: 'cell', sec: 0, parentPara: 3, controlIdx: 1, cellIdx: 5, cellParaIdx: 2 },
+  ]);
+  // 문단이 0개로 보고되는 셀은 대상이 없다 (wasm 이 빈 셀도 문단 1개로 보고하므로 실제로는 안 생긴다)
+  assert.deepEqual(collectCellParaTargets(table, [2], paraCount), []);
+  assert.deepEqual(collectCellParaTargets(table, [], paraCount), []);
+});
+
+test('문단 서식·스타일 대상은 셀 선택 중 선택한 셀 전체를 향한다 (Finding C)', () => {
+  const ih = source('src/engine/input-handler.ts');
+  const start = ih.indexOf('private getParaFormatTargetsAtCursor(): ParaFormatTarget[]');
+  assert.ok(start >= 0);
+  const body = ih.slice(start, ih.indexOf('private getParaFormatTargetsForRange(', start));
+  assert.match(body, /isInCellSelectionMode\(\)[\s\S]{0,200}?resolveSelectedCellsTarget\('문단 서식'\)[\s\S]{0,120}?getParaFormatTargetsForCellSelection\(target\)/);
+  assert.match(body, /collectCellParaTargets\(/);
+  // 문단 서식·스타일 적용 뒤 셀 선택 오버레이를 다시 그린다 (행 높이 변화)
+  const pf = ih.slice(ih.indexOf('private applyParaFormat(props'));
+  assert.match(pf.slice(0, 400), /executeParaFormatCommand\(targets, props\)\) this\.refreshCellSelectionAfterFormat\(\)/);
+  const st = ih.slice(ih.indexOf('  applyStyle(styleId: number): void {'));
+  assert.match(st.slice(0, 1200), /operationType: 'applyStyle', operation \}\);\s*this\.refreshCellSelectionAfterFormat\(\)/);
+  // 대화상자용 조회는 셀 선택 첫 셀을 따른다
+  assert.match(ih, /getCharProperties\(\): CharProperties \{\s*return this\.getCharPropertiesForFormatTarget\(\);/);
+  assert.match(ih, /getParaProperties\(\): ParaProperties \{\s*return this\.getParaPropertiesForFormatTarget\(\);/);
+  assert.match(ih, /getCurrentStyleId\(\): number \{[\s\S]{0,200}?this\.firstSelectedCell\(\)/);
+});
+
+test('글자 모양·문단 모양 대화상자는 셀 선택 표적을 열 때 잡아 두고 적용 시 그 표적에 쓴다 (Finding B)', () => {
+  const fmt = source('src/command/commands/format.ts');
+  const cs = fmt.slice(fmt.indexOf("id: 'format:char-shape'"), fmt.indexOf("id: 'format:para-shape'"));
+  assert.match(cs, /captureCellSelectionFormatTarget\('글자 모양'\)/);
+  assert.match(cs, /const savedSel = cellTarget \? null : ih\.getSelection\(\);/);
+  assert.match(cs, /if \(!cellTarget && !savedSel\) return;/);
+  assert.match(cs, /if \(cellTarget\) ih\.applyCharPropsToCellSelection\(cellTarget, mods\);/);
+  assert.match(cs, /else if \(savedSel\) ih\.applyCharPropsToRange\(savedSel\.start, savedSel\.end, mods\);/);
+  const ps = fmt.slice(fmt.indexOf("id: 'format:para-shape'"), fmt.indexOf("id: 'format:apply-style'"));
+  assert.match(ps, /captureCellSelectionFormatTarget\('문단 모양'\)/);
+  assert.match(ps, /if \(cellTarget\) ih\.applyParaPropsToCellSelection\(cellTarget, mods\);/);
+  // 표적은 제외 셀의 사본을 품는다 — 대화상자 조작 중 선택이 바뀌어도 적용 대상이 고정된다
+  const ih = source('src/engine/input-handler.ts');
+  assert.match(ih, /export type CellSelectionFormatTarget = \{[\s\S]{0,200}?excluded: ReadonlySet<string>;/);
+  assert.match(ih, /return \{ ctx, range, excluded: new Set\(this\.cursor\.getExcludedCells\(\)\) \};/);
+  const cap = ih.slice(ih.indexOf('captureCellSelectionFormatTarget(featureLabel: string)'));
+  assert.match(cap.slice(0, 300), /if \(!this\.cursor\.isInCellSelectionMode\(\)\) return null;\s*return this\.resolveSelectedCellsTarget\(featureLabel\);/);
+});
+
+test('서식바 적용이 거부되면 표시값을 실제 서식으로 되돌린다 (§7-4)', () => {
+  const ih = source('src/engine/input-handler.ts');
+  const recv = ih.slice(ih.indexOf("eventBus.on('format-char'"));
+  const body = recv.slice(0, recv.indexOf('});'));
+  assert.match(body, /const applied = this\.editMode !== 'form'\s*&& this\.hasCharFormatTarget\(\)\s*&& this\.applyCharFormat\(/);
+  assert.match(body, /if \(!applied\) \{[\s\S]{0,400}?this\.emitCursorFormatState\(\);/);
+  // applyCharFormat 은 적용 여부를 돌려준다 (셀 경로는 중첩 표에서 false)
+  assert.match(ih, /private applyCharFormat\(props: Partial<CharProperties>\): boolean \{[\s\S]{0,200}?return this\.applyCharFormatToSelectedCells\(props\);/);
 });
 
 test('셀 선택 키 처리는 서식 단축키를 선택 해제 前에 그대로 dispatch 한다', () => {
   const kb = source('src/engine/input-handler-keyboard.ts');
-  assert.match(kb, /import \{ CELL_SELECTION_CHAR_FORMAT_COMMANDS \} from '\.\/cell-selection-format'/);
+  assert.match(kb, /import \{ CELL_SELECTION_FORMAT_COMMANDS \} from '\.\/cell-selection-format'/);
   const block = kb.slice(kb.indexOf('if (this.cursor.isInCellSelectionMode()) {'));
-  const dispatch = block.indexOf('CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(fmtCmd)');
+  const dispatch = block.indexOf('CELL_SELECTION_FORMAT_COMMANDS.has(fmtCmd)');
   // fall-through exit(그 외 키 → 셀 선택 모드 종료). block 첫 exit 은 Escape 핸들러라 앵커로 못 쓴다.
   const fallthrough = block.indexOf('그 외 키 → 셀 선택 모드 종료');
   assert.ok(dispatch >= 0, '서식 단축키 처리가 있어야 한다');

@@ -3,7 +3,7 @@
 
 import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand } from './command';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
-import { CELL_SELECTION_CHAR_FORMAT_COMMANDS } from './cell-selection-format';
+import { CELL_SELECTION_FORMAT_COMMANDS } from './cell-selection-format';
 import * as _connector from './input-handler-connector';
 import {
   detectPlatformKind,
@@ -1023,12 +1023,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.textarea.focus();
       return;
     }
-    // 글자 서식 토글·증감 단축키(Ctrl+B/I/U·Ctrl+]/[·Alt+Shift+E/R 등)는 셀 선택을 유지한 채
-    // 적용한다. 셀 선택을 먼저 해제하면 toggleFormat/adjust* 이 대상 없음으로 무동작이 되어
-    // 툴바 버튼과 어긋난다(진단 문서 §11-2 후속). 문단 서식·스타일·대화상자는 목록에서 제외.
+    // 서식 단축키(글자: Ctrl+B/I/U·Ctrl+]/[·Alt+Shift+E/R 등 · 문단: Ctrl+Shift+L/M·Alt+Shift+C/H/D·
+    // Alt+Shift+A/Z · 대화상자: Alt+L·Alt+T·F6)는 셀 선택을 유지한 채 적용한다. 셀 선택을 먼저 해제하면
+    // 대상 없음으로 무동작이 되거나(글자) 캐럿 셀 하나에만 적용되어(문단) 툴바 버튼과 어긋난다
+    // (진단 문서 §11-2·§11-5 후속). 대화상자는 열 때 셀 선택 표적을 잡아 두고 적용 시 그 표적에 쓴다.
     {
       const fmtCmd = matchShortcut(e, defaultShortcuts);
-      if (fmtCmd && CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(fmtCmd)) {
+      if (fmtCmd && CELL_SELECTION_FORMAT_COMMANDS.has(fmtCmd)) {
         e.preventDefault();
         this.dispatcher?.dispatch(fmtCmd);
         return;

@@ -39,7 +39,7 @@ import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
 import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
 import type { NavigationKeyInput } from './navigation-keymap';
-import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, collectSelectedCellIndices, type CellGridRange } from './cell-selection-format';
+import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, collectSelectedCellIndices, collectCellParaTargets, type CellGridRange } from './cell-selection-format';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -57,9 +57,14 @@ type FormatCopyState = {
 };
 
 /** F5 셀 선택 범위에 서식을 적용할 표 문맥 (중첩 표는 걸러진 뒤) */
-type SelectedCellsTarget = {
+/**
+ * F5 셀 선택에 서식을 적용할 표적. 글자 모양·문단 모양 대화상자는 열 때 이 값을 잡아 두고 적용 시 쓴다 —
+ * 대화상자 조작 중 선택이 바뀌어도 사용자가 고른 셀에 적용되도록. `excluded` 는 Ctrl+클릭 제외 셀의 사본.
+ */
+export type CellSelectionFormatTarget = {
   ctx: NonNullable<ReturnType<CursorState['getCellTableContext']>>;
   range: CellGridRange;
+  excluded: ReadonlySet<string>;
 };
 
 type PagePoint = {
@@ -658,10 +663,16 @@ export class InputHandler {
     // Toolbar에서 서식 적용 요청 수신 (글꼴명, 크기, 색상 — 커맨드 시스템 미경유)
     eventBus.on('format-char', (props) => {
       if (!this.active) return;
-      if (this.editMode === 'form') return;
-      // 텍스트 선택뿐 아니라 F5 셀 선택도 대상이다 — hasSelection() 은 셀 격자 선택을 모른다
-      if (this.hasCharFormatTarget()) {
-        this.applyCharFormat(props as Partial<CharProperties>);
+      // 텍스트 선택뿐 아니라 F5 셀 선택도 대상이다 — hasSelection() 은 셀 격자 선택을 모른다.
+      // 양식 모드는 의도된 차단.
+      const applied = this.editMode !== 'form'
+        && this.hasCharFormatTarget()
+        && this.applyCharFormat(props as Partial<CharProperties>);
+      if (!applied) {
+        // 서식바 ▲▼·크기 입력은 문서보다 먼저 표시값을 바꾼다(toolbar.ts). 적용이 거부되면
+        // (양식 모드·대상 없음·중첩 표) 그 숫자가 올라간 채 남아 "적용됐다"고 오인하게 하므로
+        // 실제 서식으로 되돌린다 (진단 문서 §7-4).
+        this.emitCursorFormatState();
       }
       // 서식바 조작으로 빠진 포커스를 항상 복원
       this.focusTextarea();
@@ -1878,17 +1889,17 @@ export class InputHandler {
 
   // ─── 서식 적용 ─────────────────────────────────────────
 
-  /** 선택 범위에 글자 서식을 적용한다 */
-  private applyCharFormat(props: Partial<CharProperties>): void {
+  /** 선택 범위에 글자 서식을 적용한다. 대상이 없거나 거부되면(중첩 표) false. */
+  private applyCharFormat(props: Partial<CharProperties>): boolean {
     // F5 셀 선택: 선택한 셀들의 텍스트 전체가 대상 (ApplyCharFormatCommand 는 셀 하나에 고정돼 있다)
     if (this.cursor.isInCellSelectionMode()) {
-      this.applyCharFormatToSelectedCells(props);
-      return;
+      return this.applyCharFormatToSelectedCells(props);
     }
     const sel = this.cursor.getSelectionOrdered();
-    if (!sel) return;
+    if (!sel) return false;
     const cmd = new ApplyCharFormatCommand(sel.start, sel.end, props);
     this.executeOperation({ kind: 'command', command: cmd });
+    return true;
   }
 
   /** 토글 서식 적용 (상호 배타 처리 포함) */
@@ -1951,26 +1962,33 @@ export class InputHandler {
    * F5 셀 선택 중에는 선택 범위 첫 셀(셀 순서 기준)의 첫 글자를, 그 외에는 커서 위치를 기준으로 삼는다.
    */
   private getCharPropertiesForFormatTarget(): CharProperties {
-    if (this.cursor.isInCellSelectionMode()) {
-      const target = this.resolveSelectedCellsTarget(null);
-      if (target) {
-        const [first] = this.selectedCellIndices(this.wasm, target);
-        if (first !== undefined) {
-          try {
-            return this.wasm.getCellCharPropertiesAt(target.ctx.sec, target.ctx.ppi, target.ctx.ci, first, 0, 0);
-          } catch {
-            // 조회 실패 시 커서 위치로 폴백
-          }
-        }
+    const first = this.firstSelectedCell();
+    if (first) {
+      try {
+        return this.wasm.getCellCharPropertiesAt(first.ctx.sec, first.ctx.ppi, first.ctx.ci, first.cellIdx, 0, 0);
+      } catch {
+        // 조회 실패 시 커서 위치로 폴백
       }
     }
     return this.getCharPropertiesAtCursor();
   }
 
+  /** 문단 서식의 "현재값" 기준 — F5 셀 선택 중에는 선택 범위 첫 셀의 첫 문단, 그 외에는 커서 위치. */
+  private getParaPropertiesForFormatTarget(): ParaProperties {
+    const first = this.firstSelectedCell();
+    if (first) {
+      try {
+        return this.wasm.getCellParaPropertiesAt(first.ctx.sec, first.ctx.ppi, first.ctx.ci, first.cellIdx, 0);
+      } catch {
+        // 조회 실패 시 커서 위치로 폴백
+      }
+    }
+    return this.getParaPropertiesAtCursor();
+  }
+
   /**
    * F5 로 선택한 셀들의 텍스트 전체에 글자 서식을 적용한다 (한컴: 셀 블록 선택 후 글꼴·크기·굵게 변경).
-   * 되돌리기는 snapshot 한 단계 — 모양 복사(`applyCopiedFormatToSelectedCells`)와 같은 방식.
-   * 빈 문단은 건너뛴다: 문단 기본 charShape 개념이 없어 "다음에 입력할 글자"의 서식은 아직 못 바꾼다.
+   * 표적은 지금의 셀 선택에서 구한다. 대화상자처럼 표적을 미리 잡아 둔 경우는 `applyCharPropsToCellSelection`.
    */
   private applyCharFormatToSelectedCells(props: Partial<CharProperties>): boolean {
     const target = this.resolveSelectedCellsTarget('글자 서식');
@@ -1978,6 +1996,15 @@ export class InputHandler {
       this.focusTextarea();
       return false;
     }
+    return this.applyCharPropsToCellSelection(target, props);
+  }
+
+  /**
+   * 셀 선택 표적에 글자 서식을 적용한다.
+   * 되돌리기는 snapshot 한 단계 — 모양 복사(`applyCopiedFormatToSelectedCells`)와 같은 방식.
+   * 빈 문단도 대상이다: wasm 이 빈 문단의 유일한 CharShapeRef 를 바꿔 "다음에 입력할 글자"의 서식이 된다.
+   */
+  applyCharPropsToCellSelection(target: CellSelectionFormatTarget, props: Partial<CharProperties>): boolean {
     const propsJson = JSON.stringify(props);
     this.executeOperation({
       kind: 'snapshot',
@@ -1989,17 +2016,46 @@ export class InputHandler {
         return this.cursor.getPosition();
       },
     });
-    // 행 높이가 바뀌어도 셀 선택은 유지된다 — afterEdit() 는 오버레이를 다시 그리지 않으므로 직접 갱신
-    this.updateCellSelection();
+    this.refreshCellSelectionAfterFormat();
     this.focusTextarea();
     return true;
+  }
+
+  /**
+   * 셀 선택 표적에 문단 서식을 적용한다 (문단 모양 대화상자 Alt+T). 선택한 모든 셀의 모든 문단이 대상.
+   * 되돌리기는 ApplyParaFormatCommand 가 문단마다 paraShapeId 를 기록해 한 단계로 복원한다.
+   */
+  applyParaPropsToCellSelection(target: CellSelectionFormatTarget, props: Partial<ParaProperties>): boolean {
+    try {
+      const targets = this.getParaFormatTargetsForCellSelection(target);
+      const ok = this.executeParaFormatCommand(targets, props as Record<string, unknown>);
+      if (ok) this.refreshCellSelectionAfterFormat();
+      return ok;
+    } catch (err) {
+      console.warn('[InputHandler] applyParaPropsToCellSelection 실패:', err);
+      return false;
+    }
+  }
+
+  /**
+   * 대화상자용: 지금의 F5 셀 선택을 서식 표적으로 잡아 둔다. 셀 선택이 아니면 null,
+   * 중첩 표면 안내 후 null (경로 기반 글자 서식 API 부재 — §7-1).
+   */
+  captureCellSelectionFormatTarget(featureLabel: string): CellSelectionFormatTarget | null {
+    if (!this.cursor.isInCellSelectionMode()) return null;
+    return this.resolveSelectedCellsTarget(featureLabel);
+  }
+
+  /** 서식 적용으로 행 높이가 바뀌어도 셀 선택은 유지된다 — afterEdit() 는 오버레이를 다시 그리지 않으므로 직접 갱신 */
+  private refreshCellSelectionAfterFormat(): void {
+    if (this.cursor.isInCellSelectionMode()) this.updateCellSelection();
   }
 
   /**
    * 셀 선택 범위에 서식을 적용할 표 문맥을 구한다. 중첩 표는 null (경로 기반 글자 서식 API 부재).
    * @param featureLabel 미지원 안내에 쓸 기능 이름. null 이면 안내 없이 null 을 돌려준다.
    */
-  private resolveSelectedCellsTarget(featureLabel: string | null): SelectedCellsTarget | null {
+  private resolveSelectedCellsTarget(featureLabel: string | null): CellSelectionFormatTarget | null {
     const ctx = this.cursor.getCellTableContext();
     const range = this.cursor.getSelectedCellRange();
     if (!ctx || !range) return null;
@@ -2007,22 +2063,34 @@ export class InputHandler {
       if (featureLabel) console.info(`[InputHandler] 중첩 표 셀 선택의 ${featureLabel}은 아직 지원하지 않습니다`);
       return null;
     }
-    return { ctx, range };
+    return { ctx, range, excluded: new Set(this.cursor.getExcludedCells()) };
   }
 
   /** 선택 범위 안이고 제외되지 않은 셀 인덱스 (병합 셀은 시작 좌표 기준, 모양 복사와 같은 규칙) */
-  private selectedCellIndices(wasm: WasmBridge, target: SelectedCellsTarget): number[] {
-    const { ctx, range } = target;
+  private selectedCellIndices(wasm: WasmBridge, target: CellSelectionFormatTarget): number[] {
+    const { ctx, range, excluded } = target;
     const dims = wasm.getTableDimensions(ctx.sec, ctx.ppi, ctx.ci);
     return collectSelectedCellIndices(
       dims.cellCount,
       (cellIdx) => wasm.getCellInfo(ctx.sec, ctx.ppi, ctx.ci, cellIdx),
       range,
-      this.cursor.getExcludedCells(),
+      excluded,
     );
   }
 
-  /** 셀 하나의 모든 문단 텍스트에 글자 서식을 적용한다 (빈 문단은 건너뜀) */
+  /** 셀 선택 표적의 첫 셀(셀 순서 기준) — 서식바·대화상자가 "현재값"으로 보여 줄 기준 */
+  private firstSelectedCell(): { ctx: CellSelectionFormatTarget['ctx']; cellIdx: number } | null {
+    if (!this.cursor.isInCellSelectionMode()) return null;
+    const target = this.resolveSelectedCellsTarget(null);
+    if (!target) return null;
+    const [first] = this.selectedCellIndices(this.wasm, target);
+    return first === undefined ? null : { ctx: target.ctx, cellIdx: first };
+  }
+
+  /**
+   * 셀 하나의 모든 문단 텍스트에 글자 서식을 적용한다.
+   * 빈 문단은 (0, 0) 범위로 넘긴다 — wasm 이 빈 문단이면 CharShapeRef 를 통째로 바꾼다(빈 셀 서식, §7-3).
+   */
   private applyCharFormatToWholeCell(
     wasm: WasmBridge,
     ctx: { sec: number; ppi: number; ci: number },
@@ -2031,17 +2099,16 @@ export class InputHandler {
   ): void {
     const paraCount = wasm.getCellParagraphCount(ctx.sec, ctx.ppi, ctx.ci, cellIdx);
     for (let p = 0; p < paraCount; p++) {
-      const len = wasm.getCellParagraphLength(ctx.sec, ctx.ppi, ctx.ci, cellIdx, p);
-      if (len <= 0) continue;
+      const len = Math.max(0, wasm.getCellParagraphLength(ctx.sec, ctx.ppi, ctx.ci, cellIdx, p));
       wasm.applyCharFormatInCell(ctx.sec, ctx.ppi, ctx.ci, cellIdx, p, 0, len, propsJson);
     }
   }
 
-  /** 커서 위치 문단에 문단 서식을 적용한다 */
+  /** 커서 위치 문단(F5 셀 선택 중에는 선택한 모든 셀의 모든 문단)에 문단 서식을 적용한다 */
   private applyParaFormat(props: Record<string, unknown>): void {
     try {
       const targets = this.getParaFormatTargetsAtCursor();
-      this.executeParaFormatCommand(targets, props);
+      if (this.executeParaFormatCommand(targets, props)) this.refreshCellSelectionAfterFormat();
     } catch (err) {
       console.warn('[InputHandler] applyParaFormat 실패:', err);
     }
@@ -2057,11 +2124,29 @@ export class InputHandler {
     return true;
   }
 
+  /**
+   * 문단 서식·스타일의 대상 문단. F5 셀 선택 중에는 선택한 모든 셀의 모든 문단(한컴: 셀 블록 정렬·줄 간격·
+   * 스타일) — 종전에는 커서 위치로 폴백해 캐럿 셀 하나에만 적용됐다(진단 문서 §11-5 Finding C).
+   */
   private getParaFormatTargetsAtCursor(): ParaFormatTarget[] {
+    if (this.cursor.isInCellSelectionMode()) {
+      const target = this.resolveSelectedCellsTarget('문단 서식');
+      return target ? this.getParaFormatTargetsForCellSelection(target) : [];
+    }
     const sel = this.cursor.getSelectionOrdered();
     if (sel) return this.getParaFormatTargetsForRange(sel.start, sel.end);
     const pos = this.cursor.getPosition();
     return this.getParaFormatTargetsForRange(pos, pos);
+  }
+
+  /** 셀 선택 표적의 모든 셀·모든 문단을 문단 서식 대상으로 편다 (빈 셀 포함) */
+  private getParaFormatTargetsForCellSelection(target: CellSelectionFormatTarget): ParaFormatTarget[] {
+    const { ctx } = target;
+    return collectCellParaTargets(
+      ctx,
+      this.selectedCellIndices(this.wasm, target),
+      (cellIdx) => this.wasm.getCellParagraphCount(ctx.sec, ctx.ppi, ctx.ci, cellIdx),
+    );
   }
 
   private getParaFormatTargetsForRange(start: DocumentPosition, end: DocumentPosition): ParaFormatTarget[] {
@@ -2239,12 +2324,15 @@ export class InputHandler {
     } catch {
       // 문서 없거나 위치 초과 시 무시
     }
-    // 문단 속성 (눈금자 마커용) + 스타일
+    // 문단 속성 (눈금자 마커용) + 스타일 — F5 셀 선택 중에는 선택 범위 첫 셀 기준
     try {
       const pos = this.cursor.getPosition();
       const inFootnote = this.cursor.isInFootnote();
       const inCell = !inFootnote && pos.parentParaIndex !== undefined;
-      const paraProps = inFootnote
+      const firstSel = this.firstSelectedCell();
+      const paraProps = firstSel
+        ? this.wasm.getCellParaPropertiesAt(firstSel.ctx.sec, firstSel.ctx.ppi, firstSel.ctx.ci, firstSel.cellIdx, 0)
+        : inFootnote
         ? this.wasm.getParaPropertiesInFootnote(
             this.cursor.fnSectionIdx,
             this.cursor.fnParaIdx,
@@ -2261,7 +2349,9 @@ export class InputHandler {
 
       // 스타일 드롭다운 갱신용
       try {
-        const styleInfo = inCell
+        const styleInfo = firstSel
+          ? this.wasm.getCellStyleAt(firstSel.ctx.sec, firstSel.ctx.ppi, firstSel.ctx.ci, firstSel.cellIdx, 0)
+          : inCell
           ? this.wasm.getCellStyleAt(
               pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
               pos.cellIndex!, pos.cellParaIndex!,
@@ -4518,6 +4608,7 @@ export class InputHandler {
         return { ...cursorBefore };
       };
       this.executeOperation({ kind: 'snapshot', operationType: 'applyStyle', operation });
+      this.refreshCellSelectionAfterFormat();
     } catch (err) {
       console.warn('[InputHandler] applyStyle 실패:', err);
     }
@@ -4630,13 +4721,18 @@ export class InputHandler {
     }
   }
 
-  /** 글자 모양 대화상자용: 커서 위치의 글자 서식 조회 (커맨드 시스템용) */
+  /** 글자 모양 대화상자용: 커서 위치(F5 셀 선택 중에는 선택 범위 첫 셀)의 글자 서식 조회 (커맨드 시스템용) */
   getCharProperties(): CharProperties {
-    return this.getCharPropertiesAtCursor();
+    return this.getCharPropertiesForFormatTarget();
   }
 
-  /** 문단 모양 대화상자용: 커서 위치의 문단 서식 조회 (커맨드 시스템용) */
+  /** 문단 모양 대화상자용: 커서 위치(F5 셀 선택 중에는 선택 범위 첫 셀 첫 문단)의 문단 서식 조회 (커맨드 시스템용) */
   getParaProperties(): ParaProperties {
+    return this.getParaPropertiesForFormatTarget();
+  }
+
+  /** 커서 위치의 문단 서식 조회 (머리말/꼬리말·각주·셀·본문) */
+  private getParaPropertiesAtCursor(): ParaProperties {
     // 머리말/꼬리말 모드
     if (this.cursor.isInHeaderFooter()) {
       const isHeader = this.cursor.headerFooterMode === 'header';
@@ -4662,9 +4758,11 @@ export class InputHandler {
     return this.wasm.getParaPropertiesAt(pos.sectionIndex, pos.paragraphIndex);
   }
 
-  /** 커서 위치의 문단 스타일 ID를 반환한다 (스타일 대화상자용) */
+  /** 커서 위치(F5 셀 선택 중에는 선택 범위 첫 셀)의 문단 스타일 ID를 반환한다 (스타일 대화상자용) */
   getCurrentStyleId(): number {
     try {
+      const first = this.firstSelectedCell();
+      if (first) return this.wasm.getCellStyleAt(first.ctx.sec, first.ctx.ppi, first.ctx.ci, first.cellIdx, 0).id;
       const pos = this.cursor.getPosition();
       const info = pos.parentParaIndex !== undefined
         ? this.wasm.getCellStyleAt(
