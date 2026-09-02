@@ -665,6 +665,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.updateCellSelection();
       } else {
         if (this.cursor.enterCellSelectionMode()) {
+          // 텍스트 선택(anchor)도 함께 지운다. 렌더러만 지우면 hasSelection() 이 true 로 남아
+          // 셀 선택 중 글자 서식이 화면에서 사라진 옛 텍스트 범위에 적용된다(오적용).
+          // 마우스 드래그 진입(input-handler-mouse.ts)은 이미 clearSelection() 을 부른다.
+          this.cursor.clearSelection();
           this.caret.hide();
           this.selectionRenderer.clear();
           this.updateCellSelection();
