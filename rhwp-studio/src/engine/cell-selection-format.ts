@@ -59,3 +59,19 @@ export function collectSelectedCellIndices(
   }
   return picked;
 }
+
+/**
+ * F5 셀 선택을 유지한 채 적용해야 하는 글자 서식 커맨드 id.
+ * 이 커맨드들은 toggleFormat·adjustFontSize/CharRatio/CharSpacing 로 라우팅되며 셀 선택을 안다.
+ * 셀 선택 키 처리가 이 목록의 단축키(Ctrl+B/I/U·Ctrl+]/[ 등)를 만나면 선택을 해제하지 말고
+ * 그대로 dispatch 한다 — 안 그러면 셀 선택만 풀리고 무동작이 되어 툴바 버튼과 어긋난다.
+ * 문단 서식(정렬·줄간격)·스타일·글자 모양 대화상자는 아직 다중 셀을 모르므로 제외한다.
+ */
+export const CELL_SELECTION_CHAR_FORMAT_COMMANDS: ReadonlySet<string> = new Set([
+  'format:bold', 'format:italic', 'format:underline', 'format:strikethrough',
+  'format:emboss', 'format:engrave', 'format:outline',
+  'format:superscript', 'format:subscript',
+  'format:font-size-increase', 'format:font-size-decrease',
+  'format:char-ratio-increase', 'format:char-ratio-decrease',
+  'format:char-spacing-increase', 'format:char-spacing-decrease',
+]);

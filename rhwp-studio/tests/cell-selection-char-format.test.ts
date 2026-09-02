@@ -8,6 +8,7 @@ import {
   hasCharFormatTarget,
   isNestedCellPath,
   collectSelectedCellIndices,
+  CELL_SELECTION_CHAR_FORMAT_COMMANDS,
 } from '../src/engine/cell-selection-format.ts';
 
 // 배경: F5 로 셀을 고르고 글꼴·크기·굵게를 바꾸면 서식바 숫자만 바뀌고 문서는 그대로였다.
@@ -136,4 +137,31 @@ test('서식바 동기화는 셀 선택 중 선택 범위 첫 셀을 따르고, 
   const start = ih.indexOf('private updateCellSelection(): void');
   const body = ih.slice(start, ih.indexOf('/** 선택 영역 하이라이트를 갱신한다 */', start));
   assert.match(body, /cellSelectionRenderer\.render\([\s\S]{0,200}?this\.emitCursorFormatState\(\)/);
+});
+
+test('셀 선택 유지 서식 커맨드 목록은 글자 서식만 담고 문단·스타일·대화상자는 뺀다', () => {
+  const included = ['format:bold', 'format:italic', 'format:underline', 'format:strikethrough',
+    'format:emboss', 'format:engrave', 'format:outline', 'format:superscript', 'format:subscript',
+    'format:font-size-increase', 'format:font-size-decrease',
+    'format:char-ratio-increase', 'format:char-ratio-decrease',
+    'format:char-spacing-increase', 'format:char-spacing-decrease'];
+  for (const id of included) assert.equal(CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(id), true, id);
+  // 문단 서식·스타일·대화상자는 아직 다중 셀을 모르므로 목록 밖 (Finding B·C)
+  for (const id of ['format:char-shape', 'format:para-shape', 'format:apply-style',
+    'format:align-left', 'format:line-spacing-increase', 'format:style-dialog']) {
+    assert.equal(CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(id), false, id);
+  }
+});
+
+test('셀 선택 키 처리는 서식 단축키를 선택 해제 前에 그대로 dispatch 한다', () => {
+  const kb = source('src/engine/input-handler-keyboard.ts');
+  assert.match(kb, /import \{ CELL_SELECTION_CHAR_FORMAT_COMMANDS \} from '\.\/cell-selection-format'/);
+  const block = kb.slice(kb.indexOf('if (this.cursor.isInCellSelectionMode()) {'));
+  const dispatch = block.indexOf('CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(fmtCmd)');
+  // fall-through exit(그 외 키 → 셀 선택 모드 종료). block 첫 exit 은 Escape 핸들러라 앵커로 못 쓴다.
+  const fallthrough = block.indexOf('그 외 키 → 셀 선택 모드 종료');
+  assert.ok(dispatch >= 0, '서식 단축키 처리가 있어야 한다');
+  assert.ok(fallthrough >= 0, '기존 fall-through exit 이 있어야 한다');
+  assert.ok(dispatch < fallthrough, 'dispatch 가 fall-through exit 보다 앞이어야 한다');
+  assert.match(block.slice(dispatch, dispatch + 200), /this\.dispatcher\?\.dispatch\(fmtCmd\)/);
 });

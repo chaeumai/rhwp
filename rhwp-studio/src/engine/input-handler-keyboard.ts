@@ -3,6 +3,7 @@
 
 import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand } from './command';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
+import { CELL_SELECTION_CHAR_FORMAT_COMMANDS } from './cell-selection-format';
 import * as _connector from './input-handler-connector';
 import {
   detectPlatformKind,
@@ -1021,6 +1022,17 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       e.preventDefault();
       this.textarea.focus();
       return;
+    }
+    // 글자 서식 토글·증감 단축키(Ctrl+B/I/U·Ctrl+]/[·Alt+Shift+E/R 등)는 셀 선택을 유지한 채
+    // 적용한다. 셀 선택을 먼저 해제하면 toggleFormat/adjust* 이 대상 없음으로 무동작이 되어
+    // 툴바 버튼과 어긋난다(진단 문서 §11-2 후속). 문단 서식·스타일·대화상자는 목록에서 제외.
+    {
+      const fmtCmd = matchShortcut(e, defaultShortcuts);
+      if (fmtCmd && CELL_SELECTION_CHAR_FORMAT_COMMANDS.has(fmtCmd)) {
+        e.preventDefault();
+        this.dispatcher?.dispatch(fmtCmd);
+        return;
+      }
     }
     // 수정자 키(Shift/Ctrl/Alt/Meta)만 누른 경우 무시
     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
