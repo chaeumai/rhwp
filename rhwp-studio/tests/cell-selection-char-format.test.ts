@@ -159,7 +159,10 @@ test('셀 선택 유지 서식 커맨드 목록 — 글자·문단·대화상자
   // 문단 서식·스타일은 getParaFormatTargetsAtCursor 가 다중 셀을 알게 되어 목록에 든다 (Finding C)
   const paras = ['format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify',
     'format:align-distribute', 'format:align-split', 'format:line-spacing',
-    'format:line-spacing-increase', 'format:line-spacing-decrease', 'format:apply-style'];
+    'format:line-spacing-increase', 'format:line-spacing-decrease', 'format:apply-style',
+    // 번호/글머리표 토글·개요 수준 — 첫 셀 상태로 방향을 정하고 셀 블록 전체에 적용
+    'format:toggle-numbering', 'format:toggle-bullet', 'format:apply-bullet',
+    'format:level-increase', 'format:level-decrease'];
   for (const id of paras) assert.equal(CELL_SELECTION_PARA_FORMAT_COMMANDS.has(id), true, id);
   // 대화상자는 열 때 표적을 잡아 두므로 목록에 든다 (Finding B)
   const dialogs = ['format:char-shape', 'format:para-shape', 'format:style-dialog'];
@@ -170,9 +173,9 @@ test('셀 선택 유지 서식 커맨드 목록 — 글자·문단·대화상자
   }
   assert.equal(CELL_SELECTION_FORMAT_COMMANDS.size, chars.length + paras.length + dialogs.length);
   for (const id of [...chars, ...paras, ...dialogs]) assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), true, id);
-  // 커서 문단의 현재 상태로 판단하는 개요 수준·번호/글머리표 토글은 아직 밖
-  for (const id of ['format:level-increase', 'format:level-decrease', 'format:toggle-numbering', 'format:toggle-bullet']) {
-    assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), false, id);
+  // 개요 수준·번호/글머리표 토글도 첫 셀 상태로 판단해 셀 블록 전체에 적용하므로 목록 안 (2026-09-03)
+  for (const id of ['format:level-increase', 'format:level-decrease', 'format:toggle-numbering', 'format:toggle-bullet', 'format:apply-bullet']) {
+    assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), true, id);
   }
 });
 
@@ -208,7 +211,8 @@ test('문단 서식·스타일 대상은 셀 선택 중 선택한 셀 전체를 
   // 대화상자용 조회는 셀 선택 첫 셀을 따른다
   assert.match(ih, /getCharProperties\(\): CharProperties \{\s*return this\.getCharPropertiesForFormatTarget\(\);/);
   assert.match(ih, /getParaProperties\(\): ParaProperties \{\s*return this\.getParaPropertiesForFormatTarget\(\);/);
-  assert.match(ih, /getCurrentStyleId\(\): number \{[\s\S]{0,200}?this\.firstSelectedCell\(\)/);
+  assert.match(ih, /getCurrentStyleId\(\): number \{[\s\S]{0,120}?this\.getCurrentStyleInfo\(\)\.id/);
+  assert.match(ih, /getCurrentStyleInfo\(\): \{ id: number; name: string \} \{[\s\S]{0,120}?this\.firstSelectedCell\(\)/);
 });
 
 test('글자 모양·문단 모양 대화상자는 셀 선택 표적을 열 때 잡아 두고 적용 시 그 표적에 쓴다 (Finding B)', () => {
@@ -318,4 +322,21 @@ test('셀 선택 표적 해석은 중첩 표를 거르지 않고, 셀 순회·�
   assert.match(cmd, /wasm\.applyParaFormatInCellByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\), propsJson\)/);
   assert.match(cmd, /wasm\.setParaShapeIdByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\), paraShapeId\)/);
   assert.match(cmd, /wasm\.getParaPropertiesByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\)\)/);
+});
+
+test('번호/글머리표 토글·개요 수준은 셀 선택 첫 셀 상태로 판단하고 셀 블록 전체에 적용한다', () => {
+  const ih = source('src/engine/input-handler.ts');
+  // 토글 방향: getParaProperties() = 셀 선택 중 첫 셀 첫 문단
+  const num = ih.slice(ih.indexOf('  toggleNumbering(): void {'));
+  assert.match(num.slice(0, 400), /const props = this\.getParaProperties\(\);[\s\S]{0,200}?this\.applyParaFormat\(/);
+  const bul = ih.slice(ih.indexOf('  toggleBullet(bulletChar'));
+  assert.match(bul.slice(0, 400), /const props = this\.getParaProperties\(\);[\s\S]{0,200}?this\.applyParaFormat\(/);
+  // 개요 수준: 캐럿이 아니라 getCurrentStyleInfo(첫 셀) 로 현재 수준을 읽고 applyStyle(셀 블록 전체)
+  const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
+  const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
+  assert.match(lvlBody, /const currentStyle = this\.getCurrentStyleInfo\(\);/);
+  assert.doesNotMatch(lvlBody, /getCellStyleAt\(|getStyleAt\(/, '캐럿 위치 직접 조회가 남아 있으면 안 된다');
+  assert.match(lvlBody, /this\.applyStyle\(targetStyle\.id\)/);
+  const info = ih.slice(ih.indexOf('  private getCurrentStyleInfo():'));
+  assert.match(info.slice(0, 300), /const first = this\.firstSelectedCell\(\);\s*if \(first\) return this\.cellStyleAt\(first\.ctx, first\.cellIdx, 0\);/);
 });

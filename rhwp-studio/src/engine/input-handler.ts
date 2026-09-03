@@ -4677,17 +4677,14 @@ export class InputHandler {
     }
   }
 
-  /** 개요 수준 변경 (delta: +1=한 수준 증가, -1=한 수준 감소) */
+  /**
+   * 개요 수준 변경 (delta: +1=한 수준 증가, -1=한 수준 감소).
+   * "지금 수준" 은 F5 셀 선택 중에는 선택 범위 첫 셀의 첫 문단(서식바·대화상자와 같은 기준), 그 외에는 캐럿 문단.
+   * 적용은 `applyStyle` 이 셀 블록 전체에 한다 — 종전에는 캐럿 셀 스타일을 읽어 선택 첫 셀과 어긋날 수 있었다.
+   */
   changeOutlineLevel(delta: number): void {
-    const pos = this.cursor.getPosition();
     try {
-      const inCell = pos.parentParaIndex !== undefined;
-      const currentStyle = inCell
-        ? this.wasm.getCellStyleAt(
-            pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
-            pos.cellIndex!, pos.cellParaIndex!,
-          )
-        : this.wasm.getStyleAt(pos.sectionIndex, pos.paragraphIndex);
+      const currentStyle = this.getCurrentStyleInfo();
 
       // 현재 개요 수준 파싱 (개요 1~7)
       const match = currentStyle.name.match(/^개요\s*(\d)$/);
@@ -4824,19 +4821,23 @@ export class InputHandler {
   /** 커서 위치(F5 셀 선택 중에는 선택 범위 첫 셀)의 문단 스타일 ID를 반환한다 (스타일 대화상자용) */
   getCurrentStyleId(): number {
     try {
-      const first = this.firstSelectedCell();
-      if (first) return this.cellStyleAt(first.ctx, first.cellIdx, 0).id;
-      const pos = this.cursor.getPosition();
-      const info = pos.parentParaIndex !== undefined
-        ? this.wasm.getCellStyleAt(
-            pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!,
-            pos.cellIndex!, pos.cellParaIndex!,
-          )
-        : this.wasm.getStyleAt(pos.sectionIndex, pos.paragraphIndex);
-      return info.id;
+      return this.getCurrentStyleInfo().id;
     } catch {
       return 0;
     }
+  }
+
+  /** 커서 위치(F5 셀 선택 중에는 선택 범위 첫 셀 첫 문단)의 문단 스타일 `{ id, name }` — 개요 수준·스타일 대화상자 공용 */
+  private getCurrentStyleInfo(): { id: number; name: string } {
+    const first = this.firstSelectedCell();
+    if (first) return this.cellStyleAt(first.ctx, first.cellIdx, 0);
+    const pos = this.cursor.getPosition();
+    return pos.parentParaIndex !== undefined
+      ? this.wasm.getCellStyleAt(
+          pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!,
+          pos.cellIndex!, pos.cellParaIndex!,
+        )
+      : this.wasm.getStyleAt(pos.sectionIndex, pos.paragraphIndex);
   }
 
   /** 현재 선택 범위를 반환한다 (커맨드 시스템용) */

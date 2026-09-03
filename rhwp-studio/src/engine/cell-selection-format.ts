@@ -101,13 +101,17 @@ export const CELL_SELECTION_CHAR_FORMAT_COMMANDS: ReadonlySet<string> = new Set(
  * F5 셀 선택을 유지한 채 적용해야 하는 문단 서식·스타일 커맨드 id.
  * `getParaFormatTargetsAtCursor` 가 셀 선택 중에는 선택한 모든 셀의 모든 문단을 대상으로 잡으므로
  * 정렬·줄 간격·스타일이 캐럿 셀 하나가 아니라 셀 블록 전체에 적용된다(한컴 정합).
- * 개요 수준·번호/글머리표 토글은 커서 문단의 현재 상태를 읽어 판단하므로 아직 목록 밖이다.
+ * 번호/글머리표 토글·개요 수준도 같은 규칙이다 — "지금 상태" 는 **선택 범위 첫 셀의 첫 문단**으로 판단하고
+ * (`getParaProperties`·`getCurrentStyleInfo`), 적용은 셀 블록 전체. 한컴도 블록의 첫 문단 상태로 토글 방향을 정한다.
+ * 이 넷은 지금 단축키가 없어(툴바·메뉴만) 키 처리에는 안 걸리지만, 계약으로 목록에 둔다.
  */
 export const CELL_SELECTION_PARA_FORMAT_COMMANDS: ReadonlySet<string> = new Set([
   'format:align-left', 'format:align-center', 'format:align-right',
   'format:align-justify', 'format:align-distribute', 'format:align-split',
   'format:line-spacing', 'format:line-spacing-increase', 'format:line-spacing-decrease',
   'format:apply-style',
+  'format:toggle-numbering', 'format:toggle-bullet', 'format:apply-bullet',
+  'format:level-increase', 'format:level-decrease',
 ]);
 
 /**
