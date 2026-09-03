@@ -3527,6 +3527,7 @@ impl DocumentCore {
                                 cp.controls.iter().any(|c2| match c2 {
                                     Control::Table(nested) => {
                                         !nested.common.treat_as_char
+                                            && !is_overlay_nested_table(nested)
                                             && nested.common.width > 0
                                             && (nested.common.width as u64) < cell.width as u64
                                     }
@@ -5197,6 +5198,20 @@ fn format_line_seg_brief(para: Option<&Paragraph>) -> String {
 
 /// [#2195] 중첩 표를 부모 셀 전폭으로 스트레치 (렌더 전용 사본에서만 호출).
 /// 한글은 내부 표의 저장 폭이 부모 셀보다 좁아도 부모 셀 전폭 기준으로 재래핑한다.
+/// [#2383] 글뒤로/글앞으로(BehindText/InFrontOfText) 비-TAC 중첩 표는 셀 흐름 밖의 **절대
+/// 오버레이**라 셀 폭 스트레치 대상이 아니다 — 자기 선언 폭으로 문단 기준 오프셋에 그린다.
+/// 편람 p63 기안문 서식 셀의 「아래쪽 한계선」 라벨 표(8396HU=112px, 글앞으로, 오프셋 8678/529HU)가
+/// 셀 폭 432.6px 로 늘어나 라벨 글자가 한컴보다 166px 오른쪽에 놓였다(한컴 x 310 vs 우리 476).
+/// 스트레치 대상(근거설명 계열, #2195)은 TopAndBottom/Square 흐름 표다.
+fn is_overlay_nested_table(t: &crate::model::table::Table) -> bool {
+    !t.common.treat_as_char
+        && matches!(
+            t.common.text_wrap,
+            crate::model::shape::TextWrap::BehindText
+                | crate::model::shape::TextWrap::InFrontOfText
+        )
+}
+
 fn stretch_nested_tables_to_parent_cell(p: &mut Paragraph) {
     for ctrl in p.controls.iter_mut() {
         if let Control::Table(table) = ctrl {
@@ -5212,7 +5227,7 @@ fn stretch_nested_tables_to_parent_cell(p: &mut Paragraph) {
                             // 스트레치 제외. hcar-001 4x1 동의 표 한컴 PDF 590.7px
                             // = 원폭 유지(#1195 rect 오라클); 스트레치 대상(근거설명
                             // 계열)은 비-TAC.
-                            if nested.common.treat_as_char {
+                            if nested.common.treat_as_char || is_overlay_nested_table(nested) {
                                 continue;
                             }
                             let nw = nested.common.width as u64;

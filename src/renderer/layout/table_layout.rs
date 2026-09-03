@@ -2802,10 +2802,24 @@ impl LayoutEngine {
             // block 표는 별도 layout_table 호출로 배치되므로 텍스트 흐름 외부 — 기존
             // ELSE 분기 로직 유지. inline TAC 표는 layout_composed_paragraph 의 run_tacs
             // 에서 텍스트와 함께 배치되어야 함.
-            let has_block_table_ctrl = para
-                .controls
-                .iter()
-                .any(|c| matches!(c, Control::Table(t) if !t.common.treat_as_char));
+            // [#2383] 글뒤로/글앞으로(BehindText/InFrontOfText) 비-TAC 중첩 표는 **절대 오버레이**라
+            // 텍스트 흐름에 참여하지 않는다(깊이 0 의 layout_table·셀 안 그림 #2207 과 같은 원리).
+            // 종전엔 block 표로 분류돼 호스트 문단 텍스트가 조판되지 않았다 — 편람 p63 기안문 서식
+            // 셀의 「우 도로명주소 / 홈페이지 주소」(12자) 가 「아래쪽 한계선」 라벨 표(1×1, 글앞으로,
+            // 문단 기준 오프셋 8678/529HU)에 밀려 통째로 사라졌다. 한컴은 둘 다 그린다.
+            // 코퍼스 hwpx 250편 중 이런 문단(텍스트 + 비-TAC 중첩 표)은 4편 9문단, 그중 글앞으로는
+            // 편람 5·75544 1 — 나머지 3(TopAndBottom)은 종전 분기 그대로(미측정).
+            let is_overlay_nested_table = |t: &crate::model::table::Table| {
+                !t.common.treat_as_char
+                    && matches!(
+                        t.common.text_wrap,
+                        crate::model::shape::TextWrap::BehindText
+                            | crate::model::shape::TextWrap::InFrontOfText
+                    )
+            };
+            let has_block_table_ctrl = para.controls.iter().any(|c| {
+                matches!(c, Control::Table(t) if !t.common.treat_as_char && !is_overlay_nested_table(t))
+            });
 
             // HWP/HWPX가 셀 내부 문단의 LINE_SEG.vpos를 제공하는 경우에는
             // 누적 y 대신 그 절대 위치를 우선한다. 조직도형 표처럼 셀 하나에
@@ -3727,6 +3741,50 @@ impl LayoutEngine {
                                     para_y = new_bottom;
                                 }
                             }
+                        } else if is_overlay_nested_table(nested_table) {
+                            // [#2383] 글뒤로/글앞으로 중첩 표: 문단 시작(compose 전 y) 기준 오프셋에
+                            // 자기 선언 폭으로 그리고 흐름(para_y)은 건드리지 않는다.
+                            let h_off =
+                                hwpunit_to_px(nested_table.common.horizontal_offset as i32, self.dpi);
+                            let v_off =
+                                hwpunit_to_px(nested_table.common.vertical_offset as i32, self.dpi);
+                            let decl_w = hwpunit_to_px(nested_table.common.width as i32, self.dpi);
+                            let overlay_x = inner_area.x + h_off.max(0.0);
+                            let overlay_w = if decl_w > 0.0 {
+                                decl_w.min((inner_area.x + inner_area.width - overlay_x).max(0.0))
+                            } else {
+                                (inner_area.width - h_off.max(0.0)).max(0.0)
+                            };
+                            let overlay_y = para_y_before_compose + v_off;
+                            let ctrl_area = LayoutRect {
+                                x: overlay_x,
+                                y: overlay_y,
+                                width: overlay_w,
+                                height: (inner_area.height - (overlay_y - inner_area.y)).max(0.0),
+                            };
+                            let _ = self.layout_table(
+                                tree,
+                                cell_node,
+                                nested_table,
+                                section_index,
+                                styles,
+                                outline_numbering_id,
+                                &ctrl_area,
+                                overlay_y,
+                                bin_data_content,
+                                None,
+                                depth + 1,
+                                None,
+                                para_alignment,
+                                nested_ctx,
+                                0.0,
+                                0.0,
+                                None,
+                                None,
+                                None,
+                                false,
+                                clamp_header_negative_para_offset,
+                            );
                         } else {
                             // 비-TAC 표: 기존 수직 배치
                             // 앞 텍스트 너비만큼 x 오프셋 적용
