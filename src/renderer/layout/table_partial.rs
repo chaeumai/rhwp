@@ -882,6 +882,17 @@ impl LayoutEngine {
                                             Some(ctrl_idx),
                                             Some(&cell_context),
                                         );
+                                        // [#2385] 셀 안 그림 캡션
+                                        self.layout_cell_picture_caption(
+                                            tree,
+                                            &mut cell_node,
+                                            pic,
+                                            &pic_area,
+                                            styles,
+                                            bin_data_content,
+                                            Some(&cell_context),
+                                            ctrl_idx,
+                                        );
                                         inline_x += clamped_w;
                                         continue;
                                     }
@@ -1009,6 +1020,17 @@ impl LayoutEngine {
                                             Some(ctrl_idx),
                                             Some(&cell_context),
                                         );
+                                        // [#2385] 셀 안 그림 캡션
+                                        self.layout_cell_picture_caption(
+                                            tree,
+                                            &mut *table_node,
+                                            &pic_for_layout,
+                                            &pic_area,
+                                            styles,
+                                            bin_data_content,
+                                            Some(&cell_context),
+                                            ctrl_idx,
+                                        );
                                     } else {
                                         self.layout_picture(
                                             tree,
@@ -1021,6 +1043,17 @@ impl LayoutEngine {
                                             Some(cell_context.parent_para_index),
                                             Some(ctrl_idx),
                                             Some(&cell_context),
+                                        );
+                                        // [#2385] 셀 안 그림 캡션
+                                        self.layout_cell_picture_caption(
+                                            tree,
+                                            &mut cell_node,
+                                            &pic_for_layout,
+                                            &pic_area,
+                                            styles,
+                                            bin_data_content,
+                                            Some(&cell_context),
+                                            ctrl_idx,
                                         );
                                     }
                                     if matches!(

@@ -674,6 +674,95 @@ impl LayoutEngine {
     }
 
     /// 캡션을 레이아웃한다.
+    /// [#2385] 셀 안 그림의 캡션 — 본문 경로(layout_body_picture)만 캡션을 그리고 셀 경로는
+    /// layout_picture(그림만)를 불러 캡션 문단이 통째로 사라졌다(issue1949 p15 표 셀 그림 2장의
+    /// 아래 캡션 「[그림 1] 정복원력」·「[그림 2] 동복원력」 12자). 위치 산식은 본문과 같고 기준은
+    /// 셀 안에 놓인 그림 프레임(pic_area)이다. 흐름(para_y·inline_x)은 건드리지 않는다 — 셀 행높이는
+    /// 선언 cellSz/내용 max 가 정한다(⚠ 캡션이 행높이를 키워야 하는 문서는 미측정). 코퍼스 hwpx 250편 중
+    /// 셀 안 캡션 그림은 4편(issue1949 2·issue1891 1·편람 1·table_giant_cell_overfill 1).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn layout_cell_picture_caption(
+        &self,
+        tree: &mut PageRenderTree,
+        parent_node: &mut RenderNode,
+        picture: &crate::model::image::Picture,
+        pic_area: &LayoutRect,
+        styles: &ResolvedStyleSet,
+        bin_data_content: &[BinDataContent],
+        base_ctx: Option<&crate::renderer::layout::CellContext>,
+        control_index: usize,
+    ) {
+        let Some(ref caption) = picture.caption else {
+            return;
+        };
+        if caption.paragraphs.is_empty() {
+            return;
+        }
+        use crate::model::shape::CaptionVertAlign;
+        let caption_height = self.calculate_caption_height(&picture.caption, styles);
+        let caption_spacing = hwpunit_to_px(caption.spacing as i32, self.dpi);
+        let (cap_x, cap_w, cap_y) = match caption.direction {
+            CaptionDirection::Top => (
+                pic_area.x,
+                pic_area.width,
+                (pic_area.y - caption_height - caption_spacing).max(0.0),
+            ),
+            CaptionDirection::Bottom => (
+                pic_area.x,
+                pic_area.width,
+                pic_area.y + pic_area.height + caption_spacing,
+            ),
+            CaptionDirection::Left | CaptionDirection::Right => {
+                let cw = hwpunit_to_px(caption.width as i32, self.dpi);
+                let cx = if caption.direction == CaptionDirection::Left {
+                    (pic_area.x - cw - caption_spacing).max(0.0)
+                } else {
+                    pic_area.x + pic_area.width + caption_spacing
+                };
+                let cy = match caption.vert_align {
+                    CaptionVertAlign::Top => pic_area.y,
+                    CaptionVertAlign::Center => {
+                        pic_area.y + (pic_area.height - caption_height).max(0.0) / 2.0
+                    }
+                    CaptionVertAlign::Bottom => {
+                        pic_area.y + (pic_area.height - caption_height).max(0.0)
+                    }
+                };
+                (cx, cw, cy)
+            }
+        };
+        let entry = super::CellPathEntry {
+            control_index,
+            cell_index: 0,
+            cell_para_index: 0,
+            text_direction: 0,
+        };
+        let cell_ctx = match base_ctx {
+            Some(ctx) => {
+                let mut c = ctx.clone();
+                c.path.push(entry);
+                c
+            }
+            None => super::CellContext {
+                parent_para_index: 0,
+                path: vec![entry],
+            },
+        };
+        self.layout_caption(
+            tree,
+            parent_node,
+            caption,
+            styles,
+            pic_area,
+            cap_x,
+            cap_w,
+            cap_y,
+            &mut self.auto_counter.borrow_mut(),
+            bin_data_content,
+            Some(cell_ctx),
+        );
+    }
+
     pub(crate) fn layout_caption(
         &self,
         tree: &mut PageRenderTree,

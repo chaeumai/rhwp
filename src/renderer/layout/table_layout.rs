@@ -3121,6 +3121,17 @@ impl LayoutEngine {
                                     Some(ctrl_idx),
                                     cell_context.as_ref(),
                                 );
+                                // [#2385] 셀 안 그림 캡션
+                                self.layout_cell_picture_caption(
+                                    tree,
+                                    cell_node,
+                                    pic,
+                                    &pic_area,
+                                    styles,
+                                    bin_data_content,
+                                    cell_context.as_ref(),
+                                    ctrl_idx,
+                                );
                                 inline_x += clamped_w;
                                 continue;
                             }
@@ -3274,6 +3285,17 @@ impl LayoutEngine {
                                     Some(ctrl_idx),
                                     cell_context.as_ref(),
                                 );
+                                // [#2385] 셀 안 그림 캡션
+                                self.layout_cell_picture_caption(
+                                    tree,
+                                    table_node,
+                                    &pic_for_layout,
+                                    &pic_area,
+                                    styles,
+                                    bin_data_content,
+                                    cell_context.as_ref(),
+                                    ctrl_idx,
+                                );
                             } else {
                                 self.layout_picture(
                                     tree,
@@ -3286,6 +3308,17 @@ impl LayoutEngine {
                                     cell_context.as_ref().map(|c| c.parent_para_index),
                                     Some(ctrl_idx),
                                     cell_context.as_ref(),
+                                );
+                                // [#2385] 셀 안 그림 캡션
+                                self.layout_cell_picture_caption(
+                                    tree,
+                                    cell_node,
+                                    &pic_for_layout,
+                                    &pic_area,
+                                    styles,
+                                    bin_data_content,
+                                    cell_context.as_ref(),
+                                    ctrl_idx,
                                 );
                             }
                             if matches!(pic.common.text_wrap, TextWrap::TopAndBottom) {
