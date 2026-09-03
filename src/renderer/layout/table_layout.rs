@@ -1,7 +1,7 @@
 //! 표 레이아웃 (layout_table + 셀 높이/줄범위 계산)
 
 use super::super::composer::{compose_paragraph, ComposedLine, ComposedParagraph};
-use super::super::height_measurer::MeasuredTable;
+use super::super::height_measurer::{frame_cell_spacing_total, MeasuredTable};
 use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
 use super::super::style_resolver::{ResolvedBorderStyle, ResolvedStyleSet};
@@ -145,9 +145,10 @@ fn build_col_row_y_from_cell_heights(
     }
 
     let fallback_h = hwpunit_to_px(400, dpi);
+    // [#2382] row_y 는 프레임 상단 cs 에서 시작하고 선언 높이는 (n+1)·cs 를 포함하므로
+    // row_y[n] = 선언 − cs (frame_cell_spacing_total 주석).
     let target_total = if table.common.height > 0 {
-        hwpunit_to_px(table.common.height as i32, dpi)
-            + cell_spacing * row_count.saturating_sub(1) as f64
+        hwpunit_to_px(table.common.height as i32, dpi) - cell_spacing
     } else {
         row_y.last().copied().unwrap_or(0.0)
     };
@@ -158,6 +159,7 @@ fn build_col_row_y_from_cell_heights(
             col_row_y[c].clone_from_slice(row_y);
             continue;
         }
+        col_row_y[c][0] = row_y.first().copied().unwrap_or(0.0);
         for r in 0..row_count {
             let h = cell_height_grid[c][r]
                 .or_else(|| row_heights.get(r).copied())
@@ -989,12 +991,13 @@ impl LayoutEngine {
         };
 
         // ── 2. 누적 위치 계산 ──
-        let mut col_x = vec![0.0f64; col_count + 1];
+        // [#2382] 셀은 프레임 안쪽 cs 에서 시작한다 (frame_cell_spacing_total 주석).
+        let mut col_x = vec![cell_spacing; col_count + 1];
         for i in 0..col_count {
             col_x[i + 1] =
                 col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
         }
-        let mut row_y = vec![0.0f64; row_count + 1];
+        let mut row_y = vec![cell_spacing; row_count + 1];
         for i in 0..row_count {
             row_y[i + 1] =
                 row_y[i] + row_heights[i] + if i + 1 < row_count { cell_spacing } else { 0.0 };
@@ -1009,7 +1012,8 @@ impl LayoutEngine {
             if let Some(split) = nested_split {
                 let sr = split.start_row.min(row_count);
                 let er = split.end_row.min(row_count);
-                let shift = row_y[sr];
+                // [#2382] 조각 첫 행도 프레임 상단 cs 아래에서 시작한다.
+                let shift = row_y[sr] - cell_spacing;
                 // row_y를 시프트하여 start_row가 0에서 시작하도록 함
                 for y in row_y.iter_mut() {
                     *y -= shift;
@@ -1077,10 +1081,12 @@ impl LayoutEngine {
             None
         };
 
+        // [#2382] 프레임 = 마지막 셀 끝 + 둘레 cs (frame_cell_spacing_total 주석).
         let table_width = row_col_x
             .iter()
             .map(|rx| rx.last().copied().unwrap_or(0.0))
-            .fold(col_x.last().copied().unwrap_or(0.0), f64::max);
+            .fold(col_x.last().copied().unwrap_or(0.0), f64::max)
+            + cell_spacing;
         let table_height = if let Some(col_row_y) = independent_col_row_y.as_ref() {
             col_row_y
                 .iter()
@@ -1090,7 +1096,7 @@ impl LayoutEngine {
             row_y[er].max(0.0)
         } else {
             row_y.last().copied().unwrap_or(0.0)
-        };
+        } + cell_spacing;
 
         // ── 3. 위치 결정 ──
         let pw = self.current_paper_width.get();
@@ -1652,8 +1658,13 @@ impl LayoutEngine {
                 col_widths[c] = hwpunit_to_px(1800, self.dpi);
             }
         }
+        // [#2382] 선언 폭은 셀 간격 (c+1) 개를 포함한다 (frame_cell_spacing_total 주석).
         let target_width = if table.common.width > 0 {
             hwpunit_to_px(table.common.width as i32, self.dpi)
+                - frame_cell_spacing_total(
+                    hwpunit_to_px(table.cell_spacing as i32, self.dpi),
+                    col_widths.len(),
+                )
         } else {
             0.0
         };
@@ -1990,8 +2001,14 @@ impl LayoutEngine {
         if row_heights.is_empty() {
             return;
         }
+        // [#2382] 선언 높이는 셀 간격 (n+1) 개를 포함한다 (frame_cell_spacing_total 주석).
+        // 종전엔 cs 를 무시해 cs>0 표의 마지막 행이 (n+1)·cs 만큼 늘어났다(편람 16행 표 +52px).
         let target_height = if table.common.height > 0 {
             hwpunit_to_px(table.common.height as i32, self.dpi)
+                - frame_cell_spacing_total(
+                    hwpunit_to_px(table.cell_spacing as i32, self.dpi),
+                    row_heights.len(),
+                )
         } else {
             0.0
         };
@@ -4500,7 +4517,7 @@ impl LayoutEngine {
             caption_flow_extra(&table.caption, cap_h, cap_s)
         };
         row_heights.iter().sum::<f64>()
-            + cell_spacing * (row_count.saturating_sub(1) as f64)
+            + frame_cell_spacing_total(cell_spacing, row_count)
             + om_top
             + om_bottom
             + caption_extra
@@ -5762,11 +5779,12 @@ impl LayoutEngine {
                         if ri + 1 < nrow {
                             uh += ncs;
                         }
+                        // [#2382] 프레임 둘레 cs — calc_nested_table_height 와 정합(드리프트 0).
                         if ri == 0 {
-                            uh += om_top + spacing_before;
+                            uh += ncs + om_top + spacing_before;
                         }
                         if ri + 1 == nrow {
-                            uh += om_bot + spacing_after;
+                            uh += ncs + om_bot + spacing_after;
                             // [파리티 라운드3 J7] 뒤에 문단이 더 있으면 표 줄의 저장 spacing 도
                             // 흐름에 넣는다 — 텍스트 줄의 include_trailing_ls 와 같은 규칙. 빠지면
                             // 다음 문단이 저장 vpos(spacing 포함)로 놓여 조각 바닥을 넘는다

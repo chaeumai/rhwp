@@ -73,7 +73,8 @@ pub(crate) fn build_row_col_x(
                 Some(hwpunit_to_px(cell.width as i32, dpi));
         }
     }
-    let mut base_rx = vec![0.0f64; col_count + 1];
+    // [#2382] 셀은 프레임 안쪽 cs 에서 시작한다 (height_measurer::frame_cell_spacing_total 주석).
+    let mut base_rx = vec![cell_spacing; col_count + 1];
     for c in 0..col_count {
         base_rx[c + 1] =
             base_rx[c] + col_widths[c] + if c + 1 < col_count { cell_spacing } else { 0.0 };
@@ -83,9 +84,9 @@ pub(crate) fn build_row_col_x(
         return vec![base_rx; row_count];
     }
 
+    // [#2382] 선언 폭은 (c+1)·cs 를 포함하고 x 누적은 cs 에서 시작 → 끝 = 선언 − cs.
     let target_total = if table.common.width > 0 {
-        hwpunit_to_px(table.common.width as i32, dpi)
-            + cell_spacing * col_count.saturating_sub(1) as f64
+        hwpunit_to_px(table.common.width as i32, dpi) - cell_spacing
     } else {
         base_rx.last().copied().unwrap_or(0.0)
     };
@@ -115,7 +116,7 @@ pub(crate) fn build_row_col_x(
                     .any(|(idx, _)| idx == cell_idx)
             });
 
-            let mut cursor = 0.0;
+            let mut cursor = cell_spacing;
             let mut next_col = 0usize;
             let mut candidate = vec![0.0f64; col_count + 1];
             let mut valid = !row_cells.is_empty();

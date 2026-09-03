@@ -20,7 +20,9 @@ use crate::renderer::float_placement::{
     FloatLaneSet, FloatPlacementContext,
 };
 use crate::renderer::height_cursor::HeightCursor;
-use crate::renderer::height_measurer::{fit_measured_table_to_declared_height, MeasuredTable};
+use crate::renderer::height_measurer::{
+    fit_measured_table_to_declared_height, frame_cell_spacing_total, MeasuredTable,
+};
 use crate::renderer::layout::{border_width_to_px, ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::ResolvedStyleSet;
@@ -2666,7 +2668,8 @@ impl TypesetEngine {
                             .get(*end_row)
                             .copied()
                             .unwrap_or(mt.total_height);
-                        (end - start).max(0.0)
+                        // [#2382] cumulative 는 행 공간 — 조각 프레임 둘레 cs(위·아래)를 더한다.
+                        (end - start).max(0.0) + frame_cell_spacing_total(mt.cell_spacing, 1)
                     })
                     .unwrap_or(0.0),
                 _ => 0.0,
@@ -16846,6 +16849,21 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     - om_bottom_first)
                     .max(0.0)
             };
+            // [#2382] 셀 간격(cellSpacing)이 있는 표는 프레임 둘레에도 간격을 둔다
+            // (`frame_cell_spacing_total` 주석). 아래 판정을 전부 **행 공간**(rows-space:
+            // 행 + 행 사이 cs)으로 통일한다 — 선언 프레임(`declared_rows_h*`)은 위·아래 cs 를
+            // 빼서 같은 공간으로 내리고, 흐름에 얹는 조각 높이(`partial_height`)만 프레임
+            // 공간(위·아래 cs 포함)이다. cs=0 이면 전부 0.
+            //
+            // 예산에서는 **위쪽 cs 만** 예약한다(아래쪽은 프레임에만 그린다). 실측(편람 hwpx,
+            // 한컴 2024 정본, sec2 본문 55559HU = 우리와 동일):
+            //   · p48·p50 연속 조각의 첫 셀 상단 = 본문상단 + 3.3px → 위쪽 cs 는 조각마다 있다.
+            //   · p50 조각(머리행 + r2~r6, 표 1956965623)은 선언 cellSz 합 + 7·cs = 55579HU 로
+            //     본문을 **20HU(0.27px) 넘는데 한컴이 담았다** — 아래쪽 cs 까지 본문 안에 요구하면
+            //     r6 이 p51 로 밀려 384쪽(+1)·F 49 가 되고, 위쪽만 예약하면 383쪽·F 62 다.
+            //   · 첫 조각(p47)은 어느 쪽이든 선언 상한(TABLE_DECL_CAP)이 4행에서 끊는다.
+            let frame_cs = if cs > 0.0 { 2.0 * cs } else { 0.0 };
+            let page_avail = (page_avail - if cs > 0.0 { cs } else { 0.0 }).max(0.0);
 
             // 선언 높이가 '우리 행 누적합과 겹치는가'의 허용폭 — 반올림 드리프트 급.
             const DECLARED_ROW_BOUNDARY_EPS_PX: f64 = 0.5;
@@ -16890,7 +16908,8 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             //   판별축 docs/N4-판별축-거대행제외-20260902-*.md.
             let mut c2366c_applied = false;
             let page_avail = if is_continuation && (st.is_hwpx_source || cellbreak_om) {
-                let declared_rows_h0 = (declared_object_total - host_spacing_total).max(0.0);
+                let declared_rows_h0 =
+                    (declared_object_total - host_spacing_total - frame_cs).max(0.0);
                 let declared_coherent = st.is_hwpx_source && declared_rows_h0 > 0.0 && {
                     let mut acc = 0.0f64;
                     let mut hit = false;
@@ -16997,7 +17016,8 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 // **작을 때만**. 선언 높이는 편집 후 재레이아웃되지 않았을 수 있어
                 // (stale) 차이가 큰 경우는 신뢰하지 않는다.
                 const DECLARED_FIRST_FRAGMENT_CAP_PX: f64 = 8.0;
-                let declared_rows_h = (declared_object_total - host_spacing_total).max(0.0);
+                let declared_rows_h =
+                    (declared_object_total - host_spacing_total - frame_cs).max(0.0);
                 // [#2366] 근접(8px) 대신 **행 경계 일치 + 1행 차**로도 선언을 신뢰한다.
                 //
                 // 8px 근접 가드는 stale 선언(편집 후 재레이아웃 안 된 값)을 걸러내려는
@@ -17321,7 +17341,9 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
 
             // [Task #1022] walk 가 consumed 에 분할 행 기여까지 누적하므로
             // partial_height = consumed + header_overhead 로 단일화.
-            let partial_height: f64 = consumed + header_overhead;
+            // [#2382] + 프레임 둘레 셀 간격(위·아래) — 렌더러 layout_partial_table 의
+            // partial_table_height 와 같은 프레임 공간.
+            let partial_height: f64 = consumed + header_overhead + frame_cs;
 
             // [Task #1046 Stage 2 진단] walk 결과 — fragment 경계/소비 높이. 동작 불변.
             if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
@@ -17339,10 +17361,11 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 && caption_overhead > 0.0
             {
                 let total_with_caption = partial_height + caption_overhead;
+                // page_avail 은 행 공간(frame_cs 차감)이고 partial_height 는 프레임 공간 — 되돌린다.
                 let avail = if is_continuation {
-                    (page_avail - header_overhead).max(0.0)
+                    (page_avail + frame_cs - header_overhead).max(0.0)
                 } else {
-                    page_avail
+                    page_avail + frame_cs
                 };
                 if total_with_caption > avail {
                     end_row = end_row.saturating_sub(1);

@@ -215,6 +215,26 @@ pub struct MeasuredTable {
     pub row_block_end: Vec<usize>,
 }
 
+/// [#2382] 표 프레임 안의 셀 간격(cellSpacing) 총량 — 행(열) n 개면 **n+1 개**.
+///
+/// 한컴은 셀 간격을 행 사이에만 두는 것이 아니라 HTML `border-spacing` 처럼 표 프레임 안쪽
+/// 둘레(위·아래·좌·우)에도 둔다. 근거(2025 행정업무운영 편람, cellSpacing=255HU=3.4px):
+///   · 선언 `hp:sz` — 분할 안 된 표 12/12 가 `height = Σ행 + (n+1)·cs`, 폭은 32/33 이
+///     `width = Σ열 + (c+1)·cs`(나머지 1 은 c−1). 분할 표의 선언(첫 조각) 10492HU 도
+///     머리행 1566 + 4행×1849 + **6**×255 로 정확히 맞는다.
+///   · 한컴 정본 PDF 괘선 — 첫 셀 x 가 우리 프레임 x 보다 +3.0px, 첫 셀 y 가 +3.0px.
+/// 종전 `cs × (n−1)` 은 분할 안 된 표를 (n−1)·cs 만큼 늘려 그리고(마지막 행이 +52px),
+/// 분할 표의 선언 프레임 상한(T6-e)이 2·cs 차로 발화하지 않아 첫 조각에 한 행을 더 담았다.
+/// 코퍼스 유병률: hwpx 250편·hwp 365편 중 cs>0 표를 가진 문서는 편람(양 포맷) 뿐이다 —
+/// cs=0 이면 이 함수는 0 이라 다른 문서는 산술적으로 불변.
+pub fn frame_cell_spacing_total(cell_spacing: f64, count: usize) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        cell_spacing * (count as f64 + 1.0)
+    }
+}
+
 pub fn fit_measured_table_to_declared_height(
     measured: &MeasuredTable,
     table: &Table,
@@ -226,7 +246,7 @@ pub fn fit_measured_table_to_declared_height(
     }
 
     let row_count = fitted.row_heights.len();
-    let cell_spacing_total = fitted.cell_spacing * row_count.saturating_sub(1) as f64;
+    let cell_spacing_total = frame_cell_spacing_total(fitted.cell_spacing, row_count);
     let target_body_height = hwpunit_to_px(table.common.height as i32, dpi);
     let target_row_sum = (target_body_height - cell_spacing_total).max(0.0);
     let current_row_sum = fitted.row_heights.iter().sum::<f64>();
@@ -262,7 +282,7 @@ pub fn fit_measured_table_to_declared_height(
     }
 
     let previous_body_height =
-        current_row_sum + measured.cell_spacing * row_count.saturating_sub(1) as f64;
+        current_row_sum + frame_cell_spacing_total(measured.cell_spacing, row_count);
     let caption_and_spacing = (measured.total_height - previous_body_height).max(0.0);
     fitted.total_height = target_body_height + caption_and_spacing;
     fitted
@@ -1871,7 +1891,7 @@ impl HeightMeasurer {
         // 셀 간격 포함한 표 높이
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         let raw_table_height: f64 =
-            row_heights.iter().sum::<f64>() + cell_spacing * (row_count.saturating_sub(1) as f64);
+            row_heights.iter().sum::<f64>() + frame_cell_spacing_total(cell_spacing, row_count);
         // TAC 표: common.height(표 속성 높이)를 상한으로 사용
         // 한컴은 TAC 표의 높이를 속성값으로 유지 (셀 콘텐츠 넘침은 클리핑)
         // 비-TAC 표: 셀 콘텐츠 기반 확장 유지 (행 분할 필요)
@@ -1925,7 +1945,7 @@ impl HeightMeasurer {
                     }
                 }
                 let declared_rows_sum: f64 = per_row.iter().sum::<f64>()
-                    + cell_spacing * (row_count.saturating_sub(1) as f64);
+                    + frame_cell_spacing_total(cell_spacing, row_count);
                 // [#2195] stale-min(x0.5) 한정을 일반 발동으로 완화 — 한글은 콘텐츠가
                 // 선언보다 작아도 표 선언높이를 유지한다 (80168 pi=419). #2070 당시 전면
                 // 발동의 163쪽 폭발은 타 축 미정합 상태의 결과.

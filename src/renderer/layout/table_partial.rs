@@ -1913,7 +1913,8 @@ impl LayoutEngine {
         }
 
         // ── 3. 누적 위치 계산 ──
-        let mut col_x = vec![0.0f64; col_count + 1];
+        // [#2382] 셀은 프레임 안쪽 cs 에서 시작한다 (height_measurer::frame_cell_spacing_total 주석).
+        let mut col_x = vec![cell_spacing; col_count + 1];
         for i in 0..col_count {
             col_x[i + 1] =
                 col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
@@ -1932,7 +1933,8 @@ impl LayoutEngine {
         let table_width = row_col_x
             .iter()
             .map(|rx| rx.last().copied().unwrap_or(0.0))
-            .fold(col_x.last().copied().unwrap_or(0.0), f64::max);
+            .fold(col_x.last().copied().unwrap_or(0.0), f64::max)
+            + cell_spacing;
 
         // ── 표 수평 위치 (table_layout 공유 메서드) ──
         let pw = self.current_paper_width.get();
@@ -1968,9 +1970,10 @@ impl LayoutEngine {
             render_rows.push(r);
         }
 
-        // 렌더링 영역의 행별 y 위치 계산 (0부터 시작)
+        // 렌더링 영역의 행별 y 위치 계산 (프레임 상단 cs 부터 시작)
+        // [#2382] 조각 프레임도 위·아래 cs 를 둘러 쓴다 — 페이지네이터 partial_height(frame_cs)와 정합.
         let mut render_row_y: Vec<f64> = Vec::new(); // 각 render_rows 항목의 시작 y
-        let mut y_accum = 0.0;
+        let mut y_accum = cell_spacing;
         for (i, &r) in render_rows.iter().enumerate() {
             render_row_y.push(y_accum);
             y_accum += row_heights[r]
@@ -1980,7 +1983,7 @@ impl LayoutEngine {
                     0.0
                 };
         }
-        let partial_table_height = y_accum;
+        let partial_table_height = y_accum + cell_spacing;
 
         // 엣지 기반 테두리 수집을 위한 그리드 (렌더링 행 기준)
         let render_row_count = render_rows.len();

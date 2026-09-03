@@ -470,12 +470,13 @@ impl LayoutEngine {
         let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles, true);
 
         // 누적 위치 계산
-        let mut col_x = vec![0.0f64; col_count + 1];
+        // [#2382] 셀은 프레임 안쪽 cs 에서 시작한다 (height_measurer::frame_cell_spacing_total 주석).
+        let mut col_x = vec![cell_spacing; col_count + 1];
         for i in 0..col_count {
             col_x[i + 1] =
                 col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
         }
-        let mut row_y = vec![0.0f64; row_count + 1];
+        let mut row_y = vec![cell_spacing; row_count + 1];
         for i in 0..row_count {
             row_y[i + 1] =
                 row_y[i] + row_heights[i] + if i + 1 < row_count { cell_spacing } else { 0.0 };
@@ -491,11 +492,13 @@ impl LayoutEngine {
             self.dpi,
         );
 
+        // [#2382] 프레임 = 마지막 셀 끝 + 둘레 cs.
         let table_width = row_col_x
             .iter()
             .map(|rx| rx.last().copied().unwrap_or(0.0))
-            .fold(col_x.last().copied().unwrap_or(0.0), f64::max);
-        let table_height = row_y.last().copied().unwrap_or(0.0);
+            .fold(col_x.last().copied().unwrap_or(0.0), f64::max)
+            + cell_spacing;
+        let table_height = row_y.last().copied().unwrap_or(0.0) + cell_spacing;
         // TAC 표: 호스트 문단 정렬에 따라 배치
         let table_x = match host_alignment {
             Alignment::Center | Alignment::Distribute => {
