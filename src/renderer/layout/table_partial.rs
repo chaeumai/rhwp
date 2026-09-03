@@ -712,8 +712,11 @@ impl LayoutEngine {
                 };
                 let cell_context_opt = Some(cell_context.clone());
 
-                // 표 컨트롤 유무 판별
-                let has_table_ctrl = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
+                // 표 컨트롤 유무 판별 ([#2384] 오버레이 중첩 표는 흐름에 없는 것으로 본다)
+                let has_table_ctrl = para
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()));
 
                 // 인라인 이미지가 있는 문단: compose 전 위치를 저장
                 let para_y_before_compose = para_y;
@@ -1218,6 +1221,64 @@ impl LayoutEngine {
                                     BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                                 );
                                 cell_node.children.push(eq_node);
+                            }
+                            // [#2384] 오버레이(글뒤로/글앞으로) 중첩 표 — layout_table 셀 경로(#2383)와
+                            // 같은 배치: 문단 시작 + vertOffset, inner.x + horzOffset, 선언 폭, 흐름 불변.
+                            Control::Table(nested_table) if nested_table.is_flow_overlay() => {
+                                let h_off = hwpunit_to_px(
+                                    nested_table.common.horizontal_offset as i32,
+                                    self.dpi,
+                                );
+                                let v_off =
+                                    hwpunit_to_px(nested_table.common.vertical_offset as i32, self.dpi);
+                                let decl_w =
+                                    hwpunit_to_px(nested_table.common.width as i32, self.dpi);
+                                let overlay_x = inner_area.x + h_off.max(0.0);
+                                let overlay_w = if decl_w > 0.0 {
+                                    decl_w.min((inner_area.x + inner_area.width - overlay_x).max(0.0))
+                                } else {
+                                    (inner_area.width - h_off.max(0.0)).max(0.0)
+                                };
+                                let overlay_y = para_y_before_compose + v_off;
+                                let ctrl_area = LayoutRect {
+                                    x: overlay_x,
+                                    y: overlay_y,
+                                    width: overlay_w,
+                                    height: (inner_area.height - (overlay_y - inner_area.y)).max(0.0),
+                                };
+                                let nested_ctx = cell_context_opt.as_ref().map(|ctx| {
+                                    let mut new_ctx = ctx.clone();
+                                    new_ctx.path.push(CellPathEntry {
+                                        control_index: ctrl_idx,
+                                        cell_index: 0,
+                                        cell_para_index: 0,
+                                        text_direction: 0,
+                                    });
+                                    new_ctx
+                                });
+                                let _ = self.layout_table(
+                                    tree,
+                                    &mut cell_node,
+                                    nested_table,
+                                    section_index,
+                                    styles,
+                                    outline_numbering_id,
+                                    &ctrl_area,
+                                    overlay_y,
+                                    bin_data_content,
+                                    None,
+                                    1,
+                                    None,
+                                    para_alignment,
+                                    nested_ctx,
+                                    0.0,
+                                    0.0,
+                                    None,
+                                    None,
+                                    None,
+                                    false,
+                                    clamp_header_negative_para_offset,
+                                );
                             }
                             Control::Table(nested_table) => {
                                 let nested_h = self.calc_nested_table_height(nested_table, styles);

@@ -348,6 +348,19 @@ impl Cell {
 }
 
 impl Table {
+    /// [#2383/#2384] 글뒤로/글앞으로(BehindText/InFrontOfText) 비-TAC 표 — 흐름 밖 **절대 오버레이**.
+    /// 셀 안에서는 호스트 문단 텍스트를 막지 않고, 높이 회계(측정기·컷 walk·렌더 흐름)에 참여하지
+    /// 않으며, 문단 기준 오프셋에 자기 선언 폭으로 그린다. 깊이 0 의 layout_table 이 글뒤로/글앞으로
+    /// 표를 y_offset 불변 오버레이로 다루는 것과 같은 규칙이다.
+    pub fn is_flow_overlay(&self) -> bool {
+        !self.common.treat_as_char
+            && matches!(
+                self.common.text_wrap,
+                crate::model::shape::TextWrap::BehindText
+                    | crate::model::shape::TextWrap::InFrontOfText
+            )
+    }
+
     /// [Task #1716] 반복 제목행으로 재사용할 **표 상단의 연속 제목행 블록** `0..H` 를 반환한다.
     ///
     /// 행 r 이 제목행 ⟺ header 셀(`is_header`, rowspan 덮개 포함)이 r 을 덮음. 상단(행 0)부터

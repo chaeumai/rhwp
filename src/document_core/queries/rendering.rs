@@ -5204,12 +5204,7 @@ fn format_line_seg_brief(para: Option<&Paragraph>) -> String {
 /// 셀 폭 432.6px 로 늘어나 라벨 글자가 한컴보다 166px 오른쪽에 놓였다(한컴 x 310 vs 우리 476).
 /// 스트레치 대상(근거설명 계열, #2195)은 TopAndBottom/Square 흐름 표다.
 fn is_overlay_nested_table(t: &crate::model::table::Table) -> bool {
-    !t.common.treat_as_char
-        && matches!(
-            t.common.text_wrap,
-            crate::model::shape::TextWrap::BehindText
-                | crate::model::shape::TextWrap::InFrontOfText
-        )
+    t.is_flow_overlay()
 }
 
 fn stretch_nested_tables_to_parent_cell(p: &mut Paragraph) {

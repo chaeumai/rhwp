@@ -758,7 +758,11 @@ impl LayoutEngine {
                 if !has_visible_text {
                     if let Some(nested) = p.controls.iter().find_map(|c| {
                         if let Control::Table(t) = c {
-                            Some(t.as_ref())
+                            if t.is_flow_overlay() {
+                                None // [#2384] 오버레이는 문단 높이가 아니다
+                            } else {
+                                Some(t.as_ref())
+                            }
                         } else {
                             None
                         }
@@ -2809,14 +2813,7 @@ impl LayoutEngine {
             // 문단 기준 오프셋 8678/529HU)에 밀려 통째로 사라졌다. 한컴은 둘 다 그린다.
             // 코퍼스 hwpx 250편 중 이런 문단(텍스트 + 비-TAC 중첩 표)은 4편 9문단, 그중 글앞으로는
             // 편람 5·75544 1 — 나머지 3(TopAndBottom)은 종전 분기 그대로(미측정).
-            let is_overlay_nested_table = |t: &crate::model::table::Table| {
-                !t.common.treat_as_char
-                    && matches!(
-                        t.common.text_wrap,
-                        crate::model::shape::TextWrap::BehindText
-                            | crate::model::shape::TextWrap::InFrontOfText
-                    )
-            };
+            let is_overlay_nested_table = |t: &crate::model::table::Table| t.is_flow_overlay();
             let has_block_table_ctrl = para.controls.iter().any(|c| {
                 matches!(c, Control::Table(t) if !t.common.treat_as_char && !is_overlay_nested_table(t))
             });
@@ -4307,6 +4304,9 @@ impl LayoutEngine {
                         // 마지막 문단에 중첩 표가 있고 lh가 표 높이보다 작으면 보정
                         for ctrl in &last_para.controls {
                             if let Control::Table(t) = ctrl {
+                                if t.is_flow_overlay() {
+                                    continue; // [#2384]
+                                }
                                 let table_h = t.common.height as i32;
                                 if table_h > seg.line_height {
                                     last_end += table_h - seg.line_height;
@@ -4538,6 +4538,10 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         styles: &ResolvedStyleSet,
     ) -> f64 {
+        // [#2384] 오버레이(글뒤로/글앞으로) 중첩 표는 흐름 높이 0 — 모든 합산 호출처가 이 값을 쓴다.
+        if table.is_flow_overlay() {
+            return 0.0;
+        }
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
         let mut row_heights =
@@ -4667,7 +4671,7 @@ impl LayoutEngine {
                 total += spacing_before + h + spacing_after;
             } else {
                 // 중첩 표가 있는 문단: LINE_SEG 높이와 실제 중첩 표 높이 중 큰 값 사용
-                let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));
+                let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()));
                 let line_count = comp.lines.len();
                 let line_based_h: f64 = comp
                     .lines
@@ -4864,7 +4868,7 @@ impl LayoutEngine {
             }
 
             // 중첩 표 포함 문단(atomic) — line_count==0 또는 has_table_in_para
-            let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
+            let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()));
             if line_count == 0 || has_table_in_para {
                 let nested_h: f64 = para
                     .controls
@@ -5749,7 +5753,7 @@ impl LayoutEngine {
                     None => raw_lh,
                 }
             };
-            let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));
+            let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()));
             let para_has_top_and_bottom_non_inline_control =
                 p.controls.iter().any(|control| match control {
                     Control::Picture(pic) => matches!(pic.common.text_wrap, TextWrap::TopAndBottom),
@@ -5796,7 +5800,7 @@ impl LayoutEngine {
                     .controls
                     .iter()
                     .filter_map(|c| match c {
-                        Control::Table(t) => Some(t.as_ref()),
+                        Control::Table(t) if !t.is_flow_overlay() => Some(t.as_ref()),
                         _ => None,
                     })
                     .collect();
@@ -8313,7 +8317,7 @@ impl LayoutEngine {
             } else {
                 0.0
             };
-            let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
+            let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()));
 
             // [Task #362] nested table paragraph 의 실제 콘텐츠 높이
             // (compute_cell_line_ranges 와 동일한 시멘틱)

@@ -876,6 +876,9 @@ impl HeightMeasurer {
                     .iter()
                     .filter_map(|ctrl| {
                         if let Control::Table(nested) = ctrl {
+                            if nested.is_flow_overlay() {
+                                return None; // [#2384] 오버레이는 흐름 높이 0
+                            }
                             let nested_w = hwpunit_to_px(nested.common.width as i32, self.dpi);
                             let stretch = 1.0; // [#2195] 스트레치는 render_normalized 로 일원화
                             let mt =
@@ -914,6 +917,9 @@ impl HeightMeasurer {
                     .iter()
                     .filter_map(|ctrl| {
                         if let Control::Table(nested) = ctrl {
+                            if nested.is_flow_overlay() {
+                                return None; // [#2384] 오버레이는 흐름 높이 0
+                            }
                             let nested_w = hwpunit_to_px(nested.common.width as i32, self.dpi);
                             let stretch = 1.0; // [#2195] 스트레치는 render_normalized 로 일원화
                             let mt =
@@ -991,7 +997,11 @@ impl HeightMeasurer {
                 if !has_visible_text {
                     if let Some(nested) = p.controls.iter().find_map(|c| {
                         if let Control::Table(t) = c {
-                            Some(t.as_ref())
+                            if t.is_flow_overlay() {
+                                None // [#2384] 오버레이는 문단 높이가 아니다
+                            } else {
+                                Some(t.as_ref())
+                            }
                         } else {
                             None
                         }
@@ -1279,10 +1289,11 @@ impl HeightMeasurer {
                 };
                 // 중첩 표가 있는 셀: LINE_SEG.line_height에 중첩 표 높이가 미포함.
                 // vpos 점프에만 반영되므로, 마지막 seg의 (vpos + lh)로 전체 높이를 계산.
-                let has_nested_table_in_cell = cell
-                    .paragraphs
-                    .iter()
-                    .any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))));
+                let has_nested_table_in_cell = cell.paragraphs.iter().any(|p| {
+                    p.controls
+                        .iter()
+                        .any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()))
+                });
                 let cell_all_no_ls = cell
                     .paragraphs
                     .iter()
@@ -1299,6 +1310,9 @@ impl HeightMeasurer {
                         .flat_map(|p| p.controls.iter())
                         .filter_map(|ctrl| {
                             if let Control::Table(nested) = ctrl {
+                                if nested.is_flow_overlay() {
+                                    return None; // [#2384] 오버레이는 흐름 높이 0
+                                }
                                 let nested_w = hwpunit_to_px(nested.common.width as i32, self.dpi);
                                 // 한글 실효폭은 부모 셀 **전폭**(pad 미차감, 76076
                                 // 근거설명 셀: 유효 ~504px = 부모 w 506.2, inner 492.6

@@ -648,10 +648,11 @@ impl LayoutEngine {
             let inner_x = cell_x + pad_left;
             let inner_width = (cell_w - pad_left - pad_right).max(0.0);
             let inner_height = (cell_h - pad_top - pad_bottom).max(0.0);
-            let has_nested = cell
-                .paragraphs
-                .iter()
-                .any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))));
+            let has_nested = cell.paragraphs.iter().any(|p| {
+                p.controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Table(t) if !t.is_flow_overlay()))
+            });
             let total_content_height = if has_nested {
                 let last_seg_end: i32 = cell
                     .paragraphs
