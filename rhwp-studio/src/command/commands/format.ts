@@ -252,7 +252,7 @@ export const formatCommands: CommandDef[] = [
       if (!ih) return;
       // F5 셀 선택: 텍스트 선택(getSelection)이 없어도 선택한 셀 전체가 대상이다 (한컴: 셀 블록 + Alt+L).
       // 대화상자 열기 전 표적을 잡아 둔다 — 대화상자 조작 중 선택이 풀릴 수 있다.
-      const cellTarget = ih.captureCellSelectionFormatTarget('글자 모양');
+      const cellTarget = ih.captureCellSelectionFormatTarget();
       const savedSel = cellTarget ? null : ih.getSelection();
       if (!cellTarget && !savedSel) return;
       const charProps = ih.getCharProperties();
@@ -281,7 +281,7 @@ export const formatCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       if (!ih) return;
       // F5 셀 선택: 선택한 모든 셀의 모든 문단이 대상이다 (한컴: 셀 블록 + Alt+T). 표적은 열 때 잡아 둔다.
-      const cellTarget = ih.captureCellSelectionFormatTarget('문단 모양');
+      const cellTarget = ih.captureCellSelectionFormatTarget();
       const paraProps = ih.getParaProperties();
       const sel = ih.getSelection();
       const curPos = ih.getCursorPosition();

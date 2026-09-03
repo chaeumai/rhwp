@@ -2217,6 +2217,335 @@ impl DocumentCore {
         }
         Ok("{\"ok\":true,\"exists\":false}".to_string())
     }
+
+    // ─── 중첩 표 경로 기반 서식 API (cellPath 계약) ─────────────────────────
+    //
+    // 경로 규약은 hitTest cellPath 와 같다 — `[(control_idx, cell_idx, cell_para_idx), …]`,
+    // 마지막 항목이 대상 표·셀·문단. 깊이 1 은 기존 flat 네이티브에 위임해 편집 계약을 하나로 둔다
+    // (`insert_text_in_cell_by_path` 와 같은 원칙). rhwp-studio 의 F5 셀 선택 서식(글자·문단·스타일)이
+    // 중첩 표에서도 동작하게 하는 것이 목적이다 — 종전에는 `applyCharFormatInCell(Ex)` 에
+    // cellPath 인자가 없어 편집기가 중첩 표 셀 선택을 "미지원" 으로 돌려보냈다.
+
+    /// 경로 기반 서식 변경의 뒤처리 — 대상(중첩) 표와 최외곽 표를 dirty 로 마킹해 셀 높이를
+    /// 다시 재고, 구역을 재구성한다. 깊이 2 이상 전용(깊이 1 은 flat 네이티브가 처리).
+    fn finish_cell_format_by_path(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) {
+        if let Ok(t) = self.get_table_mut_by_path(sec_idx, parent_para_idx, path) {
+            t.dirty = true;
+        }
+        self.mark_cell_control_dirty(sec_idx, parent_para_idx, path[0].0);
+        self.document.sections[sec_idx].raw_stream = None;
+        self.rebuild_section(sec_idx);
+    }
+
+    /// 글자 서식 적용 (네이티브) — 경로 기반 (중첩 표 셀 문단).
+    /// 빈 문단이면 `apply_char_format_in_cell_native` 와 같이 유일한 CharShapeRef 를 통째로 바꾼다.
+    pub fn apply_char_format_in_cell_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        start_offset: usize,
+        end_offset: usize,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, cell_para_idx)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.apply_char_format_in_cell_native(
+                sec_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                start_offset,
+                end_offset,
+                props_json,
+            );
+        }
+
+        let mut mods = parse_char_shape_mods(props_json);
+        if json_has_border_keys(props_json) {
+            let bf_id = self.create_border_fill_from_json(props_json);
+            mods.border_fill_id = Some(bf_id);
+        }
+
+        let base_id = self
+            .resolve_paragraph_by_path(sec_idx, parent_para_idx, path)?
+            .char_shape_id_at(start_offset)
+            .unwrap_or(0);
+        let new_id = self.document.find_or_create_char_shape(base_id, &mods);
+        {
+            let cell_para = self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?;
+            if cell_para.text.is_empty() {
+                cell_para.set_single_char_shape(new_id);
+            } else {
+                cell_para.apply_char_shape_range(start_offset, end_offset, new_id);
+            }
+        }
+
+        // 글자 폭·높이가 바뀌면 그 셀 폭으로 LineSeg 재계산 (깊이 1 의 set_char_shape_id 경로와 같은 폭 계산)
+        if char_shape_mods_affect_text_flow(&mods) {
+            self.reflow_cell_paragraph_by_path(
+                sec_idx,
+                parent_para_idx,
+                path,
+                cell_idx,
+                cell_para_idx,
+            );
+        }
+        self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+        self.event_log.push(DocumentEvent::CharFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+            start: start_offset,
+            end: end_offset,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// 문단 서식 적용 (네이티브) — 경로 기반 (중첩 표 셀 문단).
+    pub fn apply_para_format_in_cell_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, cell_para_idx)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.apply_para_format_in_cell_native(
+                sec_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                props_json,
+            );
+        }
+
+        let mut mods = parse_para_shape_mods(props_json);
+        let base_id = self
+            .resolve_paragraph_by_path(sec_idx, parent_para_idx, path)?
+            .para_shape_id;
+
+        if json_has_tab_keys(props_json) {
+            let base_tab_def_id = self
+                .document
+                .doc_info
+                .para_shapes
+                .get(base_id as usize)
+                .map(|ps| ps.tab_def_id)
+                .unwrap_or(0);
+            let new_td = build_tab_def_from_json(
+                props_json,
+                base_tab_def_id,
+                &self.document.doc_info.tab_defs,
+            );
+            let new_tab_id = self.document.find_or_create_tab_def(new_td);
+            mods.tab_def_id = Some(new_tab_id);
+        }
+        if json_has_border_keys(props_json) {
+            let bf_id = self.create_border_fill_from_json(props_json);
+            mods.border_fill_id = Some(bf_id);
+        }
+        if let Some(arr) = parse_json_i16_array(props_json, "borderSpacing", 4) {
+            mods.border_spacing = Some([arr[0], arr[1], arr[2], arr[3]]);
+        }
+
+        let new_id = self.document.find_or_create_para_shape(base_id, &mods);
+        self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?
+            .para_shape_id = new_id;
+
+        if mods.line_spacing.is_some() || mods.line_spacing_type.is_some() {
+            self.reflow_cell_paragraph_by_path(
+                sec_idx,
+                parent_para_idx,
+                path,
+                cell_idx,
+                cell_para_idx,
+            );
+        }
+        self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+        self.event_log.push(DocumentEvent::ParaFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// 문단 서식 ID 직접 복원 (네이티브) — 경로 기반. 편집기 `ApplyParaFormatCommand` 의 되돌리기용.
+    pub fn set_para_shape_id_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        para_shape_id: u16,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, cell_para_idx)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.set_cell_para_shape_id_native(
+                sec_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                para_shape_id,
+            );
+        }
+        if para_shape_id as usize >= self.document.doc_info.para_shapes.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 모양 ID {} 범위 초과 (총 {}개)",
+                para_shape_id,
+                self.document.doc_info.para_shapes.len()
+            )));
+        }
+        self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?
+            .para_shape_id = para_shape_id;
+        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+        self.event_log.push(DocumentEvent::ParaFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// 스타일 적용 (네이티브) — 경로 기반 (중첩 표 셀 문단). `apply_cell_style_native` 와 같은 규칙.
+    pub fn apply_style_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        style_id: usize,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, cell_para_idx)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.apply_cell_style_native(
+                sec_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                style_id,
+            );
+        }
+        let style = self
+            .document
+            .doc_info
+            .styles
+            .get(style_id)
+            .cloned()
+            .ok_or_else(|| HwpError::RenderError(format!("스타일 {} 범위 초과", style_id)))?;
+        let new_char_shape_id = style.char_shape_id as u32;
+
+        let (current_style_id, current_psid) = {
+            let p = self.resolve_paragraph_by_path(sec_idx, parent_para_idx, path)?;
+            (p.style_id, p.para_shape_id)
+        };
+        let old_style = self
+            .document
+            .doc_info
+            .styles
+            .get(current_style_id as usize)
+            .cloned();
+
+        if style.style_type == 1 {
+            let text_len = {
+                let cell_para =
+                    self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?;
+                cell_para.apply_char_shape_to_entire_text(new_char_shape_id);
+                cell_para.text.chars().count()
+            };
+            self.reflow_cell_paragraph_by_path(
+                sec_idx,
+                parent_para_idx,
+                path,
+                cell_idx,
+                cell_para_idx,
+            );
+            self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+            self.event_log.push(DocumentEvent::CharFormatChanged {
+                section: sec_idx,
+                para: parent_para_idx,
+                start: 0,
+                end: text_len,
+            });
+            return Ok("{\"ok\":true}".to_string());
+        }
+
+        let new_para_shape_id = match old_style.as_ref() {
+            Some(old) if current_psid != old.para_shape_id => current_psid,
+            _ => self.resolve_style_para_shape_id(style_id, current_psid),
+        };
+        {
+            let cell_para = self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?;
+            cell_para.style_id = style_id as u8;
+            cell_para.para_shape_id = new_para_shape_id;
+            if let Some(old) = old_style {
+                cell_para.replace_style_char_shape_preserving_overrides(
+                    old.char_shape_id as u32,
+                    new_char_shape_id,
+                );
+            } else {
+                cell_para.set_single_char_shape(new_char_shape_id);
+            }
+        }
+        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+        self.event_log.push(DocumentEvent::ParaFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// 글자 속성 조회 (네이티브) — 경로 기반. 빈 경로는 본문 문단 (`get_para_properties_by_path_native` 와 같은 계약).
+    pub fn get_char_properties_by_path_native(
+        &self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path: &[(usize, usize, usize)],
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        let para = self.resolve_control_para(sec_idx, parent_para_idx, cell_path)?;
+        Ok(self.build_char_properties_json(para, char_offset))
+    }
+
+    /// 문단 스타일 조회 (네이티브) — 경로 기반. 반환 `{"id":N,"name":"…"}`, 빈 경로는 본문 문단.
+    pub fn get_style_by_path_native(
+        &self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        cell_path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        let style_id = self
+            .resolve_control_para(sec_idx, parent_para_idx, cell_path)?
+            .style_id as usize;
+        let name = self
+            .document
+            .doc_info
+            .styles
+            .get(style_id)
+            .map(|s| s.local_name.as_str())
+            .unwrap_or("");
+        Ok(format!(
+            "{{\"id\":{},\"name\":\"{}\"}}",
+            style_id,
+            json_escape(name)
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -2303,5 +2632,169 @@ mod tests {
             .char_shape_id_at(0)
             .unwrap_or(0);
         assert_eq!(other, before, "적용하지 않은 셀의 글자 모양은 불변");
+    }
+
+    // ─── 경로 기반 서식 API (중첩 표) ─────────────────────────────────
+
+    /// 1×2 표 안 셀 0 문단 0 에 같은 모양의 1×2 표를 중첩시킨 문서. 반환: (parent_para, 깊이2 경로 셀0·문단0)
+    fn nested_table_fixture() -> (crate::document_core::DocumentCore, usize, Vec<(usize, usize, usize)>) {
+        use crate::document_core::helpers::json_u32;
+        use crate::document_core::DocumentCore;
+
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        let res = core.create_table_native(0, 0, 0, 1, 2).unwrap();
+        let para_idx = json_u32(&res, "paraIdx").unwrap() as usize;
+        let ctrl_idx = json_u32(&res, "controlIdx").unwrap() as usize;
+
+        let inner = match &core.document.sections[0].paragraphs[para_idx].controls[ctrl_idx] {
+            crate::model::control::Control::Table(t) => (**t).clone(),
+            _ => panic!("표가 아니다"),
+        };
+        let host = core.get_cell_paragraph_mut(0, para_idx, ctrl_idx, 0, 0).unwrap();
+        host.controls.push(crate::model::control::Control::Table(Box::new(inner)));
+        let inner_ctrl = host.controls.len() - 1;
+        (core, para_idx, vec![(ctrl_idx, 0, 0), (inner_ctrl, 0, 0)])
+    }
+
+    fn compact(json: &str) -> String {
+        json.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// 깊이 2 경로로 글자 서식을 적용하면 중첩 표의 그 셀만 바뀌고, 호스트 셀·이웃 셀은 그대로다.
+    /// 빈 문단이면 유일한 CharShapeRef 를 통째로 바꾼다(빈 셀 서식, 깊이 1 과 같은 계약).
+    #[test]
+    fn apply_char_format_by_path_targets_nested_cell_only() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let before = core
+            .resolve_paragraph_by_path(0, ppi, &path)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        let host_before = core
+            .get_cell_paragraph_ref(0, ppi, path[0].0, 0, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+
+        core.apply_char_format_in_cell_by_path_native(
+            0,
+            ppi,
+            &path,
+            0,
+            0,
+            r#"{"bold":true,"fontSize":2000}"#,
+        )
+        .unwrap();
+
+        let para = core.resolve_paragraph_by_path(0, ppi, &path).unwrap();
+        assert!(para.text.is_empty());
+        assert_eq!(para.char_shapes.len(), 1, "빈 문단의 CharShapeRef 는 하나");
+        assert_ne!(para.char_shape_id_at(0).unwrap(), before);
+
+        let json = compact(&core.get_char_properties_by_path_native(0, ppi, &path, 0).unwrap());
+        assert!(json.contains(r#""bold":true"#), "{json}");
+        assert!(json.contains(r#""fontSize":2000"#), "{json}");
+
+        // 중첩 표 이웃 셀 1 과 호스트 셀 0 은 불변
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        let sib_id = core
+            .resolve_paragraph_by_path(0, ppi, &sibling)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        assert_eq!(sib_id, before, "중첩 표 이웃 셀은 불변");
+        let host_after = core
+            .get_cell_paragraph_ref(0, ppi, path[0].0, 0, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        assert_eq!(host_after, host_before, "호스트(바깥) 셀은 불변");
+    }
+
+    /// 깊이 1 경로는 flat 네이티브에 위임한다 — 결과가 flat 호출과 같다.
+    #[test]
+    fn apply_char_format_by_path_depth1_matches_flat() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let outer = path[0].0;
+        core.apply_char_format_in_cell_by_path_native(0, ppi, &[(outer, 1, 0)], 0, 0, r#"{"italic":true}"#)
+            .unwrap();
+        let by_path = compact(&core.get_char_properties_by_path_native(0, ppi, &[(outer, 1, 0)], 0).unwrap());
+        let flat = compact(&core.get_cell_char_properties_at_native(0, ppi, outer, 1, 0, 0).unwrap());
+        assert_eq!(by_path, flat);
+        assert!(flat.contains(r#""italic":true"#), "{flat}");
+    }
+
+    /// 문단 서식: 경로로 정렬을 바꾸면 paraShapeId 가 바뀌고, 그 ID 를 되돌리면 원래대로.
+    #[test]
+    fn apply_para_format_by_path_and_restore_para_shape_id() {
+        use crate::document_core::helpers::json_u32;
+        let (mut core, ppi, path) = nested_table_fixture();
+        let before_id = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().para_shape_id;
+        let before_json = core.get_para_properties_by_path_native(0, ppi, &path).unwrap();
+        assert_eq!(json_u32(&before_json, "paraShapeId").unwrap() as u16, before_id);
+
+        core.apply_para_format_in_cell_by_path_native(0, ppi, &path, r#"{"alignment":"center"}"#)
+            .unwrap();
+        let after_json = compact(&core.get_para_properties_by_path_native(0, ppi, &path).unwrap());
+        assert!(after_json.contains(r#""alignment":"center""#), "{after_json}");
+        let after_id = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().para_shape_id;
+        assert_ne!(after_id, before_id);
+
+        // 이웃 셀 불변
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        assert_eq!(
+            core.resolve_paragraph_by_path(0, ppi, &sibling).unwrap().para_shape_id,
+            before_id
+        );
+
+        core.set_para_shape_id_by_path_native(0, ppi, &path, before_id).unwrap();
+        assert_eq!(
+            core.resolve_paragraph_by_path(0, ppi, &path).unwrap().para_shape_id,
+            before_id
+        );
+        assert!(core.set_para_shape_id_by_path_native(0, ppi, &path, u16::MAX).is_err());
+    }
+
+    /// 스타일: 경로로 문단 스타일을 적용하면 style_id 가 바뀌고 조회가 그 이름을 돌려준다.
+    #[test]
+    fn apply_style_by_path_sets_nested_cell_style() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let styles = &core.document.doc_info.styles;
+        // 현재와 다른 문단 스타일(style_type 0) 하나 고른다
+        let current = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().style_id as usize;
+        let target = styles
+            .iter()
+            .enumerate()
+            .find(|(i, s)| *i != current && s.style_type == 0)
+            .map(|(i, _)| i)
+            .expect("빈 문서에도 문단 스타일이 둘 이상");
+        let target_name = styles[target].local_name.clone();
+
+        core.apply_style_by_path_native(0, ppi, &path, target).unwrap();
+        assert_eq!(core.resolve_paragraph_by_path(0, ppi, &path).unwrap().style_id as usize, target);
+        let json = core.get_style_by_path_native(0, ppi, &path).unwrap();
+        assert_eq!(json, format!("{{\"id\":{},\"name\":\"{}\"}}", target, super::json_escape(&target_name)));
+
+        // 이웃 셀 불변
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        assert_eq!(core.resolve_paragraph_by_path(0, ppi, &sibling).unwrap().style_id as usize, current);
+        assert!(core.apply_style_by_path_native(0, ppi, &path, 9999).is_err());
+    }
+
+    /// 빈 경로·잘못된 경로는 오류로 돌려보낸다 (조용히 무동작하지 않는다).
+    #[test]
+    fn by_path_format_apis_reject_empty_and_bad_paths() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        assert!(core.apply_char_format_in_cell_by_path_native(0, ppi, &[], 0, 0, "{}").is_err());
+        assert!(core.apply_para_format_in_cell_by_path_native(0, ppi, &[], "{}").is_err());
+        assert!(core.set_para_shape_id_by_path_native(0, ppi, &[], 0).is_err());
+        assert!(core.apply_style_by_path_native(0, ppi, &[], 0).is_err());
+        let bad = [path[0], (path[1].0, 99, 0)];
+        assert!(core.apply_char_format_in_cell_by_path_native(0, ppi, &bad, 0, 0, "{}").is_err());
+        assert!(core.get_char_properties_by_path_native(0, ppi, &bad, 0).is_err());
+        // 빈 경로 조회는 본문 문단
+        let body = core.get_char_properties_by_path_native(0, 0, &[], 0).unwrap();
+        assert!(body.contains("fontSize"), "{body}");
     }
 }

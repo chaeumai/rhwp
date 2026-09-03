@@ -1,5 +1,5 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { DocumentPosition, CharProperties, ParaProperties, CellPathLike } from '@/core/types';
+import type { DocumentPosition, CharProperties, ParaProperties, CellPathLike, CellPathEntry } from '@/core/types';
 import { MAX_PAGE_LOCAL_TEXT_EDIT_CHARS } from './input-edit-invalidation';
 
 /** 편집 명령 공통 인터페이스 */
@@ -674,7 +674,9 @@ export class ApplyCharFormatCommand implements EditCommand {
 
 export type ParaFormatTarget =
   | { kind: 'body'; sec: number; para: number }
-  | { kind: 'cell'; sec: number; parentPara: number; controlIdx: number; cellIdx: number; cellParaIdx: number };
+  | { kind: 'cell'; sec: number; parentPara: number; controlIdx: number; cellIdx: number; cellParaIdx: number }
+  /** 중첩 표 셀 문단 — cellPath 마지막 항목이 대상 표·셀·문단 (경로 기반 wasm API) */
+  | { kind: 'path'; sec: number; parentPara: number; cellPath: CellPathEntry[] };
 
 interface ParaShapeHistoryEntry {
   target: ParaFormatTarget;
@@ -685,6 +687,8 @@ interface ParaShapeHistoryEntry {
 function getParaShapeId(wasm: WasmBridge, target: ParaFormatTarget): number {
   const props = target.kind === 'body'
     ? wasm.getParaPropertiesAt(target.sec, target.para)
+    : target.kind === 'path'
+    ? wasm.getParaPropertiesByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath))
     : wasm.getCellParaPropertiesAt(
         target.sec,
         target.parentPara,
@@ -704,6 +708,10 @@ function applyParaFormatToTarget(wasm: WasmBridge, target: ParaFormatTarget, pro
     wasm.applyParaFormat(target.sec, target.para, propsJson);
     return;
   }
+  if (target.kind === 'path') {
+    wasm.applyParaFormatInCellByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath), propsJson);
+    return;
+  }
   wasm.applyParaFormatInCell(
     target.sec,
     target.parentPara,
@@ -717,6 +725,10 @@ function applyParaFormatToTarget(wasm: WasmBridge, target: ParaFormatTarget, pro
 function restoreParaShapeId(wasm: WasmBridge, target: ParaFormatTarget, paraShapeId: number): void {
   if (target.kind === 'body') {
     wasm.setParaShapeId(target.sec, target.para, paraShapeId);
+    return;
+  }
+  if (target.kind === 'path') {
+    wasm.setParaShapeIdByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath), paraShapeId);
     return;
   }
   wasm.setCellParaShapeId(

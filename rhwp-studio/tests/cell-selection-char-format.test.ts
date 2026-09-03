@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import {
   hasCharFormatTarget,
   isNestedCellPath,
+  cellPathForCell,
   collectSelectedCellIndices,
   collectCellParaTargets,
   CELL_SELECTION_CHAR_FORMAT_COMMANDS,
@@ -114,7 +115,7 @@ test('셀 선택 글자 서식은 빈 문단도 (0,0) 범위로 넘기고 셀 �
   const start = ih.indexOf('private applyCharFormatToSelectedCells(');
   assert.ok(start >= 0);
   const body = ih.slice(start, ih.indexOf('applyCharPropsToCellSelection(target: CellSelectionFormatTarget', start));
-  assert.match(body, /resolveSelectedCellsTarget\('글자 서식'\)[\s\S]{0,200}?return this\.applyCharPropsToCellSelection\(target, props\)/);
+  assert.match(body, /resolveSelectedCellsTarget\(\)[\s\S]{0,200}?return this\.applyCharPropsToCellSelection\(target, props\)/);
   // 적용 본체: snapshot 한 단계 + 오버레이 갱신
   const apply = ih.slice(ih.indexOf('applyCharPropsToCellSelection(target: CellSelectionFormatTarget'));
   const applyBody = apply.slice(0, apply.indexOf('applyParaPropsToCellSelection('));
@@ -197,7 +198,7 @@ test('문단 서식·스타일 대상은 셀 선택 중 선택한 셀 전체를 
   const start = ih.indexOf('private getParaFormatTargetsAtCursor(): ParaFormatTarget[]');
   assert.ok(start >= 0);
   const body = ih.slice(start, ih.indexOf('private getParaFormatTargetsForRange(', start));
-  assert.match(body, /isInCellSelectionMode\(\)[\s\S]{0,200}?resolveSelectedCellsTarget\('문단 서식'\)[\s\S]{0,120}?getParaFormatTargetsForCellSelection\(target\)/);
+  assert.match(body, /isInCellSelectionMode\(\)[\s\S]{0,200}?resolveSelectedCellsTarget\(\)[\s\S]{0,120}?getParaFormatTargetsForCellSelection\(target\)/);
   assert.match(body, /collectCellParaTargets\(/);
   // 문단 서식·스타일 적용 뒤 셀 선택 오버레이를 다시 그린다 (행 높이 변화)
   const pf = ih.slice(ih.indexOf('private applyParaFormat(props'));
@@ -213,20 +214,20 @@ test('문단 서식·스타일 대상은 셀 선택 중 선택한 셀 전체를 
 test('글자 모양·문단 모양 대화상자는 셀 선택 표적을 열 때 잡아 두고 적용 시 그 표적에 쓴다 (Finding B)', () => {
   const fmt = source('src/command/commands/format.ts');
   const cs = fmt.slice(fmt.indexOf("id: 'format:char-shape'"), fmt.indexOf("id: 'format:para-shape'"));
-  assert.match(cs, /captureCellSelectionFormatTarget\('글자 모양'\)/);
+  assert.match(cs, /captureCellSelectionFormatTarget\(\)/);
   assert.match(cs, /const savedSel = cellTarget \? null : ih\.getSelection\(\);/);
   assert.match(cs, /if \(!cellTarget && !savedSel\) return;/);
   assert.match(cs, /if \(cellTarget\) ih\.applyCharPropsToCellSelection\(cellTarget, mods\);/);
   assert.match(cs, /else if \(savedSel\) ih\.applyCharPropsToRange\(savedSel\.start, savedSel\.end, mods\);/);
   const ps = fmt.slice(fmt.indexOf("id: 'format:para-shape'"), fmt.indexOf("id: 'format:apply-style'"));
-  assert.match(ps, /captureCellSelectionFormatTarget\('문단 모양'\)/);
+  assert.match(ps, /captureCellSelectionFormatTarget\(\)/);
   assert.match(ps, /if \(cellTarget\) ih\.applyParaPropsToCellSelection\(cellTarget, mods\);/);
   // 표적은 제외 셀의 사본을 품는다 — 대화상자 조작 중 선택이 바뀌어도 적용 대상이 고정된다
   const ih = source('src/engine/input-handler.ts');
   assert.match(ih, /export type CellSelectionFormatTarget = \{[\s\S]{0,200}?excluded: ReadonlySet<string>;/);
   assert.match(ih, /return \{ ctx, range, excluded: new Set\(this\.cursor\.getExcludedCells\(\)\) \};/);
-  const cap = ih.slice(ih.indexOf('captureCellSelectionFormatTarget(featureLabel: string)'));
-  assert.match(cap.slice(0, 300), /if \(!this\.cursor\.isInCellSelectionMode\(\)\) return null;\s*return this\.resolveSelectedCellsTarget\(featureLabel\);/);
+  const cap = ih.slice(ih.indexOf('captureCellSelectionFormatTarget(): CellSelectionFormatTarget | null'));
+  assert.match(cap.slice(0, 300), /if \(!this\.cursor\.isInCellSelectionMode\(\)\) return null;\s*return this\.resolveSelectedCellsTarget\(\);/);
 });
 
 test('서식바 적용이 거부되면 표시값을 실제 서식으로 되돌린다 (§7-4)', () => {
@@ -250,4 +251,71 @@ test('셀 선택 키 처리는 서식 단축키를 선택 해제 前에 그대�
   assert.ok(fallthrough >= 0, '기존 fall-through exit 이 있어야 한다');
   assert.ok(dispatch < fallthrough, 'dispatch 가 fall-through exit 보다 앞이어야 한다');
   assert.match(block.slice(dispatch, dispatch + 200), /this\.dispatcher\?\.dispatch\(fmtCmd\)/);
+});
+
+// ─── 중첩 표 — 경로 기반 서식 API ────────────────────────────────────────
+// 종전에는 cellPath 깊이 2 이상이면 "미지원" 안내 후 무동작이었다. 이제 wasm `…ByPath` 6종으로
+// 같은 흐름(셀 순회 → 문단 순회 → 적용/조회)을 경로로 탄다. rhwp-cai docs/셀선택-중첩표-경로기반서식-20260903-*.md
+
+test('cellPathForCell 은 마지막 항목의 셀·문단만 바꾼다 (앞 항목은 바깥 표 경로라 그대로)', () => {
+  const base = [
+    { controlIndex: 3, cellIndex: 1, cellParaIndex: 0 },
+    { controlIndex: 0, cellIndex: 2, cellParaIndex: 1 },
+  ];
+  assert.deepEqual(cellPathForCell(base, 5), [
+    { controlIndex: 3, cellIndex: 1, cellParaIndex: 0 },
+    { controlIndex: 0, cellIndex: 5, cellParaIndex: 0 },
+  ]);
+  assert.deepEqual(cellPathForCell(base, 5, 2)[1], { controlIndex: 0, cellIndex: 5, cellParaIndex: 2 });
+  // 원본 불변·새 객체
+  assert.deepEqual(base[1], { controlIndex: 0, cellIndex: 2, cellParaIndex: 1 });
+  assert.notEqual(cellPathForCell(base, 0)[0], base[0]);
+  // 깊이 1 도 같은 규칙
+  assert.deepEqual(cellPathForCell([{ controlIndex: 7, cellIndex: 0, cellParaIndex: 0 }], 3, 1), [
+    { controlIndex: 7, cellIndex: 3, cellParaIndex: 1 },
+  ]);
+  assert.throws(() => cellPathForCell([], 0));
+});
+
+test('중첩 표의 문단 서식 대상은 셀·문단마다 경로를 가진 path 대상이다', () => {
+  const cellPath = [
+    { controlIndex: 3, cellIndex: 1, cellParaIndex: 0 },
+    { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 },
+  ];
+  const paraCountAt = (cellIdx: number) => (cellIdx === 2 ? 2 : 1);
+  const targets = collectCellParaTargets({ sec: 0, ppi: 4, ci: 3, cellPath }, [1, 2], paraCountAt);
+  assert.deepEqual(targets, [
+    { kind: 'path', sec: 0, parentPara: 4, cellPath: [cellPath[0], { controlIndex: 0, cellIndex: 1, cellParaIndex: 0 }] },
+    { kind: 'path', sec: 0, parentPara: 4, cellPath: [cellPath[0], { controlIndex: 0, cellIndex: 2, cellParaIndex: 0 }] },
+    { kind: 'path', sec: 0, parentPara: 4, cellPath: [cellPath[0], { controlIndex: 0, cellIndex: 2, cellParaIndex: 1 }] },
+  ]);
+  // 깊이 1 (cellPath 1개 또는 없음) 은 종전대로 cell 대상
+  const flat = collectCellParaTargets({ sec: 0, ppi: 4, ci: 3, cellPath: [cellPath[0]] }, [1], paraCountAt);
+  assert.deepEqual(flat, [{ kind: 'cell', sec: 0, parentPara: 4, controlIdx: 3, cellIdx: 1, cellParaIdx: 0 }]);
+  assert.deepEqual(collectCellParaTargets({ sec: 0, ppi: 4, ci: 3 }, [1], paraCountAt), flat);
+});
+
+test('셀 선택 표적 해석은 중첩 표를 거르지 않고, 셀 순회·적용·조회가 경로 기반 API 를 탄다', () => {
+  const ih = source('src/engine/input-handler.ts');
+  const resolve = ih.slice(ih.indexOf('private resolveSelectedCellsTarget(): CellSelectionFormatTarget | null {'));
+  const resolveBody = resolve.slice(0, resolve.indexOf('\n  }\n'));
+  assert.doesNotMatch(resolveBody, /isNestedCellPath|아직 지원하지 않습니다/, '중첩 표 거부가 남아 있으면 안 된다');
+  // 셀 순회: 표 크기·셀 좌표를 경로로
+  const sel = ih.slice(ih.indexOf('private selectedCellIndices('));
+  assert.match(sel.slice(0, 700), /getTableDimensionsByPath\([\s\S]{0,200}?getCellInfoByPath\(/);
+  // 글자 서식: 문단 길이·적용을 경로로
+  const whole = ih.slice(ih.indexOf('private applyCharFormatToWholeCell('));
+  assert.match(whole.slice(0, 900), /getCellParagraphLengthByPath\([\s\S]{0,200}?applyCharFormatInCellByPath\(/);
+  // 조회 셋(글자·문단·스타일)이 경로 변형을 가진다
+  assert.match(ih, /getCharPropertiesByPath\(ctx\.sec, ctx\.ppi, this\.cellPathJsonFor\(/);
+  assert.match(ih, /getParaPropertiesByPath\(ctx\.sec, ctx\.ppi, this\.cellPathJsonFor\(/);
+  assert.match(ih, /getStyleByPath\(ctx\.sec, ctx\.ppi, this\.cellPathJsonFor\(/);
+  // 스타일 적용의 path 갈래
+  assert.match(ih, /if \(target\.kind === 'path'\) \{\s*wasm\.applyStyleByPath\(/);
+  // 문단 서식 커맨드의 path 갈래 (적용·조회·복원)
+  const cmd = source('src/engine/command.ts');
+  assert.match(cmd, /\| \{ kind: 'path'; sec: number; parentPara: number; cellPath: CellPathEntry\[\] \}/);
+  assert.match(cmd, /wasm\.applyParaFormatInCellByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\), propsJson\)/);
+  assert.match(cmd, /wasm\.setParaShapeIdByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\), paraShapeId\)/);
+  assert.match(cmd, /wasm\.getParaPropertiesByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\)\)/);
 });

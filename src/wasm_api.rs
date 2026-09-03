@@ -6466,6 +6466,124 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    // ─── 중첩 표 경로 기반 서식 API (cellPath 계약, 편집기 F5 셀 선택 서식용) ───────
+    //
+    // `cell_path_json` 은 hitTest cellPath — `[{"controlIndex","cellIndex","cellParaIndex"}, …]`,
+    // 마지막 항목이 대상 표·셀·문단. 깊이 1 은 flat API 와 같은 동작(네이티브가 위임).
+    // 조회 API 는 빈 경로를 본문 문단으로 본다(`getParaPropertiesByPath` 와 같은 계약).
+
+    /// 글자 서식을 적용한다 (경로 기반, 중첩 표 셀 문단).
+    #[wasm_bindgen(js_name = applyCharFormatInCellByPath)]
+    pub fn apply_char_format_in_cell_by_path(
+        &mut self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        start_offset: u32,
+        end_offset: u32,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.apply_char_format_in_cell_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            start_offset as usize,
+            end_offset as usize,
+            props_json,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 문단 서식을 적용한다 (경로 기반, 중첩 표 셀 문단).
+    #[wasm_bindgen(js_name = applyParaFormatInCellByPath)]
+    pub fn apply_para_format_in_cell_by_path(
+        &mut self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.apply_para_format_in_cell_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            props_json,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 문단 모양 ID 를 직접 설정한다 (경로 기반) — 편집기 되돌리기용.
+    #[wasm_bindgen(js_name = setParaShapeIdByPath)]
+    pub fn set_para_shape_id_by_path(
+        &mut self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        para_shape_id: u16,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.set_para_shape_id_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            para_shape_id,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 스타일을 적용한다 (경로 기반, 중첩 표 셀 문단).
+    #[wasm_bindgen(js_name = applyStyleByPath)]
+    pub fn apply_style_by_path(
+        &mut self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        style_id: u32,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.apply_style_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            style_id as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 글자 속성을 조회한다 (경로 기반). 빈 경로는 본문 문단.
+    #[wasm_bindgen(js_name = getCharPropertiesByPath)]
+    pub fn get_char_properties_by_path(
+        &self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        char_offset: u32,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(cell_path_json)?;
+        self.get_char_properties_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            char_offset as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 문단 스타일을 조회한다 (경로 기반). 반환 `{ id, name }`, 빈 경로는 본문 문단.
+    #[wasm_bindgen(js_name = getStyleByPath)]
+    pub fn get_style_by_path(
+        &self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(cell_path_json)?;
+        self.get_style_by_path_native(sec_idx as usize, parent_para_idx as usize, &path)
+            .map_err(|e| e.into())
+    }
+
     /// 글자 서식 ID를 직접 복원한다 (셀 내 문단).
     #[wasm_bindgen(js_name = setCharShapeIdInCell)]
     pub fn set_char_shape_id_in_cell(

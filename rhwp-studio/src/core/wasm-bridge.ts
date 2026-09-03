@@ -1859,6 +1859,51 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).getParaPropertiesByPath(sec, parentPara, pathJson));
   }
 
+  // ─── 중첩 표 경로 기반 서식 API (F5 셀 선택 서식용, cellPath 계약) ───
+  // pathJson 은 hitTest cellPath 그대로 — 마지막 항목이 대상 표·셀·문단. 깊이 1 은 flat API 와 같은 동작.
+
+  /** 글자 속성 조회 (경로 기반). 빈 경로는 본문 문단. */
+  getCharPropertiesByPath(sec: number, parentPara: number, pathJson: string, charOffset: number): CharProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).getCharPropertiesByPath(sec, parentPara, pathJson, charOffset));
+  }
+
+  /** 글자 서식 적용 (경로 기반). 빈 문단이면 CharShapeRef 를 통째로 바꾼다(빈 셀 서식). */
+  applyCharFormatInCellByPath(sec: number, parentPara: number, pathJson: string, startOffset: number, endOffset: number, propsJson: string): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.doc as any).applyCharFormatInCellByPath(sec, parentPara, pathJson, startOffset, endOffset, propsJson);
+  }
+
+  /** 문단 서식 적용 (경로 기반). */
+  applyParaFormatInCellByPath(sec: number, parentPara: number, pathJson: string, propsJson: string): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.doc as any).applyParaFormatInCellByPath(sec, parentPara, pathJson, propsJson);
+  }
+
+  /** 문단 모양 ID 직접 설정 (경로 기반) — ApplyParaFormatCommand 되돌리기용. */
+  setParaShapeIdByPath(sec: number, parentPara: number, pathJson: string, paraShapeId: number): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.doc as any).setParaShapeIdByPath(sec, parentPara, pathJson, paraShapeId);
+  }
+
+  /** 문단 스타일 조회 (경로 기반). 빈 경로는 본문 문단. */
+  getStyleByPath(sec: number, parentPara: number, pathJson: string): { id: number; name: string } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).getStyleByPath(sec, parentPara, pathJson));
+  }
+
+  /** 스타일 적용 (경로 기반). */
+  applyStyleByPath(sec: number, parentPara: number, pathJson: string, styleId: number): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).applyStyleByPath(sec, parentPara, pathJson, styleId));
+  }
+
   setCheckStateByPath(
     sec: number,
     parentPara: number,
