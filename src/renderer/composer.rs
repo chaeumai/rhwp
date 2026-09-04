@@ -1859,6 +1859,11 @@ fn split_composed_line_by_width(
     // 다음 줄로 넘기지 않고 현재 줄에 매달림(hang).
     let mut space_w = 0.0;
     let mut hung = false;
+    // 줄 머리 공백(들여쓰기용 리터럴 공백)은 압축·양쪽정렬 대상이 아니다 — 한컴 PDF
+    // 실측(86712 p6, 한양신명조 14pt cnd25): 양쪽정렬 줄에서도 머리 공백 2개는 7.02pt
+    // 고정, 낱말 사이 공백만 9.48pt 로 늘어난다. 채움 판정에서도 머리 공백을 빼야
+    // 「작성된 | 전자서명동의서의」 가 한컴과 같이 갈린다(빼지 않으면 「전」 1자 과수용).
+    let mut line_has_text = false;
     let mut current_char_start = src.char_start;
     let mut chars_in_line = 0usize;
     let mut current_run_text = String::new();
@@ -1926,8 +1931,14 @@ fn split_composed_line_by_width(
             for ch in run.text.chars() {
                 let ch_str: String = std::iter::once(ch).collect();
                 let ch_width = crate::renderer::layout::estimate_text_width_unrounded(&ch_str, &ts);
-                if std::env::var("RHWP_RAZOR").is_ok()
-                    && src.runs.iter().any(|r| r.text.contains("도조례로 정하는"))
+                // RHWP_RAZOR=<부분문자열>: 그 문자열을 담은 문단만 글자 단위 채움 판정을 추적.
+                if std::env::var("RHWP_RAZOR")
+                    .ok()
+                    .filter(|k| {
+                        let full: String = src.runs.iter().map(|r| r.text.as_str()).collect();
+                        full.contains(k.as_str())
+                    })
+                    .is_some()
                 {
                     eprintln!(
                         "RZ: ch={:?} w={:.2} cur={:.2} spw={:.2} cnd={:.2} limit={:.2} fam={:?}",
@@ -1984,6 +1995,7 @@ fn split_composed_line_by_width(
                     );
                     space_w = 0.0;
                     hung = false;
+                    line_has_text = false;
                     if let Some((pch, pw)) = carried {
                         current_run_text.push(pch);
                         current_width += pw;
@@ -1993,7 +2005,11 @@ fn split_composed_line_by_width(
                 current_run_text.push(ch);
                 current_width += ch_width;
                 if ch == ' ' {
-                    space_w += ch_width;
+                    if line_has_text {
+                        space_w += ch_width;
+                    }
+                } else {
+                    line_has_text = true;
                 }
                 chars_in_line += 1;
             }
@@ -2025,6 +2041,7 @@ fn split_composed_line_by_width(
                     );
                     space_w = 0.0;
                     hung = false;
+                    line_has_text = false;
                 }
                 // 단어 자체가 max_width 초과 시 글자 단위 break
                 if word_width > limit(&result) && current_width == 0.0 {
@@ -2049,6 +2066,7 @@ fn split_composed_line_by_width(
                             );
                             space_w = 0.0;
                             hung = false;
+                            line_has_text = false;
                         }
                         current_run_text.push(wch);
                         current_width += wch_width;
@@ -2057,8 +2075,13 @@ fn split_composed_line_by_width(
                 } else {
                     current_run_text.push_str(&word);
                     current_width += word_width;
-                    space_w += crate::renderer::layout::estimate_text_width_unrounded(" ", &ts)
-                        * word.matches(' ').count() as f64;
+                    if word.chars().any(|c| c != ' ') {
+                        line_has_text = true;
+                    }
+                    if line_has_text {
+                        space_w += crate::renderer::layout::estimate_text_width_unrounded(" ", &ts)
+                            * word.matches(' ').count() as f64;
+                    }
                     chars_in_line += word.chars().count();
                 }
                 word.clear();
@@ -2084,6 +2107,7 @@ fn split_composed_line_by_width(
                 );
                 space_w = 0.0;
                 hung = false;
+                line_has_text = false;
             }
             // 단어 자체가 max_width 초과 시 글자 단위 break
             if word_width > limit(&result) && current_width == 0.0 {
@@ -2108,6 +2132,7 @@ fn split_composed_line_by_width(
                         );
                         space_w = 0.0;
                         hung = false;
+                        line_has_text = false;
                     }
                     current_run_text.push(wch);
                     current_width += wch_width;
@@ -2135,6 +2160,7 @@ fn split_composed_line_by_width(
     );
     space_w = 0.0;
     hung = false;
+    line_has_text = false;
 
     if result.is_empty() {
         // 안전장치: 절대 빈 결과 반환하지 않음

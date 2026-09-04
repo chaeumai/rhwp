@@ -803,6 +803,19 @@ fn fill_lines(
                         effective_width,
                         *max_font_size,
                     );
+                // RHWP_RAZOR=<부분문자열>: 그 문자열을 담은 문단의 토큰 채움 판정을 추적.
+                if let Some(k) = std::env::var("RHWP_RAZOR").ok() {
+                    let full: String = text_chars.iter().collect();
+                    if full.contains(k.as_str()) {
+                        let tok: String = text_chars[*start_idx..*end_idx].iter().collect();
+                        eprintln!(
+                            "RZ-LB: tok={:?} w={} lw={} sav={} eff={} nat={} cnd={} needs={} pull={} first={}",
+                            tok, w_hwp, lw, line_space_savings, effective_width,
+                            natural_candidate, condensed_candidate, needs_condense_to_fit,
+                            condense_pull_allowed, is_first_line
+                        );
+                    }
+                }
                 if condensed_candidate > effective_width + LINE_BREAK_TOLERANCE
                     || !condense_pull_allowed
                 {
