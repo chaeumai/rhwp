@@ -5712,6 +5712,42 @@ impl LayoutEngine {
             // corrected_line_height 를 적용한다 — raw line_height 가 폰트보다
             // 작은 폴백 케이스에서 렌더러가 키운 높이를 컷 측정이 따라가지
             // 못하면 분할 표가 페이지를 넘는다(측정 공간 불일치).
+            // [R1/86712] 저장 lineseg 가 없는(합성) 줄은 line_spacing 이 0 이라 trail_ls 도 0 —
+            // 컷 walk 의 꼬리 규칙(마지막 줄은 글자 상자만 본문 안이면 담고 행간은 쪽 하단에
+            // 매단다)이 발동할 수 없었다(86712 p6: 유닛 81~84 h=33.6 ls=0). 퍼센트 줄간격
+            // 문단이면 보정 줄높이(fs × %)에서 글자 크기(= 한컴 vertsize)를 뺀 몫이 행간이다.
+            // 유닛 높이(lh)는 바꾸지 않는다 — trail_ls 만 채운다.
+            let synthetic_trail_ls = |line: &ComposedLine, h: f64| -> f64 {
+                if !crate::renderer::para_has_no_stored_line_segs(p) {
+                    return 0.0;
+                }
+                let Some(ps) = para_style else {
+                    return 0.0;
+                };
+                if !matches!(
+                    ps.line_spacing_type,
+                    crate::model::style::LineSpacingType::Percent
+                ) {
+                    return 0.0;
+                }
+                let max_fs = line
+                    .runs
+                    .iter()
+                    .map(|r| {
+                        super::text_measurement::resolved_to_text_style(
+                            styles,
+                            r.char_style_id,
+                            r.lang_index,
+                        )
+                        .font_size
+                    })
+                    .fold(0.0f64, f64::max);
+                if max_fs > 0.0 && h > max_fs {
+                    h - max_fs
+                } else {
+                    0.0
+                }
+            };
             // [#2070 실험] 셀 마지막 줄 인덱스 - em 공식 게이트.
             let cell_last_line_idx = if is_last_para && !comp.lines.is_empty() {
                 Some(comp.lines.len() - 1)
@@ -6010,6 +6046,7 @@ impl LayoutEngine {
                         let h = corrected_h(line, li);
                         let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                         let is_cell_last_line = is_last_para && li + 1 == line_count;
+                        let ls_trail = if ls > 0.0 { ls } else { synthetic_trail_ls(line, h) };
                         let is_block_rowbreak = matches!(
                             table.page_break,
                             crate::model::table::TablePageBreak::RowBreak
@@ -6023,7 +6060,7 @@ impl LayoutEngine {
                         if li == line_count - 1 {
                             lh += spacing_after;
                         }
-                        let trail_ls = if include_trailing_ls { ls } else { 0.0 };
+                        let trail_ls = if include_trailing_ls { ls_trail } else { 0.0 };
                         let hard_break_before = line_reset_before(li);
                         let mut vpos_gap_before = if li == 0 {
                             vpos_gap_before_para
@@ -6383,6 +6420,7 @@ impl LayoutEngine {
                     let h = corrected_h(line, li);
                     let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                     let is_cell_last_line = is_last_para && li + 1 == line_count;
+                    let ls_trail = if ls > 0.0 { ls } else { synthetic_trail_ls(line, h) };
                     // [#2376] 셀 마지막 줄 trailing 은 행높이에 넣지 않는다 (HeightMeasurer 와 정합).
                 let include_trailing_ls = !is_cell_last_line;
                     let mut lh = if include_trailing_ls { h + ls } else { h };
@@ -6399,7 +6437,7 @@ impl LayoutEngine {
                     let trail_ls = if collapse_empty_rowbreak_spacer || !include_trailing_ls {
                         0.0
                     } else {
-                        ls
+                        ls_trail
                     };
                     let hard_break_before = line_reset_before(li);
                     let mut vpos_gap_before = if li == 0 {
@@ -6961,6 +6999,32 @@ impl LayoutEngine {
                         if std::env::var("RHWP_CUT_DBG").is_ok() {
                             eprintln!(
                                 "CUT_DBG_SAVED_TAIL j={j} h={h:.1} u={:.1} avail={avail_height:.1} over={over:.2} ls={:.1} trim={trim:.2} (다음 유닛이 저장 쪽경계)",
+                                u.height, u.trail_ls
+                            );
+                        }
+                        h += u.height - trim;
+                        cell_tail_trim = trim;
+                        j += 1;
+                        continue;
+                    }
+                    // [R4/A2 일반화 — 실험, 기본 꺼짐 `RHWP_GENERAL_TAIL=1`] 저장 쪽경계가
+                    // 없어도 조각의 마지막 줄을 글자 상자(height − trail_ls)만 본문 안이면 담는
+                    // 규칙. 86712 p6(저장 lineseg 없는 셀 문단, 한양신명조 14pt/180%)은 이것으로
+                    // 한컴과 같아진다(27줄 907.2 + 33.6 > 935.1, 글자 상자 18.7 로는 925.9 —
+                    // 한컴 PDF 28줄). 그러나 2026-09-04 실측: 편람 F 219 → 138(p139 에 한 줄
+                    // 과수용 — 그 위 그림 구간이 이미 한컴보다 23px 높다), 80168 157 → 156쪽.
+                    // 가려진 세로 오차를 먼저 걷어야 켤 수 있다 — 한 문서 모델의 규칙 승격 금지(§D-14).
+                    let general_tail_fits = !u.empty_spacer
+                        && u.vis_start < u.vis_end
+                        && u.trail_ls > 0.0
+                        && h + u.height - u.trail_ls <= avail_height
+                        && std::env::var("RHWP_GENERAL_TAIL").is_ok();
+                    if general_tail_fits {
+                        let over = h + u.height - avail_height;
+                        let trim = over.max(0.0).min(u.trail_ls);
+                        if std::env::var("RHWP_CUT_DBG").is_ok() {
+                            eprintln!(
+                                "CUT_DBG_GENERAL_TAIL j={j} h={h:.1} u={:.1} avail={avail_height:.1} over={over:.2} ls={:.1} trim={trim:.2}",
                                 u.height, u.trail_ls
                             );
                         }
