@@ -2826,6 +2826,26 @@ mod tests {
         assert!(core.set_char_shape_id_in_cell_by_path_native(0, ppi, &[], 0, 0, before).is_err());
     }
 
+    /// 줄 정보 경로 조회: 깊이 1 은 flat 과 같은 JSON, 깊이 2 는 그 중첩 셀 문단의 줄(빈 문단이면 0..0),
+    /// 텍스트를 넣으면 charEnd 가 그 셀 문단 길이 — flat 인덱스로는 바깥 문단 기준 셀이라 다른 값이 나오던 것(E6).
+    #[test]
+    fn line_info_by_path_reads_nested_cell_paragraph() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let outer = path[0].0;
+        let by_path = compact(&core.get_line_info_by_path_native(0, ppi, &[(outer, 1, 0)], 0).unwrap());
+        let flat = compact(&core.get_line_info_in_cell_native(0, ppi, outer, 1, 0, 0).unwrap());
+        assert_eq!(by_path, flat, "깊이 1 은 flat 과 같다");
+
+        let empty = compact(&core.get_line_info_by_path_native(0, ppi, &path, 0).unwrap());
+        assert!(empty.contains(r#""charStart":0,"charEnd":0"#), "{empty}");
+
+        core.insert_text_in_cell_by_path(0, ppi, &path, 0, "수집·이용 목적").unwrap();
+        let n = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().text.chars().count();
+        let filled = compact(&core.get_line_info_by_path_native(0, ppi, &path, 0).unwrap());
+        assert!(filled.contains(&format!(r#""charEnd":{}"#, n)), "{filled} (len {n})");
+        assert!(core.get_line_info_by_path_native(0, ppi, &[], 0).is_err(), "빈 경로 거부");
+    }
+
     /// 문단 서식: 경로로 정렬을 바꾸면 paraShapeId 가 바뀌고, 그 ID 를 되돌리면 원래대로.
     #[test]
     fn apply_para_format_by_path_and_restore_para_shape_id() {

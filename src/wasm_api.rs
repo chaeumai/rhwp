@@ -2483,6 +2483,27 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 셀 내 문단의 줄 정보를 반환한다 — 경로 기반 (중첩 표 셀 문단, `cellPath` 계약은 `getCharPropertiesByPath` 와 같다).
+    ///
+    /// 반환: JSON `{"lineIndex":N,"lineCount":N,"charStart":N,"charEnd":N}`
+    #[wasm_bindgen(js_name = getLineInfoByPath)]
+    pub fn get_line_info_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        char_offset: u32,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(cell_path_json)?;
+        self.get_line_info_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            char_offset as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 문서에 저장된 캐럿 위치를 반환한다 (문서 로딩 시 캐럿 자동 배치용).
     ///
     /// 반환: JSON `{"sectionIndex":N,"paragraphIndex":N,"charOffset":N}`

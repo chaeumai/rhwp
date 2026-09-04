@@ -545,11 +545,7 @@ export class CursorState {
       // End 키 후 Home 키 시 getLineInfo 가 다음 줄로 판정하여 charStart = 현재 위치 → 미이동.
       // atLineEnd 플래그가 설정된 상태에서 현재 위치가 줄 시작과 동일하면 이전 줄로 판정.
       if (this.atLineEnd && pos.charOffset === lineInfo.charStart && pos.charOffset > 0) {
-        const prevLineInfo = this.isInCell()
-          ? this.wasm.getLineInfoInCell(
-              pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
-              pos.cellIndex!, pos.cellParaIndex!, pos.charOffset - 1)
-          : this.wasm.getLineInfo(pos.sectionIndex, pos.paragraphIndex, pos.charOffset - 1);
+        const prevLineInfo = this.getLineInfoForOffset(pos, pos.charOffset - 1);
         if (prevLineInfo.charEnd === pos.charOffset) {
           lineInfo = prevLineInfo;
         }
@@ -595,6 +591,10 @@ export class CursorState {
 
   private getLineInfoForOffset(pos: DocumentPosition, charOffset: number): LineInfo {
     const inCell = (pos.cellPath?.length ?? 0) > 0 || pos.parentParaIndex !== undefined;
+    // 중첩 셀(깊이 2 이상): flat (controlIndex, cellIndex) 는 바깥 문단 기준이라 다른 셀의 줄을 읽는다 — End 가 한 글자에서 멈추던 원인(E6)
+    if ((pos.cellPath?.length ?? 0) > 1 && pos.parentParaIndex !== undefined) {
+      return this.wasm.getLineInfoByPath(pos.sectionIndex, pos.parentParaIndex, JSON.stringify(pos.cellPath), charOffset);
+    }
     if (inCell) {
       return this.wasm.getLineInfoInCell(
         pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
@@ -607,6 +607,8 @@ export class CursorState {
 
   private getCursorRectOnVisualLine(lineIndex: number, atEnd: boolean): CursorRect | null {
     const pos = this.position;
+    // 중첩 셀은 flat 인덱스 API 가 다른 셀의 줄을 그린다 — null 을 돌려 updateRect(경로 기반)로 맡긴다
+    if ((pos.cellPath?.length ?? 0) > 1) return null;
     try {
       return this.wasm.getCursorRectOnLine(
         pos.sectionIndex,

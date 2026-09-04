@@ -156,6 +156,20 @@ impl DocumentCore {
         Self::compute_line_info(para, char_offset)
     }
 
+    /// 셀 내 문단의 줄 정보를 반환한다 (네이티브) — 경로 기반 (중첩 표·글상자 셀 문단).
+    /// flat `(control_idx, cell_idx)` 는 바깥 문단 기준이라 깊이 2 이상에서는 다른 셀을 가리킨다 —
+    /// 편집기 End/Home/Shift+End 가 그 셀의 줄 끝·시작으로 가게 하는 조회다. 깊이 1 은 flat 과 같은 문단.
+    pub(crate) fn get_line_info_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        let para = self.resolve_paragraph_by_path(section_idx, parent_para_idx, path)?;
+        Self::compute_line_info(para, char_offset)
+    }
+
     /// 문단의 line_segs에서 charOffset이 속한 줄 정보를 계산한다 (JSON 반환).
     pub(crate) fn compute_line_info(
         para: &crate::model::paragraph::Paragraph,

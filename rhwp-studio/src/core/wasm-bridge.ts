@@ -970,6 +970,13 @@ export class WasmBridge {
     return JSON.parse(this.doc.getLineInfoInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset));
   }
 
+  /** 셀 문단 줄 정보 — 경로 기반(중첩 표·글상자). 깊이 2 이상에서 flat (controlIdx, cellIdx) 는 다른 셀을 가리킨다(E6). */
+  getLineInfoByPath(sec: number, parentPara: number, pathJson: string, charOffset: number): LineInfo {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).getLineInfoByPath(sec, parentPara, pathJson, charOffset));
+  }
+
   getCaretPosition(): DocumentPosition | null {
     if (!this.doc) return null;
     try {
