@@ -1324,6 +1324,105 @@ impl DocumentCore {
         }
     }
 
+    /// 중첩 셀(경로 기반) 문단의 줄나눔과 세로 위치를 다시 계산한다 — 깊이 1 편집 경로의
+    /// `reflow_cell_paragraph` + `recalculate_cell_paragraph_vpos_native` 에 대응한다.
+    /// `from_para..=to_para` 문단의 line_segs 를 그 셀 폭으로 재생성하고, `from_para` 부터 셀 문단 vpos 를 다시 쌓는다.
+    /// (2026-09-04) 그전에는 깊이 2 이상 삽입·삭제·분할·병합·붙여넣기가 텍스트만 바꾸고 section dirty 만 찍어
+    /// lineseg 1개짜리 문단이 한 줄로 셀 밖까지 그려졌다 — 렌더러는 저장 line_segs 를 신뢰한다.
+    pub(crate) fn reflow_nested_cell_paragraphs_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        from_para: usize,
+        to_para: usize,
+    ) {
+        let Some(&(_, cell_idx, _)) = path.last() else {
+            return;
+        };
+        for cell_para_idx in from_para..=to_para {
+            self.reflow_cell_paragraph_by_path(
+                section_idx,
+                parent_para_idx,
+                path,
+                cell_idx,
+                cell_para_idx,
+            );
+        }
+        let dpi = self.dpi;
+        let is_hwp3_variant = self.document.is_hwp3_variant;
+        // `self.styles` 를 빌린 채 셀 문단을 가변 차용할 수 없어 잠시 꺼냈다가 되돌린다.
+        let styles = std::mem::take(&mut self.styles);
+        if let Ok(paragraphs) =
+            self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, path)
+        {
+            recalculate_cell_paragraph_vpos(
+                paragraphs,
+                from_para,
+                None,
+                &styles,
+                dpi,
+                is_hwp3_variant,
+            );
+        }
+        self.styles = styles;
+
+        // 바깥으로 전파 — 안쪽 표의 선언 높이(hp:sz height)를 콘텐츠 프레임 높이로 갱신하고 호스트 문단을 다시 조판한다.
+        // 글자처럼 취급한 중첩 표를 담은 호스트 문단의 LINE_SEG 높이는 그 표의 **선언 높이**로 정해지고
+        // (`inline_control_line_height_hwp`), 측정기·행높이 판정은 그 저장 줄 높이를 신뢰한다. 한컴은 저장 때 sz 를
+        // 콘텐츠에 맞춰 적으므로, 편집 뒤 선언을 안 올리면 바깥 행이 자라지 않아 안쪽 표가 셀 밖으로 넘친다
+        // (issue 20260904-223500: 지원동기 1×1 표 620자 → 안쪽 294px, 바깥 행 236px 그대로).
+        for k in (1..path.len()).rev() {
+            let table_path = &path[..=k];
+            let new_height_hu = {
+                use crate::renderer::height_measurer::frame_cell_spacing_total;
+                use crate::renderer::{hwpunit_to_px, px_to_hwpunit};
+                let styles = resolve_styles(&self.document.doc_info, self.dpi);
+                let Ok(table) = self.resolve_table_by_path(section_idx, parent_para_idx, table_path) else {
+                    break;
+                };
+                // 표 자신의 선언 sz 를 하한으로 쓰는 common-fit 은 끈다 — 지금 그 sz 를 다시 정하는 중이고,
+                // 글을 지우면 한컴도 표를 줄인다. 행별 cellSz 선언은 그대로 하한이다.
+                let rows = self.layout_engine.resolve_row_heights_for_content(
+                    table,
+                    table.col_count as usize,
+                    table.row_count as usize,
+                    None,
+                    &styles,
+                    true,
+                );
+                let cs = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
+                let frame_px = rows.iter().sum::<f64>()
+                    + frame_cell_spacing_total(cs, table.row_count as usize);
+                px_to_hwpunit(frame_px, self.dpi)
+            };
+            if new_height_hu <= 0 {
+                break;
+            }
+            let changed = match self.get_table_mut_by_path(section_idx, parent_para_idx, table_path) {
+                Ok(table) if (table.common.height as i64 - new_height_hu as i64).abs() > 1 => {
+                    table.common.height = new_height_hu as u32;
+                    table.dirty = true;
+                    true
+                }
+                _ => false,
+            };
+            if !changed {
+                continue;
+            }
+            let host_path = &path[..k];
+            let (_, host_cell, host_para) = path[k - 1];
+            self.reflow_cell_paragraph_by_path(section_idx, parent_para_idx, host_path, host_cell, host_para);
+            let styles = std::mem::take(&mut self.styles);
+            if let Ok(paragraphs) =
+                self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, host_path)
+            {
+                recalculate_cell_paragraph_vpos(paragraphs, host_para, None, &styles, dpi, is_hwp3_variant);
+            }
+            self.styles = styles;
+        }
+    }
+
     fn recalculate_cell_paragraph_vpos_native(
         &mut self,
         section_idx: usize,
@@ -3473,6 +3572,9 @@ impl DocumentCore {
             rebuild_char_offsets(cell_para);
         }
 
+        // 그 셀 폭으로 줄나눔·vpos 재계산 (깊이 1 경로의 reflow_cell_paragraph + vpos 재계산에 대응)
+        self.reflow_nested_cell_paragraphs_by_path(section_idx, parent_para_idx, path, cell_para_idx, cell_para_idx);
+
         // 최외곽 표 dirty 마킹
         let outer_ctrl = path[0].0;
         self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
@@ -3506,6 +3608,9 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let cell_para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
         cell_para.delete_text_at(char_offset, count);
+
+        let cell_para_idx = path.last().map(|entry| entry.2).unwrap_or(0);
+        self.reflow_nested_cell_paragraphs_by_path(section_idx, parent_para_idx, path, cell_para_idx, cell_para_idx);
 
         let outer_ctrl = path[0].0;
         self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
@@ -3590,6 +3695,9 @@ impl DocumentCore {
                 .get_mut(_cpi)
                 .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
         }
+
+        // 분할된 두 문단을 그 셀 폭으로 다시 줄나눔 (vpos 도 다시)
+        self.reflow_nested_cell_paragraphs_by_path(section_idx, parent_para_idx, path, cell_para_idx, cell_para_idx + 1);
 
         let outer_ctrl = path[0].0;
         self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
@@ -3679,6 +3787,9 @@ impl DocumentCore {
                 .get_mut(_cpi)
                 .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
         }
+
+        // 병합된 앞 문단을 그 셀 폭으로 다시 줄나눔
+        self.reflow_nested_cell_paragraphs_by_path(section_idx, parent_para_idx, path, cell_para_idx - 1, cell_para_idx - 1);
 
         let outer_ctrl = path[0].0;
         self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);

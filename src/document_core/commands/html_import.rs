@@ -412,6 +412,9 @@ impl DocumentCore {
             )?
         };
 
+        // 붙여넣은 문단 범위를 그 셀 폭으로 줄나눔·vpos 재계산 (중첩 셀은 그전엔 dirty 만 찍었다)
+        self.reflow_nested_cell_paragraphs_by_path(section_idx, parent_para_idx, path, cell_para_idx, last_para_idx);
+
         let outer_ctrl = path[0].0;
         self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
         self.document.sections[section_idx].raw_stream = None;

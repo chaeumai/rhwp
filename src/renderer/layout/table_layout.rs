@@ -1722,7 +1722,7 @@ impl LayoutEngine {
         )
     }
 
-    pub(super) fn resolve_row_heights_for_content(
+    pub(crate) fn resolve_row_heights_for_content(
         &self,
         table: &crate::model::table::Table,
         col_count: usize,

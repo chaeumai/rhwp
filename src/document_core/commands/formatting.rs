@@ -2846,6 +2846,51 @@ mod tests {
         assert!(core.get_line_info_by_path_native(0, ppi, &[], 0).is_err(), "빈 경로 거부");
     }
 
+    /// 깊이 2 셀에 폭보다 긴 글을 넣으면 줄나눔(line_segs 여러 개)이 생기고, 같은 폭의 깊이 1 셀과 줄 수가 같다.
+    /// 삭제로 짧아지면 줄 수가 줄고, vpos 는 문단 순서대로 쌓인다 — issue 20260904-223500(지원동기 칸이 한 줄로 셀 밖까지).
+    #[test]
+    fn nested_cell_insert_delete_reflows_line_segs_like_depth1() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let outer = path[0].0;
+        // 제품 서식처럼 안쪽 표를 글자처럼 취급(TAC) — 호스트 문단 줄 높이가 안쪽 표 선언 높이를 따르는 경우
+        core.get_table_mut_by_path(0, ppi, &path).unwrap().common.treat_as_char = true;
+        let host_seg_before = core.get_cell_paragraph_ref(0, ppi, outer, 0, 0).unwrap().line_segs.first().map(|s| s.line_height);
+        let long: String = "가".repeat(120);
+        // 깊이 1 (바깥 표 셀 1) 과 깊이 2 (안쪽 표 셀 0, 바깥 셀 0 안) — 안쪽 표는 바깥 표의 복제라 셀 폭이 같다
+        core.insert_text_in_cell_by_path(0, ppi, &[(outer, 1, 0)], 0, &long).unwrap();
+        core.insert_text_in_cell_by_path(0, ppi, &path, 0, &long).unwrap();
+        let depth1_lines = core.get_cell_paragraph_ref(0, ppi, outer, 1, 0).unwrap().line_segs.len();
+        let nested_lines = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().line_segs.len();
+        assert!(depth1_lines > 1, "깊이 1 은 줄바꿈된다 ({depth1_lines})");
+        assert_eq!(nested_lines, depth1_lines, "깊이 2 도 같은 폭이면 같은 줄 수");
+
+        // 두 번째 문단을 만들어(분할) vpos 가 첫 문단 아래로 쌓이는지
+        core.split_paragraph_in_cell_by_path(0, ppi, &path, 60).unwrap();
+        let p0 = core.resolve_paragraph_by_path(0, ppi, &path).unwrap();
+        let p1_path = [path[0], (path[1].0, path[1].1, 1)];
+        let p1 = core.resolve_paragraph_by_path(0, ppi, &p1_path).unwrap();
+        assert!(p0.line_segs.len() >= 1 && p1.line_segs.len() >= 1);
+        let p0_last_v = p0.line_segs.last().unwrap().vertical_pos;
+        let p1_first_v = p1.line_segs.first().unwrap().vertical_pos;
+        assert!(p1_first_v > p0_last_v, "분할된 둘째 문단은 첫 문단 아래 (p0 last {p0_last_v} < p1 first {p1_first_v})");
+
+        // 바깥 전파: 안쪽 표 선언 높이(sz)가 콘텐츠 프레임으로 올라가고, 호스트 문단의 줄 높이가 그 값을 따른다
+        let inner_h = core.resolve_table_by_path(0, ppi, &path).unwrap().common.height;
+        let host = core.get_cell_paragraph_ref(0, ppi, outer, 0, 0).unwrap();
+        assert!(inner_h > 0, "안쪽 표 sz 갱신");
+        assert_eq!(host.line_segs.first().map(|s| s.line_height), Some(inner_h as i32), "호스트 문단 줄 높이 = 안쪽 표 sz (전 {host_seg_before:?})");
+        assert_ne!(host.line_segs.first().map(|s| s.line_height), host_seg_before, "호스트 줄 높이가 바뀌었다");
+        let host_before_delete = inner_h;
+
+        // 삭제로 짧아지면 줄 수가 준다
+        let n = p1.text.chars().count();
+        core.delete_text_in_cell_by_path(0, ppi, &p1_path, 0, n).unwrap();
+        let p1 = core.resolve_paragraph_by_path(0, ppi, &p1_path).unwrap();
+        assert!(p1.line_segs.len() <= 1, "빈 문단은 줄 하나 ({})", p1.line_segs.len());
+        let inner_h2 = core.resolve_table_by_path(0, ppi, &path).unwrap().common.height;
+        assert!(inner_h2 < host_before_delete, "줄이 줄면 안쪽 표 sz 도 준다 ({host_before_delete} → {inner_h2})");
+    }
+
     /// 문단 서식: 경로로 정렬을 바꾸면 paraShapeId 가 바뀌고, 그 ID 를 되돌리면 원래대로.
     #[test]
     fn apply_para_format_by_path_and_restore_para_shape_id() {
