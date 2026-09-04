@@ -14,6 +14,7 @@ import {
   CELL_SELECTION_PARA_FORMAT_COMMANDS,
   CELL_SELECTION_FORMAT_DIALOG_COMMANDS,
   CELL_SELECTION_FORMAT_COMMANDS,
+  nestedRangeCellPaths,
 } from '../src/engine/cell-selection-format.ts';
 
 // 배경: F5 로 셀을 고르고 글꼴·크기·굵게를 바꾸면 서식바 숫자만 바뀌고 문서는 그대로였다.
@@ -339,4 +340,34 @@ test('번호/글머리표 토글·개요 수준은 셀 선택 첫 셀 상태로 
   assert.match(lvlBody, /this\.applyStyle\(targetStyle\.id\)/);
   const info = ih.slice(ih.indexOf('  private getCurrentStyleInfo():'));
   assert.match(info.slice(0, 300), /const first = this\.firstSelectedCell\(\);\s*if \(first\) return this\.cellStyleAt\(first\.ctx, first\.cellIdx, 0\);/);
+});
+
+// 중첩 셀 캐럿(비-F5) — 서식바가 호스트 문단을 읽고 정렬·문단 모양이 무동작이던 결함(E5, 2026-09-04 제품 표면 실측).
+// 텍스트 범위가 같은 중첩 셀 안이면 문단마다 경로 표적, 셀을 넘으면 표적 없음.
+const outer = { controlIndex: 2, cellIndex: 1, cellParaIndex: 3 };
+const innerPath = (cellIndex: number, cellParaIndex: number) => [outer, { controlIndex: 0, cellIndex, cellParaIndex }];
+
+test('nestedRangeCellPaths: 캐럿 하나(같은 위치)는 그 문단 경로 하나', () => {
+  const p = innerPath(0, 0);
+  assert.deepEqual(nestedRangeCellPaths(p, p), [innerPath(0, 0)]);
+});
+
+test('nestedRangeCellPaths: 같은 셀의 문단 2~0 범위는 순서를 정렬해 문단마다 경로', () => {
+  const paths = nestedRangeCellPaths(innerPath(1, 2), innerPath(1, 0));
+  assert.deepEqual(paths, [innerPath(1, 0), innerPath(1, 1), innerPath(1, 2)]);
+});
+
+test('nestedRangeCellPaths: 다른 셀·다른 표·깊이 불일치·깊이 1 은 null', () => {
+  assert.equal(nestedRangeCellPaths(innerPath(0, 0), innerPath(1, 0)), null, '다른 셀');
+  assert.equal(nestedRangeCellPaths(innerPath(0, 0), [outer, { controlIndex: 1, cellIndex: 0, cellParaIndex: 0 }]), null, '다른 안쪽 표');
+  assert.equal(nestedRangeCellPaths(innerPath(0, 0), [{ ...outer, cellIndex: 0 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }]), null, '바깥 경로가 다름');
+  assert.equal(nestedRangeCellPaths(innerPath(0, 0), [outer]), null, '깊이 불일치');
+  assert.equal(nestedRangeCellPaths([outer], [outer]), null, '깊이 1 은 flat 경로 몫');
+  assert.equal(nestedRangeCellPaths(undefined, innerPath(0, 0)), null);
+});
+
+test('nestedRangeCellPaths: 반환 경로는 입력 배열과 객체를 공유하지 않는다', () => {
+  const p = innerPath(0, 1);
+  const [q] = nestedRangeCellPaths(p, p)!;
+  assert.notEqual(q, p); assert.notEqual(q[0], p[0]); assert.deepEqual(q, p);
 });

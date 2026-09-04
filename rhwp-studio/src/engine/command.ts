@@ -143,6 +143,19 @@ function cellPathJson(pos: DocumentPosition): string {
   return JSON.stringify(pos.cellPath ?? []);
 }
 
+/** 중첩 셀 위치의 문단 번호 — cellPath 마지막 항목이 권위(flat `cellParaIndex` 는 경로 이동 뒤 낡을 수 있다). */
+function nestedCellParaIndex(pos: DocumentPosition): number {
+  const path = pos.cellPath!;
+  return path[path.length - 1].cellParaIndex;
+}
+
+/** 같은 중첩 셀의 다른 문단을 가리키는 cellPath JSON — 마지막 항목의 cellParaIndex 만 바꾼다. */
+function cellPathJsonAtPara(pos: DocumentPosition, cellParaIndex: number): string {
+  return JSON.stringify((pos.cellPath ?? []).map((entry, index, path) =>
+    index + 1 === path.length ? { ...entry, cellParaIndex } : entry,
+  ));
+}
+
 /** 셀 문단 구조 편집 뒤 flat/path 커서 위치를 같은 문단으로 맞춘다. */
 function cellParagraphPosition(
   pos: DocumentPosition,
@@ -601,7 +614,29 @@ export class ApplyCharFormatCommand implements EditCommand {
     const { start, end } = this;
     const propsJson = JSON.stringify(this.props);
 
-    if (isCell(start)) {
+    if (isNestedCell(start)) {
+      // 중첩 표 셀(cellPath 깊이 2 이상)의 텍스트 범위 — flat (ci, cei) 는 바깥 문단 기준이라 다른 셀을 가리킨다.
+      // 경로 기반 API 로 같은 셀의 문단 범위에 적용한다 (F5 셀 선택은 InputHandler 가 따로 돈다).
+      const sec = start.sectionIndex;
+      const ppi = start.parentParaIndex!;
+      const startPara = nestedCellParaIndex(start);
+      const endPara = nestedCellParaIndex(end);
+
+      this.entries = [];
+      for (let p = startPara; p <= endPara; p++) {
+        const pathJson = cellPathJsonAtPara(start, p);
+        const from = p === startPara ? start.charOffset : 0;
+        const to = p === endPara ? end.charOffset : wasm.getCellParagraphLengthByPath(sec, ppi, pathJson);
+        if (to <= from) continue;
+
+        const prevProps = wasm.getCharPropertiesByPath(sec, ppi, pathJson, from);
+        this.entries.push({ paraIndex: p, startOffset: from, endOffset: to, beforeCharShapeId: prevProps.charShapeId });
+
+        wasm.applyCharFormatInCellByPath(sec, ppi, pathJson, from, to, propsJson);
+        const afterProps = wasm.getCharPropertiesByPath(sec, ppi, pathJson, from);
+        this.entries[this.entries.length - 1].afterCharShapeId = afterProps.charShapeId;
+      }
+    } else if (isCell(start)) {
       const sec = start.sectionIndex;
       const ppi = start.parentParaIndex!;
       const ci = start.controlIndex!;
@@ -656,7 +691,12 @@ export class ApplyCharFormatCommand implements EditCommand {
       const charShapeId = side === 'before' ? entry.beforeCharShapeId : entry.afterCharShapeId;
       if (charShapeId === undefined) continue;
 
-      if (isCell(start)) {
+      if (isNestedCell(start)) {
+        wasm.setCharShapeIdInCellByPath(
+          start.sectionIndex, start.parentParaIndex!, cellPathJsonAtPara(start, entry.paraIndex),
+          entry.startOffset, entry.endOffset, charShapeId,
+        );
+      } else if (isCell(start)) {
         wasm.setCharShapeIdInCell(
           start.sectionIndex, start.parentParaIndex!, start.controlIndex!, start.cellIndex!,
           entry.paraIndex, entry.startOffset, entry.endOffset, charShapeId,

@@ -6610,6 +6610,30 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 글자 모양 ID 를 직접 되돌린다 (경로 기반, 중첩 표 셀 문단) — 편집기 되돌리기/다시실행용.
+    /// `cell_path_json` 계약은 `applyCharFormatInCellByPath` 와 같다(깊이 1 은 flat 위임).
+    #[wasm_bindgen(js_name = setCharShapeIdInCellByPath)]
+    pub fn set_char_shape_id_in_cell_by_path(
+        &mut self,
+        sec_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        start_offset: u32,
+        end_offset: u32,
+        char_shape_id: u32,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(cell_path_json)?;
+        self.set_char_shape_id_in_cell_by_path_native(
+            sec_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            start_offset as usize,
+            end_offset as usize,
+            char_shape_id,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// `setCharShapeIdInCell` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ secIdx, parentParaIdx, controlIdx, cellIdx, cellParaIdx,

@@ -1837,6 +1837,13 @@ export class WasmBridge {
     return (this.doc as any).setCharShapeIdInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, startOffset, endOffset, charShapeId);
   }
 
+  /** 글자 모양 ID 직접 복원 — 경로 기반(중첩 표 셀 문단), `ApplyCharFormatCommand` 되돌리기/다시실행용. 깊이 1 은 네이티브가 flat 에 위임한다. */
+  setCharShapeIdInCellByPath(sec: number, parentPara: number, pathJson: string, startOffset: number, endOffset: number, charShapeId: number): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.doc as any).setCharShapeIdInCellByPath(sec, parentPara, pathJson, startOffset, endOffset, charShapeId);
+  }
+
   findOrCreateFontId(name: string): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.findOrCreateFontId(name);

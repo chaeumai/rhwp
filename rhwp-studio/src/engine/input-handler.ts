@@ -39,7 +39,7 @@ import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
 import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
 import type { NavigationKeyInput } from './navigation-keymap';
-import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, type CellGridRange } from './cell-selection-format';
+import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, nestedRangeCellPaths, type CellGridRange } from './cell-selection-format';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -1940,6 +1940,10 @@ export class InputHandler {
     const pos = this.cursor.getPosition();
     // offset이 0이면 해당 위치, 아니면 offset-1 위치의 서식 반환 (커서 앞 글자 기준)
     const queryOffset = pos.charOffset > 0 ? pos.charOffset - 1 : 0;
+    const nestedPath = this.nestedCaretPathJson(pos);
+    if (nestedPath) {
+      return this.wasm.getCharPropertiesByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath, queryOffset);
+    }
     if (pos.parentParaIndex !== undefined) {
       return this.wasm.getCellCharPropertiesAt(
         pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!,
@@ -1947,6 +1951,15 @@ export class InputHandler {
       );
     }
     return this.wasm.getCharPropertiesAt(pos.sectionIndex, pos.paragraphIndex, queryOffset);
+  }
+
+  /**
+   * 캐럿이 중첩 표 셀(cellPath 깊이 2 이상)에 있으면 그 문단의 cellPath JSON, 아니면 null.
+   * flat `(controlIndex, cellIndex, cellParaIndex)` 는 바깥 문단 기준이라 중첩 셀에서는 다른 셀을 가리킨다 —
+   * 서식바·대화상자 현재값·문단 서식 표적은 이 경로로 읽는다(F5 셀 선택은 `firstSelectedCell` 이 따로 든다).
+   */
+  private nestedCaretPathJson(pos: DocumentPosition): string | null {
+    return pos.parentParaIndex !== undefined && isNestedCellPath(pos.cellPath) ? JSON.stringify(pos.cellPath) : null;
   }
 
   /** 글자 서식을 적용할 대상이 있는가 — 텍스트 선택 또는 F5 셀 선택. `hasSelection()` 은 셀 선택을 모른다. */
@@ -2204,7 +2217,14 @@ export class InputHandler {
   private getParaFormatTargetsForRange(start: DocumentPosition, end: DocumentPosition): ParaFormatTarget[] {
     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return [];
     if (start.isTextBox || end.isTextBox) return [];
-    if ((start.cellPath?.length ?? 0) > 1 || (end.cellPath?.length ?? 0) > 1) return [];
+    if (isNestedCellPath(start.cellPath) || isNestedCellPath(end.cellPath)) {
+      // 중첩 표 셀 안 텍스트 범위(캐럿 포함) — 같은 셀이면 문단마다 `path` 대상, 셀을 넘으면 없음
+      if (start.parentParaIndex === undefined || end.parentParaIndex === undefined) return [];
+      if (start.sectionIndex !== end.sectionIndex || start.parentParaIndex !== end.parentParaIndex) return [];
+      const paths = nestedRangeCellPaths(start.cellPath, end.cellPath);
+      if (!paths) return [];
+      return paths.map((cellPath) => ({ kind: 'path' as const, sec: start.sectionIndex, parentPara: start.parentParaIndex!, cellPath }));
+    }
 
     const startInCell = start.parentParaIndex !== undefined;
     const endInCell = end.parentParaIndex !== undefined;
@@ -2382,6 +2402,7 @@ export class InputHandler {
       const inFootnote = this.cursor.isInFootnote();
       const inCell = !inFootnote && pos.parentParaIndex !== undefined;
       const firstSel = this.firstSelectedCell();
+      const nestedPath = inCell ? this.nestedCaretPathJson(pos) : null;
       const paraProps = firstSel
         ? this.cellParaPropsAt(firstSel.ctx, firstSel.cellIdx, 0)
         : inFootnote
@@ -2391,6 +2412,8 @@ export class InputHandler {
             this.cursor.fnControlIdx,
             this.cursor.fnInnerParaIdx,
           )
+        : nestedPath
+        ? this.wasm.getParaPropertiesByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath)
         : inCell
         ? this.wasm.getCellParaPropertiesAt(
             pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
@@ -2403,6 +2426,8 @@ export class InputHandler {
       try {
         const styleInfo = firstSel
           ? this.cellStyleAt(firstSel.ctx, firstSel.cellIdx, 0)
+          : nestedPath
+          ? this.wasm.getStyleByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath)
           : inCell
           ? this.wasm.getCellStyleAt(
               pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
@@ -4809,6 +4834,10 @@ export class InputHandler {
       );
     }
     const pos = this.cursor.getPosition();
+    const nestedPath = this.nestedCaretPathJson(pos);
+    if (nestedPath) {
+      return this.wasm.getParaPropertiesByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath);
+    }
     if (pos.parentParaIndex !== undefined) {
       return this.wasm.getCellParaPropertiesAt(
         pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!,
@@ -4832,6 +4861,8 @@ export class InputHandler {
     const first = this.firstSelectedCell();
     if (first) return this.cellStyleAt(first.ctx, first.cellIdx, 0);
     const pos = this.cursor.getPosition();
+    const nestedPath = this.nestedCaretPathJson(pos);
+    if (nestedPath) return this.wasm.getStyleByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath);
     return pos.parentParaIndex !== undefined
       ? this.wasm.getCellStyleAt(
           pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!,

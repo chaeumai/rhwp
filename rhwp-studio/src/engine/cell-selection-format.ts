@@ -167,3 +167,30 @@ export function collectCellParaTargets(
   }
   return targets;
 }
+
+/**
+ * 텍스트 범위(캐럿 하나 또는 드래그 선택)가 **같은 중첩 셀** 안에 있으면 그 범위의 문단마다 cellPath 를 만든다.
+ * 같은 셀 = 마지막 항목의 cellParaIndex 를 뺀 나머지가 전부 같다. 다른 셀·다른 표·깊이가 다르면 null —
+ * 셀을 넘는 텍스트 범위에 문단 서식을 거는 것은 F5 셀 블록의 몫이다.
+ * 캐럿(비-F5)이 중첩 셀에 있을 때 정렬·줄 간격·문단 모양이 그 문단에 들어가게 하는 표적이다.
+ */
+export function nestedRangeCellPaths(
+  startPath: readonly CellPathEntry[] | null | undefined,
+  endPath: readonly CellPathEntry[] | null | undefined,
+): CellPathEntry[][] | null {
+  if (!isNestedCellPath(startPath) || !isNestedCellPath(endPath)) return null;
+  const a = startPath!, b = endPath!;
+  if (a.length !== b.length) return null;
+  const last = a.length - 1;
+  for (let i = 0; i < last; i++) {
+    if (a[i].controlIndex !== b[i].controlIndex || a[i].cellIndex !== b[i].cellIndex || a[i].cellParaIndex !== b[i].cellParaIndex) return null;
+  }
+  if (a[last].controlIndex !== b[last].controlIndex || a[last].cellIndex !== b[last].cellIndex) return null;
+  const from = Math.min(a[last].cellParaIndex, b[last].cellParaIndex);
+  const to = Math.max(a[last].cellParaIndex, b[last].cellParaIndex);
+  const paths: CellPathEntry[][] = [];
+  for (let cellParaIndex = from; cellParaIndex <= to; cellParaIndex++) {
+    paths.push(a.map((entry, i) => i === last ? { ...entry, cellParaIndex } : { ...entry }));
+  }
+  return paths;
+}

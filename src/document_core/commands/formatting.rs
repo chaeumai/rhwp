@@ -2309,6 +2309,58 @@ impl DocumentCore {
         Ok("{\"ok\":true}".to_string())
     }
 
+    /// 글자 모양 ID 를 직접 되돌린다 (네이티브) — 경로 기반 (중첩 표 셀 문단), 편집기 되돌리기/다시실행용.
+    /// 깊이 1 은 `set_char_shape_id_in_cell_native` 에 위임한다. 빈 문단이면 유일한 CharShapeRef 를 통째로 바꾼다.
+    pub fn set_char_shape_id_in_cell_by_path_native(
+        &mut self,
+        sec_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        start_offset: usize,
+        end_offset: usize,
+        char_shape_id: u32,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, cell_para_idx)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.set_char_shape_id_in_cell_native(
+                sec_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                start_offset,
+                end_offset,
+                char_shape_id,
+            );
+        }
+        if char_shape_id as usize >= self.document.doc_info.char_shapes.len() {
+            return Err(HwpError::RenderError(format!(
+                "글자 모양 ID {} 범위 초과 (총 {}개)",
+                char_shape_id,
+                self.document.doc_info.char_shapes.len()
+            )));
+        }
+        {
+            let cell_para = self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?;
+            if cell_para.text.is_empty() {
+                cell_para.set_single_char_shape(char_shape_id);
+            } else {
+                cell_para.apply_char_shape_range(start_offset, end_offset, char_shape_id);
+            }
+        }
+        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
+        self.event_log.push(DocumentEvent::CharFormatChanged {
+            section: sec_idx,
+            para: parent_para_idx,
+            start: start_offset,
+            end: end_offset,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
     /// 문단 서식 적용 (네이티브) — 경로 기반 (중첩 표 셀 문단).
     pub fn apply_para_format_in_cell_by_path_native(
         &mut self,
@@ -2723,6 +2775,55 @@ mod tests {
         let flat = compact(&core.get_cell_char_properties_at_native(0, ppi, outer, 1, 0, 0).unwrap());
         assert_eq!(by_path, flat);
         assert!(flat.contains(r#""italic":true"#), "{flat}");
+    }
+
+    /// 되돌리기: 경로로 글자 모양 ID 를 직접 되돌리면 적용 전 ID 로 돌아가고(서식도 원상),
+    /// 중첩 표 이웃 셀·호스트 셀은 불변. 편집기 `ApplyCharFormatCommand` 의 중첩 셀 undo 가 이 API 를 쓴다.
+    #[test]
+    fn set_char_shape_id_by_path_restores_nested_cell() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let before = core
+            .resolve_paragraph_by_path(0, ppi, &path)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        let host_before = core
+            .get_cell_paragraph_ref(0, ppi, path[0].0, 0, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+
+        core.apply_char_format_in_cell_by_path_native(0, ppi, &path, 0, 0, r#"{"bold":true}"#)
+            .unwrap();
+        let applied = core.resolve_paragraph_by_path(0, ppi, &path).unwrap().char_shape_id_at(0).unwrap();
+        assert_ne!(applied, before);
+
+        core.set_char_shape_id_in_cell_by_path_native(0, ppi, &path, 0, 0, before).unwrap();
+        let para = core.resolve_paragraph_by_path(0, ppi, &path).unwrap();
+        assert_eq!(para.char_shapes.len(), 1, "빈 문단의 CharShapeRef 는 하나");
+        assert_eq!(para.char_shape_id_at(0).unwrap(), before, "되돌린 ID");
+        let json = compact(&core.get_char_properties_by_path_native(0, ppi, &path, 0).unwrap());
+        assert!(!json.contains(r#""bold":true"#), "{json}");
+
+        // 다시실행: 적용 후 ID 로 되돌리면 굵게가 돌아온다
+        core.set_char_shape_id_in_cell_by_path_native(0, ppi, &path, 0, 0, applied).unwrap();
+        let json = compact(&core.get_char_properties_by_path_native(0, ppi, &path, 0).unwrap());
+        assert!(json.contains(r#""bold":true"#), "{json}");
+
+        let sib_id = core.resolve_paragraph_by_path(0, ppi, &sibling).unwrap().char_shape_id_at(0).unwrap_or(0);
+        assert_eq!(sib_id, before, "중첩 표 이웃 셀은 불변");
+        let host_after = core
+            .get_cell_paragraph_ref(0, ppi, path[0].0, 0, 0)
+            .unwrap()
+            .char_shape_id_at(0)
+            .unwrap_or(0);
+        assert_eq!(host_after, host_before, "호스트(바깥) 셀은 불변");
+
+        // 범위 밖 ID·빈 경로는 거부
+        let n = core.document.doc_info.char_shapes.len() as u32;
+        assert!(core.set_char_shape_id_in_cell_by_path_native(0, ppi, &path, 0, 0, n).is_err());
+        assert!(core.set_char_shape_id_in_cell_by_path_native(0, ppi, &[], 0, 0, before).is_err());
     }
 
     /// 문단 서식: 경로로 정렬을 바꾸면 paraShapeId 가 바뀌고, 그 ID 를 되돌리면 원래대로.
