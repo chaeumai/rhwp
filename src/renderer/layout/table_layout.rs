@@ -5471,8 +5471,25 @@ impl LayoutEngine {
             .first()
             .and_then(|p| p.line_segs.first().map(|s| s.vertical_pos))
             .unwrap_or(-1);
+        // [#2389] 첫 문단 vpos 가 그 문단의 spacing_before 와 같으면 역시 셀-로컬 원점이다 —
+        // 한컴은 셀 첫 줄 vpos 에 문단 앞 간격을 그대로 적는다(위 spacing_before 의
+        // `raw_spacing_before.min(first_vpos)` 와 같은 관찰). 편람 p222 「정책연구 윤리 점검기준」
+        // 셀(CellBreak, 첫 문단 prev=1000, vpos=1000)은 이 게이트에 막혀 저장 쪽경계(다음 문단
+        // vpos 200 리셋)를 hard_break 로 못 보고, A2 꼬리 구제(#2363/#2380)가 발동하지 못해
+        // 한컴이 담은 마지막 줄(② 활용한…, 넘침 3.9px < 행간 6.0px)을 다음 쪽으로 밀었다.
+        let first_para_spacing_before_px = cell
+            .paragraphs
+            .first()
+            .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+            .map(|s| s.spacing_before)
+            .unwrap_or(0.0);
+        let cell_first_vpos_is_own_spacing_before = cell_first_vpos > 0
+            && first_para_spacing_before_px > 0.0
+            && (hwpunit_to_px(cell_first_vpos, self.dpi) - first_para_spacing_before_px).abs()
+                <= 0.5;
         let cell_has_local_vpos_origin = cell_first_vpos == 0
-            || (is_block_rowbreak_table && (0..=500).contains(&cell_first_vpos));
+            || (is_block_rowbreak_table && (0..=500).contains(&cell_first_vpos))
+            || cell_first_vpos_is_own_spacing_before;
         let preserve_linear_single_cell_vpos = is_block_rowbreak_table
             && table.row_count == 1
             && table.col_count == 1
