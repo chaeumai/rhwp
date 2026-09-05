@@ -2853,7 +2853,7 @@ impl Renderer for SvgRenderer {
                 let char_y = y + dy;
                 let length_attrs = svg_text_length_attrs(
                     cluster_str,
-                    cluster_advance(*char_idx, cluster_str),
+                    style.glyph_fit_advance(cluster_advance(*char_idx, cluster_str)),
                     ratio,
                 );
                 let shadow_attrs = attrs_for_cluster(cluster_str, &shadow_color);
@@ -2907,8 +2907,13 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let char_x = x + char_positions[*char_idx];
-            let length_attrs =
-                svg_text_length_attrs(cluster_str, cluster_advance(*char_idx, cluster_str), ratio);
+            // [#3937] textLength 는 glyph 폭 맞춤용 — 배분 간격(extra_char_spacing>0)을
+            // 포함하면 영문·숫자 glyph 가 가로로 늘어난다. 위치는 char_positions 그대로.
+            let length_attrs = svg_text_length_attrs(
+                cluster_str,
+                style.glyph_fit_advance(cluster_advance(*char_idx, cluster_str)),
+                ratio,
+            );
             let common_attrs = attrs_for_cluster(cluster_str, &color);
 
             if has_ratio {

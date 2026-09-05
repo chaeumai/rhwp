@@ -2331,7 +2331,10 @@ impl Renderer for WebCanvasRenderer {
                     };
                     let pin_ascii_advance =
                         cluster_str.chars().any(|ch| ch.is_ascii_alphanumeric());
-                    let fit_scale = if cluster_advance > 0.0 {
+                    // [#3937] 폭 맞춤 목표는 배분 간격을 뺀 glyph advance. 간격은
+                    // 다음 cluster 의 시작 위치(char_positions)로만 반영된다.
+                    let fit_advance = style.glyph_fit_advance(cluster_advance);
+                    let fit_scale = if fit_advance > 0.0 {
                         self.ctx
                             .measure_text(cluster_str)
                             .ok()
@@ -2341,9 +2344,9 @@ impl Renderer for WebCanvasRenderer {
                                 if visual_w <= 0.0 {
                                     None
                                 } else if pin_ascii_advance {
-                                    Some((cluster_advance / visual_w).clamp(0.1, 2.0))
-                                } else if visual_w > cluster_advance + 0.25 {
-                                    Some((cluster_advance / visual_w).clamp(0.1, 1.0))
+                                    Some((fit_advance / visual_w).clamp(0.1, 2.0))
+                                } else if visual_w > fit_advance + 0.25 {
+                                    Some((fit_advance / visual_w).clamp(0.1, 1.0))
                                 } else {
                                     None
                                 }

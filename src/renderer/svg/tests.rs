@@ -106,6 +106,60 @@ fn test_svg_draw_text_corner_quote_uses_halfwidth_text_length() {
     );
 }
 
+/// [#3937 / 이슈 20260905-174236] 배분 정렬의 추가 간격(extra_char_spacing>0)은
+/// 다음 글자의 x 만 옮기고, ASCII glyph 의 textLength(폭 맞춤)에는 들어가지 않는다.
+/// 들어가면 「E-mail」의 E·m·a·i·l 이 가로로 늘어나 「E- mail」로 보인다.
+#[test]
+fn test_svg_distribute_spacing_moves_origin_but_does_not_stretch_ascii_glyph() {
+    fn render(extra: f64) -> String {
+        let mut renderer = SvgRenderer::new();
+        renderer.begin_page(800.0, 600.0);
+        renderer.draw_text(
+            "E-mail",
+            10.0,
+            100.0,
+            &TextStyle {
+                font_size: 13.333,
+                font_family: "돋움체".to_string(),
+                extra_char_spacing: extra,
+                ..Default::default()
+            },
+        );
+        renderer.output().to_string()
+    }
+    fn attr(line: &str, key: &str) -> f64 {
+        let pat = format!("{key}=\"");
+        let i = line
+            .find(&pat)
+            .unwrap_or_else(|| panic!("{key} missing: {line}"))
+            + pat.len();
+        line[i..].split('"').next().unwrap().parse().unwrap()
+    }
+    let find = |out: &str, ch: &str| -> String {
+        out.lines()
+            .find(|l| l.contains(&format!(">{ch}</text>")))
+            .unwrap_or_else(|| panic!("{ch} glyph missing"))
+            .to_string()
+    };
+    let plain = render(0.0);
+    let spaced = render(8.0);
+    // glyph 폭 맞춤(textLength)은 간격과 무관하게 같다
+    for ch in ["E", "m", "a", "i", "l"] {
+        let a = attr(&find(&plain, ch), "textLength");
+        let b = attr(&find(&spaced, ch), "textLength");
+        assert!(
+            (a - b).abs() < 1e-6,
+            "{ch}: textLength {a} → {b} (간격이 glyph 를 늘림)"
+        );
+    }
+    // 하이픈은 ASCII alnum 이 아니라 textLength 가 없다 (기존 계약 유지)
+    assert!(!find(&spaced, "-").contains("textLength="));
+    // 시작 위치는 간격만큼 누적 이동한다: 2번째 glyph('-')는 +8, 6번째('l')는 +40
+    let dx = |ch: &str| attr(&find(&spaced, ch), "x") - attr(&find(&plain, ch), "x");
+    assert!((dx("-") - 8.0).abs() < 1e-6, "'-' dx = {}", dx("-"));
+    assert!((dx("l") - 40.0).abs() < 1e-6, "'l' dx = {}", dx("l"));
+}
+
 #[test]
 fn test_svg_draw_rect() {
     let mut renderer = SvgRenderer::new();

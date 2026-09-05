@@ -199,6 +199,28 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
+    /// 브라우저 렌더러가 glyph 폭을 맞출 때 쓸 advance — 배분 간격을 뺀 값.
+    ///
+    /// `extra_char_spacing` 의 양수 값은 배분/나눔 정렬이 **다음** cluster 의
+    /// 시작 위치를 옮기는 간격이다. 이를 SVG `textLength` 나 Canvas `scaleX` 의
+    /// 목표 폭에 포함하면 영문·숫자 glyph 자체가 가로로 늘어난다(upstream #3937,
+    /// 이슈 20260905-174236 「E- mail」). 문자 위치 계산은 그대로 두고 glyph 맞춤
+    /// 단계에서만 간격을 제외한다.
+    ///
+    /// 음수 값(셀 overflow 압축)은 기존 동작을 유지한다 — 우리 fork 는 압축된
+    /// advance 에 glyph 를 맞춰 겹침을 피하는 쪽을 택해 왔고(#1285 계열), upstream
+    /// 처럼 맞춤을 끄면 압축 셀의 숫자가 겹친다.
+    pub(crate) fn glyph_fit_advance(&self, layout_cluster_advance: f64) -> f64 {
+        if !layout_cluster_advance.is_finite() {
+            return layout_cluster_advance;
+        }
+        if self.extra_char_spacing.is_finite() && self.extra_char_spacing > 0.0 {
+            (layout_cluster_advance - self.extra_char_spacing).max(0.0)
+        } else {
+            layout_cluster_advance
+        }
+    }
+
     /// 시각적 bold 여부.
     ///
     /// CharShape.bold=true 외에도 HY헤드라인M 같은 heavy display face 를
@@ -1348,6 +1370,23 @@ fn format_hanja_number(n: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// [#3937] 양수 배분 간격은 glyph 폭 맞춤 advance 에서 빠지고, 0·음수는 그대로다.
+    #[test]
+    fn glyph_fit_advance_excludes_only_positive_distribution_spacing() {
+        let positive = TextStyle {
+            extra_char_spacing: 12.0,
+            ..Default::default()
+        };
+        assert_eq!(positive.glyph_fit_advance(20.0), 8.0);
+        assert_eq!(positive.glyph_fit_advance(5.0), 0.0);
+        assert_eq!(TextStyle::default().glyph_fit_advance(8.0), 8.0);
+        let negative = TextStyle {
+            extra_char_spacing: -3.0,
+            ..Default::default()
+        };
+        assert_eq!(negative.glyph_fit_advance(5.0), 5.0);
+    }
+
     use super::*;
 
     #[test]
