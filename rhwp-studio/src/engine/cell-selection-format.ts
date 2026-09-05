@@ -101,9 +101,9 @@ export const CELL_SELECTION_CHAR_FORMAT_COMMANDS: ReadonlySet<string> = new Set(
  * F5 셀 선택을 유지한 채 적용해야 하는 문단 서식·스타일 커맨드 id.
  * `getParaFormatTargetsAtCursor` 가 셀 선택 중에는 선택한 모든 셀의 모든 문단을 대상으로 잡으므로
  * 정렬·줄 간격·스타일이 캐럿 셀 하나가 아니라 셀 블록 전체에 적용된다(한컴 정합).
- * 번호/글머리표 토글·개요 수준도 같은 규칙이다 — "지금 상태" 는 **선택 범위 첫 셀의 첫 문단**으로 판단하고
- * (`getParaProperties`·`getCurrentStyleInfo`), 적용은 셀 블록 전체. 한컴도 블록의 첫 문단 상태로 토글 방향을 정한다.
- * 이 넷은 지금 단축키가 없어(툴바·메뉴만) 키 처리에는 안 걸리지만, 계약으로 목록에 둔다.
+ * 번호/글머리표 토글은 "지금 상태" 를 **선택 범위 첫 셀의 첫 문단**으로 판단하고(`getParaProperties`) 셀 블록 전체에
+ * 같은 결과를 준다 — 한컴 실측(2026-09-06 E1 §3)과 일치. 개요 수준 ▲▼ 는 다르다: 한컴은 문단마다 개요면 ±1, 비개요면
+ * 그대로 둔다(`planOutlineLevelChange`, E8). 이 다섯은 지금 단축키가 없어(툴바·메뉴만) 키 처리에는 안 걸리지만, 계약으로 목록에 둔다.
  */
 export const CELL_SELECTION_PARA_FORMAT_COMMANDS: ReadonlySet<string> = new Set([
   'format:align-left', 'format:align-center', 'format:align-right',
@@ -152,6 +152,45 @@ export function cellSelectionStillValid(
   if (dims.rowCount !== ctx.rowCount || dims.colCount !== ctx.colCount) return false;
   return range.startRow >= 0 && range.startCol >= 0
     && range.endRow < dims.rowCount && range.endCol < dims.colCount;
+}
+
+/** 스타일 이름에서 개요 수준을 읽는다 (`개요 1`~`개요 10`). 개요 스타일이 아니면 null. */
+export const OUTLINE_STYLE_RE = /^개요\s*(\d{1,2})$/;
+export function outlineLevelOf(styleName: string | null | undefined): number | null {
+  const m = styleName?.match(OUTLINE_STYLE_RE);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/** 개요 수준 변경 계획의 항목 — 새 수준, `'body'`(개요 해제 → 바탕글), `null`(불변). */
+export type OutlineLevelPlanEntry = number | 'body' | null;
+
+/**
+ * 개요 수준 ▲▼ 를 문단마다 어떻게 바꿀지 정한다 — 한컴 규칙 (E8, 한컴 실측 2026-09-06 E1 판정 §2).
+ * `levels` 는 대상 문단들의 현재 개요 수준(비개요는 null), `delta` 는 -1(▲ = 한컴 Ctrl+Num−) 또는 +1(▼ = Ctrl+Num+).
+ *  1. 개요 문단이 하나라도 있으면 **개요 문단만 각자 ±1**, 비개요 문단은 불변. 첫 셀·캐럿 셀·확장 방향은 결과에 안 들어간다.
+ *  2. 개요 1 에서 ▲ 는 개요 해제(`'body'`). 최대 수준을 넘는 ▼ 는 불변(한컴 미실측 — 보수적으로 둔다).
+ *  3. 개요 문단이 하나도 없으면 ▼ 는 전부 개요로(수준 = 문서 순 앞선 개요 문단의 수준 `precedingLevel`, 없으면 1), ▲ 는 무동작.
+ * 종전(UI-5)의 「첫 셀 첫 문단이 개요가 아니면 무동작」은 한컴에 대한 반례로 확인돼 폐기했다.
+ */
+export function planOutlineLevelChange(
+  levels: readonly (number | null)[],
+  delta: number,
+  maxLevel: number,
+  precedingLevel: number | null,
+): OutlineLevelPlanEntry[] {
+  const hasOutline = levels.some((l) => l !== null);
+  if (!hasOutline) {
+    if (delta <= 0) return levels.map(() => null);
+    const level = Math.max(1, Math.min(maxLevel, precedingLevel ?? 1));
+    return levels.map(() => level);
+  }
+  return levels.map((l) => {
+    if (l === null) return null;
+    const next = l + delta;
+    if (next < 1) return 'body';
+    if (next > maxLevel) return null;
+    return next;
+  });
 }
 
 /** 표 문맥 (셀 선택이 걸린 표의 위치). `cellPath` 깊이 2 이상이면 중첩 표 — 경로 기반 API 대상. */

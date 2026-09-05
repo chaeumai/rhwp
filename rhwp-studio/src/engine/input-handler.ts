@@ -39,7 +39,7 @@ import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
 import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
 import type { NavigationKeyInput } from './navigation-keymap';
-import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, nestedRangeCellPaths, type CellGridRange } from './cell-selection-format';
+import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, nestedRangeCellPaths, outlineLevelOf, planOutlineLevelChange, type CellGridRange } from './cell-selection-format';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -4726,34 +4726,111 @@ export class InputHandler {
   }
 
   /**
-   * 개요 수준 변경 (delta: +1=한 수준 증가, -1=한 수준 감소).
-   * "지금 수준" 은 F5 셀 선택 중에는 선택 범위 첫 셀의 첫 문단(서식바·대화상자와 같은 기준), 그 외에는 캐럿 문단.
-   * 적용은 `applyStyle` 이 셀 블록 전체에 한다 — 종전에는 캐럿 셀 스타일을 읽어 선택 첫 셀과 어긋날 수 있었다.
+   * 개요 수준 변경 (delta: -1 = 수준▲ = 한컴 Ctrl+Num−, +1 = 수준▼ = 한컴 Ctrl+Num+).
+   * 한컴 실측(2026-09-06, rhwp-cai `docs/E1-한컴실측-…-20260906-0128.md` §2)대로 **문단마다** 판단한다 — 첫 셀 기준이 아니다:
+   *  1. 대상(F5 셀 블록의 모든 문단 · 텍스트 범위 · 캐럿 문단)에 개요 문단이 하나라도 있으면 개요 문단만 각자 ±1, 비개요 문단은 그대로.
+   *  2. 개요 1 에서 ▲ 는 개요 해제(바탕글).
+   *  3. 개요 문단이 하나도 없으면 ▼ 는 전부 개요로(수준 = 문서 순 앞선 개요 문단의 수준, 없으면 1), ▲ 는 무동작.
+   *  4. 한 스냅샷으로 적용해 되돌리기 한 단계.
+   * 종전(UI-5)은 선택 첫 셀 스타일로 방향을 정해 첫 셀이 개요가 아니면 무동작이었다 — 한컴에 대한 반례로 폐기 (E8).
    */
   changeOutlineLevel(delta: number): void {
     try {
-      const currentStyle = this.getCurrentStyleInfo();
-
-      // 현재 개요 수준 파싱 (개요 1~7)
-      const match = currentStyle.name.match(/^개요\s*(\d)$/);
-      if (!match) return; // 개요 스타일이 아니면 무시
-
-      const currentLevel = parseInt(match[1], 10);
-      const targetLevel = currentLevel + delta;
-      if (targetLevel < 1 || targetLevel > 7) return;
-
-      // 스타일 목록에서 대상 개요 스타일 찾기
+      const targets = this.getParaFormatTargetsAtCursor();
+      if (targets.length === 0) return;
       const styles = this.wasm.getStyleList();
-      const targetStyle = styles.find(s => {
-        const m = s.name.match(/^개요\s*(\d)$/);
-        return m && parseInt(m[1], 10) === targetLevel;
+      const outlineByLevel = new Map<number, number>();
+      for (const s of styles) {
+        const level = outlineLevelOf(s.name);
+        if (level !== null && !outlineByLevel.has(level)) outlineByLevel.set(level, s.id);
+      }
+      if (outlineByLevel.size === 0) return;
+      const maxLevel = Math.max(...outlineByLevel.keys());
+      const bodyStyle = styles.find((s) => s.name === '바탕글') ?? styles.find((s) => s.id === 0);
+      const levels = targets.map((t) => outlineLevelOf(this.styleOfParaTarget(t)?.name));
+      const preceding = levels.every((l) => l === null) && delta > 0 ? this.precedingOutlineLevel(targets[0]) : null;
+      const plan = planOutlineLevelChange(levels, delta, maxLevel, preceding);
+      const ops: Array<{ target: ParaFormatTarget; styleId: number }> = [];
+      plan.forEach((entry, i) => {
+        if (entry === null) return;
+        const styleId = entry === 'body' ? bodyStyle?.id : outlineByLevel.get(entry);
+        if (styleId === undefined) return;
+        ops.push({ target: targets[i], styleId });
       });
-      if (!targetStyle) return;
-
-      this.applyStyle(targetStyle.id);
+      if (ops.length === 0) return;
+      const cursorBefore = this.cursor.getPosition();
+      const operation = (wasm: WasmBridge): DocumentPosition => {
+        for (const { target, styleId } of ops) this.applyStyleToParaTarget(wasm, target, styleId);
+        return { ...cursorBefore };
+      };
+      this.executeOperation({ kind: 'snapshot', operationType: 'applyStyle', operation });
+      this.refreshCellSelectionAfterFormat();
     } catch (err) {
       console.warn('[InputHandler] changeOutlineLevel 실패:', err);
     }
+  }
+
+  /** 문단 서식 대상 하나의 스타일 `{ id, name }` — 본문·셀(flat)·중첩 셀(경로). 조회 실패는 null. */
+  private styleOfParaTarget(target: ParaFormatTarget): { id: number; name: string } | null {
+    try {
+      if (target.kind === 'body') return this.wasm.getStyleAt(target.sec, target.para);
+      if (target.kind === 'path') return this.wasm.getStyleByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath));
+      return this.wasm.getCellStyleAt(target.sec, target.parentPara, target.controlIdx, target.cellIdx, target.cellParaIdx);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 문단 서식 대상 하나에 스타일을 적용한다 (`applyStyle` 과 같은 세 갈래). */
+  private applyStyleToParaTarget(wasm: WasmBridge, target: ParaFormatTarget, styleId: number): void {
+    if (target.kind === 'body') {
+      wasm.applyStyle(target.sec, target.para, styleId);
+    } else if (target.kind === 'path') {
+      wasm.applyStyleByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath), styleId);
+    } else {
+      wasm.applyCellStyle(target.sec, target.parentPara, target.controlIdx, target.cellIdx, target.cellParaIdx, styleId);
+    }
+  }
+
+  /**
+   * 대상 문단보다 문서 순으로 앞선 가장 가까운 개요 문단의 수준 (E8 규칙 3 — 비개요만 있는 블록을 ▼ 로 개요로 바꿀 때 잇는 수준).
+   * 셀 대상은 같은 표의 앞 셀들(문단 역순) → 표를 담은 본문 문단 앞의 본문 문단, 본문 대상은 앞 본문 문단을 본다.
+   * 표 안에 든 다른 표·글상자는 건너뛴다(근사). 없으면 null → 호출자가 1 로 둔다.
+   */
+  private precedingOutlineLevel(target: ParaFormatTarget): number | null {
+    const level = (st: { name: string } | null) => outlineLevelOf(st?.name);
+    try {
+      if (target.kind === 'cell') {
+        const { sec, parentPara, controlIdx, cellIdx } = target;
+        for (let c = cellIdx - 1; c >= 0; c--) {
+          const n = this.wasm.getCellParagraphCount(sec, parentPara, controlIdx, c);
+          for (let p = n - 1; p >= 0; p--) {
+            const l = level(this.wasm.getCellStyleAt(sec, parentPara, controlIdx, c, p));
+            if (l !== null) return l;
+          }
+        }
+        return this.precedingOutlineLevel({ kind: 'body', sec, para: parentPara });
+      }
+      if (target.kind === 'path') {
+        const { sec, parentPara, cellPath } = target;
+        const last = cellPath[cellPath.length - 1];
+        for (let c = last.cellIndex - 1; c >= 0; c--) {
+          const n = this.wasm.getCellParagraphCountByPath(sec, parentPara, JSON.stringify(cellPathForCell(cellPath, c)));
+          for (let p = n - 1; p >= 0; p--) {
+            const l = level(this.wasm.getStyleByPath(sec, parentPara, JSON.stringify(cellPathForCell(cellPath, c, p))));
+            if (l !== null) return l;
+          }
+        }
+        return this.precedingOutlineLevel({ kind: 'body', sec, para: parentPara });
+      }
+      for (let p = target.para - 1; p >= 0; p--) {
+        const l = level(this.wasm.getStyleAt(target.sec, p));
+        if (l !== null) return l;
+      }
+    } catch {
+      /* 조회 실패는 "없음" */
+    }
+    return null;
   }
 
   /** 문단 번호 토글: None→Number, Number/Outline→None */

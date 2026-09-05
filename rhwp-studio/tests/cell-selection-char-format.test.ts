@@ -16,6 +16,8 @@ import {
   CELL_SELECTION_FORMAT_COMMANDS,
   CELL_SELECTION_HISTORY_COMMANDS,
   cellSelectionStillValid,
+  outlineLevelOf,
+  planOutlineLevelChange,
   nestedRangeCellPaths,
 } from '../src/engine/cell-selection-format.ts';
 
@@ -327,21 +329,68 @@ test('셀 선택 표적 해석은 중첩 표를 거르지 않고, 셀 순회·�
   assert.match(cmd, /wasm\.getParaPropertiesByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\)\)/);
 });
 
-test('번호/글머리표 토글·개요 수준은 셀 선택 첫 셀 상태로 판단하고 셀 블록 전체에 적용한다', () => {
+test('번호/글머리표 토글은 셀 선택 첫 셀 상태로 판단하고 셀 블록 전체에 적용한다 (한컴 실측 2026-09-06 §3 일치)', () => {
   const ih = source('src/engine/input-handler.ts');
   // 토글 방향: getParaProperties() = 셀 선택 중 첫 셀 첫 문단
   const num = ih.slice(ih.indexOf('  toggleNumbering(): void {'));
   assert.match(num.slice(0, 400), /const props = this\.getParaProperties\(\);[\s\S]{0,200}?this\.applyParaFormat\(/);
   const bul = ih.slice(ih.indexOf('  toggleBullet(bulletChar'));
   assert.match(bul.slice(0, 400), /const props = this\.getParaProperties\(\);[\s\S]{0,200}?this\.applyParaFormat\(/);
-  // 개요 수준: 캐럿이 아니라 getCurrentStyleInfo(첫 셀) 로 현재 수준을 읽고 applyStyle(셀 블록 전체)
-  const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
-  const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
-  assert.match(lvlBody, /const currentStyle = this\.getCurrentStyleInfo\(\);/);
-  assert.doesNotMatch(lvlBody, /getCellStyleAt\(|getStyleAt\(/, '캐럿 위치 직접 조회가 남아 있으면 안 된다');
-  assert.match(lvlBody, /this\.applyStyle\(targetStyle\.id\)/);
+  // 스타일 대화상자 현재값은 여전히 첫 셀
   const info = ih.slice(ih.indexOf('  private getCurrentStyleInfo():'));
   assert.match(info.slice(0, 300), /const first = this\.firstSelectedCell\(\);\s*if \(first\) return this\.cellStyleAt\(first\.ctx, first\.cellIdx, 0\);/);
+});
+
+// ─── E8 개요 수준 ▲▼ — 한컴 규칙 (2026-09-06 한컴 실측, rhwp-cai docs/E1-한컴실측-…-20260906-0128.md §2) ─────
+// 첫 셀 기준이 아니라 문단마다: 개요 문단만 각자 ±1, 비개요 불변, 개요 1 ▲ 는 해제, 개요 없는 블록 ▼ 는 전부 개요(앞선 수준 계승), ▲ 무동작.
+
+test('outlineLevelOf: 개요 스타일 이름에서 수준을 읽는다', () => {
+  assert.equal(outlineLevelOf('개요 1'), 1);
+  assert.equal(outlineLevelOf('개요 10'), 10);
+  assert.equal(outlineLevelOf('개요2'), 2);
+  assert.equal(outlineLevelOf('바탕글'), null);
+  assert.equal(outlineLevelOf('본문'), null);
+  assert.equal(outlineLevelOf(undefined), null);
+});
+
+test('planOutlineLevelChange: 혼합 블록 ▼ 는 개요 문단만 +1, 비개요 불변 (v2a·v2c)', () => {
+  assert.deepEqual(planOutlineLevelChange([null, 2], 1, 7, null), [null, 3]);
+  assert.deepEqual(planOutlineLevelChange([null, 2, 3], 1, 7, null), [null, 3, 4]);
+  // 확장 방향·캐럿 셀 무관 — 입력 순서만 문서 순이면 결과 같다 (v2e)
+  assert.deepEqual(planOutlineLevelChange([null, 2, 3], 1, 7, 5), [null, 3, 4]);
+});
+
+test('planOutlineLevelChange: 개요만 있는 블록은 각자 ±1 — 첫 셀 수준으로 맞추지 않는다 (v2b·v2d)', () => {
+  assert.deepEqual(planOutlineLevelChange([2, 3], 1, 7, null), [3, 4]);
+  assert.deepEqual(planOutlineLevelChange([null, 2, 3], -1, 7, null), [null, 1, 2]);
+});
+
+test('planOutlineLevelChange: 개요 1 ▲ 는 개요 해제, 최대 수준 ▼ 는 불변 (w3·w4)', () => {
+  assert.deepEqual(planOutlineLevelChange([2], -1, 7, null), [1]);
+  assert.deepEqual(planOutlineLevelChange([1], -1, 7, null), ['body']);
+  assert.deepEqual(planOutlineLevelChange([1, 7], 1, 7, null), [2, null]);
+});
+
+test('planOutlineLevelChange: 개요 없는 블록 ▼ 는 전부 개요(앞선 개요 수준 계승, 없으면 1), ▲ 는 무동작 (w1·w2·t2b)', () => {
+  assert.deepEqual(planOutlineLevelChange([null, null], 1, 7, 3), [3, 3]);
+  assert.deepEqual(planOutlineLevelChange([null], 1, 7, null), [1]);
+  assert.deepEqual(planOutlineLevelChange([null, null], -1, 7, 3), [null, null]);
+  assert.deepEqual(planOutlineLevelChange([null], 1, 3, 9), [3]);
+});
+
+test('changeOutlineLevel 은 문단마다 스타일을 읽어 계획대로 한 스냅샷에 적용한다 (E8)', () => {
+  const ih = source('src/engine/input-handler.ts');
+  const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
+  const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
+  assert.match(lvlBody, /const targets = this\.getParaFormatTargetsAtCursor\(\);/);
+  assert.match(lvlBody, /targets\.map\(\(t\) => outlineLevelOf\(this\.styleOfParaTarget\(t\)\?\.name\)\)/);
+  assert.match(lvlBody, /planOutlineLevelChange\(levels, delta, maxLevel, preceding\)/);
+  assert.match(lvlBody, /operationType: 'applyStyle', operation \}\);\s*this\.refreshCellSelectionAfterFormat\(\)/);
+  assert.doesNotMatch(lvlBody, /getCurrentStyleInfo\(\)/, '첫 셀 규칙(UI-5)이 남아 있으면 안 된다');
+  assert.doesNotMatch(lvlBody, /this\.applyStyle\(/, '문단마다 스냅샷을 나누면 되돌리기가 여러 단계가 된다');
+  // 세 갈래 조회·적용
+  const st = ih.slice(ih.indexOf('  private styleOfParaTarget(target: ParaFormatTarget)'));
+  assert.match(st.slice(0, 600), /getStyleAt\(target\.sec, target\.para\)[\s\S]*getStyleByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\)\)[\s\S]*getCellStyleAt\(target\.sec, target\.parentPara, target\.controlIdx, target\.cellIdx, target\.cellParaIdx\)/);
 });
 
 // ─── E2 되돌리기/다시 실행이 셀 선택을 풀지 않는다 (한컴 실측 2026-09-06 §1: 블록→굵게→Ctrl+Z 뒤 블록 잔존) ─────
