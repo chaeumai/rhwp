@@ -1807,6 +1807,8 @@ impl LayoutEngine {
 
         // 1단계: row_span==1인 셀에서 개별 행 높이 추출
         let mut row_heights = vec![0.0f64; row_count];
+        // [#2388] 병합 셀 선언 높이의 행 사이 셀 간격 몫 (2-a·2-b 에서 쓴다).
+        let span_cs_px = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         if !ignore_declared {
             for cell in &table.cells {
                 if table.local_resize_cols.contains(&cell.col) {
@@ -1888,7 +1890,10 @@ impl LayoutEngine {
                 let r = cell.row as usize;
                 let span = cell.row_span as usize;
                 if span > 1 && r + span <= row_count && cell.height < 0x80000000 {
-                    let total_h = hwpunit_to_px(cell.height as i32, self.dpi);
+                    // [#2388] 선언 높이 − 걸친 행 사이 셀 간격 (span−1)·cs = 행 공간
+                    // (height_measurer 2-b 와 동일 규칙).
+                    let total_h = hwpunit_to_px(cell.height as i32, self.dpi)
+                        - span_cs_px * (span as f64 - 1.0);
                     if let Some(existing) = constraints.iter_mut().find(|x| x.0 == r && x.1 == span)
                     {
                         if total_h > existing.2 {
@@ -1977,7 +1982,9 @@ impl LayoutEngine {
                     0.0
                 };
                 let required_height = line_req.max(object_req);
-                let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum();
+                // [#2388] 병합 셀 박스는 걸친 행 사이 셀 간격까지 덮는다.
+                let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum::<f64>()
+                    + span_cs_px * (span as f64 - 1.0);
                 if required_height > combined {
                     let deficit = required_height - combined;
                     row_heights[r + span - 1] += deficit;
@@ -6863,8 +6870,13 @@ impl LayoutEngine {
                 let desc: Vec<String> = units
                     .iter()
                     .map(|u| {
+                        let preview: String = cell
+                            .paragraphs
+                            .get(u.para_idx)
+                            .map(|p| p.text.trim_start().chars().take(8).collect())
+                            .unwrap_or_default();
                         format!(
-                            "h={:.1}{}{}{}{}v{}..{}",
+                            "h={:.1}{}{}{}{}v{}..{} p{}:{preview}",
                             u.height,
                             if u.trail_ls > 0.0 { format!(" ls={:.1}", u.trail_ls) } else { String::new() },
                             if u.empty_spacer { " sp" } else { "" },
@@ -6876,6 +6888,7 @@ impl LayoutEngine {
                             },
                             u.vis_start,
                             u.vis_end,
+                            u.para_idx,
                         )
                     })
                     .collect();

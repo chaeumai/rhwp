@@ -1545,13 +1545,19 @@ impl HeightMeasurer {
         }
 
         // 2-b단계: 병합 셀에서 미지 행 높이를 반복적으로 해결
+        // [#2388] 병합 셀 선언 높이는 걸친 행 사이의 셀 간격 (span−1)·cs 를 담는다
+        // (frame_cell_spacing_total 의 (n+1) 모델과 같은 회계 — 편람 자가점검표 rs=4 선언
+        // 14097 = 4×3333 + 3×255). 행 공간으로 환산하지 않으면 잔여 3cs 가 마지막 걸침 행에
+        // 가산돼 한컴보다 7.65pt 커진다(p220 r7·r11, 쪽마다 한 행 덜 담김). cs=0 표는 불변.
+        let span_cs_px = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         {
             let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
             for cell in &table.cells {
                 let r = cell.row as usize;
                 let span = cell.row_span as usize;
                 if span > 1 && r + span <= row_count && cell.height < 0x80000000 {
-                    let total_h = hwpunit_to_px(cell.height as i32, self.dpi);
+                    let total_h = hwpunit_to_px(cell.height as i32, self.dpi)
+                        - span_cs_px * (span as f64 - 1.0);
                     if let Some(existing) = constraints.iter_mut().find(|x| x.0 == r && x.1 == span)
                     {
                         if total_h > existing.2 {
@@ -1887,7 +1893,9 @@ impl HeightMeasurer {
                         .max(wrap_bottom);
                     content_height + pad_top + pad_bottom
                 };
-                let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum();
+                // [#2388] 병합 셀 박스는 걸친 행 사이 셀 간격까지 덮는다.
+                let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum::<f64>()
+                    + span_cs_px * (span as f64 - 1.0);
                 if required_height > combined {
                     let deficit = required_height - combined;
                     row_heights[r + span - 1] += deficit;
