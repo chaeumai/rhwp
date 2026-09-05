@@ -4,6 +4,7 @@ import { TableCreateDialog } from '@/ui/table-create-dialog';
 import type { TableCreateOptions } from '@/ui/table-create-dialog';
 import { CellSplitDialog } from '@/ui/cell-split-dialog';
 import { CellBorderBgDialog } from '@/ui/cell-border-bg-dialog';
+import { isNestedCellPath } from '@/engine/cell-selection-format';
 import { FormulaDialog } from '@/ui/formula-dialog';
 import {
   TableDeleteRowColumnDialog,
@@ -300,13 +301,16 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      // 중첩 셀(cellPath 깊이 2 이상)은 flat (controlIndex, cellIndex) 가 바깥 문단 기준의 다른 셀을 가리키므로 경로를 넘긴다(E5′).
+      const nested = isNestedCellPath(pos.cellPath);
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: nested ? pos.cellPath : undefined };
+      const cellIdx = nested ? pos.cellPath![pos.cellPath!.length - 1].cellIndex : pos.cellIndex;
       const selectionRange = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
       const dialog = new CellBorderBgDialog(
         services.wasm,
         services.eventBus,
         tableCtx,
-        pos.cellIndex,
+        cellIdx,
         'each',
         selectionRange,
         services,
@@ -324,12 +328,14 @@ export const tableCommands: CommandDef[] = [
       if (!ih.hasMultiCellSelection()) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      const nested = isNestedCellPath(pos.cellPath);
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: nested ? pos.cellPath : undefined };
+      const cellIdx = nested ? pos.cellPath![pos.cellPath!.length - 1].cellIndex : pos.cellIndex;
       const dialog = new CellBorderBgDialog(
         services.wasm,
         services.eventBus,
         tableCtx,
-        pos.cellIndex,
+        cellIdx,
         'asOne',
         ih.getSelectedCellRange(),
         services,

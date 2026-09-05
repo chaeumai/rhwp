@@ -1,6 +1,7 @@
 import { ModalDialog } from './dialog';
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { CellBbox, CellProperties } from '@/core/types';
+import type { CellBbox, CellPathEntry, CellProperties } from '@/core/types';
+import { cellPathForCell, isNestedCellPath } from '@/engine/cell-selection-format';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 
@@ -80,7 +81,8 @@ type CellRange = { startRow: number; startCol: number; endRow: number; endCol: n
 export class CellBorderBgDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
-  private tableCtx: { sec: number; ppi: number; ci: number };
+  /** cellPath 는 중첩 표(깊이 2 이상)일 때만 — flat (ci, cellIdx) 는 바깥 문단 기준의 다른 셀을 가리킨다. */
+  private tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] };
   private cellIdx: number;
   private applyMode: 'each' | 'asOne';
   private selectionRange: CellRange | null;
@@ -133,7 +135,7 @@ export class CellBorderBgDialog extends ModalDialog {
   constructor(
     wasm: WasmBridge,
     eventBus: EventBus,
-    tableCtx: { sec: number; ppi: number; ci: number },
+    tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] },
     cellIdx: number,
     applyMode: 'each' | 'asOne' = 'each',
     selectionRange: CellRange | null = null,
@@ -153,10 +155,22 @@ export class CellBorderBgDialog extends ModalDialog {
     super.show();
     this.dialog.classList.add('tcp-border-bg-dialog');
     const { sec, ppi, ci } = this.tableCtx;
-    this.cellProps = this.applyMode === 'each'
-      ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
-      : this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
+    // 중첩 셀(cellPath 깊이 2 이상)은 경로로 읽는다 — flat 로 읽으면 호스트 표의 셀 속성이 대화상자에 들어온다(E5′).
+    const nested = this.nestedPathJson(this.cellIdx);
+    this.cellProps = nested
+      ? (this.applyMode === 'each'
+        ? this.wasm.getCellOwnPropertiesByPath(sec, ppi, nested)
+        : this.wasm.getCellPropertiesByPath(sec, ppi, nested))
+      : this.applyMode === 'each'
+        ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
+        : this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
     this.populateFields();
+  }
+
+  /** 중첩 표면 대상 셀의 cellPath JSON(마지막 항목의 cellIndex 만 교체), 깊이 1 이면 null. */
+  private nestedPathJson(cellIdx: number): string | null {
+    const cp = this.tableCtx.cellPath;
+    return isNestedCellPath(cp) ? JSON.stringify(cellPathForCell(cp!, cellIdx)) : null;
   }
 
   protected createBody(): HTMLElement {
@@ -974,7 +988,11 @@ export class CellBorderBgDialog extends ModalDialog {
         endCol >= range.startCol;
     };
 
-    for (const bbox of this.wasm.getTableCellBboxes(sec, ppi, ci)) {
+    const nested = this.nestedPathJson(this.cellIdx);
+    const bboxes = nested
+      ? this.wasm.getTableCellBboxesByPath(sec, ppi, nested)
+      : this.wasm.getTableCellBboxes(sec, ppi, ci);
+    for (const bbox of bboxes) {
       if (overlaps(bbox)) indices.add(bbox.cellIdx);
     }
     return [...indices];
@@ -1018,37 +1036,47 @@ export class CellBorderBgDialog extends ModalDialog {
         ? this.diagScopeRadios
         : this.borderScopeRadios;
     const scope = scopeRadios?.find(r => r.checked)?.value ?? 'selected';
+    const props = newProps as Partial<CellProperties>;
+    const nested = this.nestedPathJson(this.cellIdx);
+    // 중첩 셀은 경로 API 로 쓴다 — flat setCellProperties 는 호스트 표의 셀을 고친다(E5′). 셀 하나 = 경로 하나.
+    const setOne = (cellIdx: number) => {
+      const path = this.nestedPathJson(cellIdx);
+      if (path) this.wasm.setCellPropertiesByPath(sec, ppi, path, props);
+      else this.wasm.setCellProperties(sec, ppi, ci, cellIdx, props);
+    };
+    const dims = () => nested
+      ? this.wasm.getTableDimensionsByPath(sec, ppi, nested)
+      : this.wasm.getTableDimensions(sec, ppi, ci);
     const applyProps = () => {
       if (this.applyMode === 'asOne') {
         const range = scope === 'all'
           ? (() => {
-            const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+            const d = dims();
             return {
               startRow: 0,
               startCol: 0,
-              endRow: Math.max(0, dims.rowCount - 1),
-              endCol: Math.max(0, dims.colCount - 1),
+              endRow: Math.max(0, d.rowCount - 1),
+              endCol: Math.max(0, d.colCount - 1),
             };
           })()
           : this.selectionRange;
-        if (range) {
-          this.wasm.setCellZoneProperties(sec, ppi, ci, range, newProps as Partial<CellProperties>);
+        if (range && nested) {
+          // 경로 기반 setCellZoneProperties 가 없다 — 중첩 표의 '하나의 셀처럼' 은 범위 셀마다 적용으로 대신한다(바깥 테두리만 긋는 zone 의미는 미지원).
+          for (const cellIdx of this.selectedCellIndicesForRange(range)) setOne(cellIdx);
+        } else if (range) {
+          this.wasm.setCellZoneProperties(sec, ppi, ci, range, props);
         } else {
-          this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+          setOne(this.cellIdx);
         }
       } else if (scope === 'all') {
-        const dims = this.wasm.getTableDimensions(sec, ppi, ci);
-        for (let i = 0; i < dims.cellCount; i++) {
-          this.wasm.setCellProperties(sec, ppi, ci, i, newProps as Partial<CellProperties>);
-        }
+        const d = dims();
+        for (let i = 0; i < d.cellCount; i++) setOne(i);
       } else if (this.selectionRange) {
         const cellIndices = this.selectedCellIndicesForRange(this.selectionRange);
         const targetIndices = cellIndices.length > 0 ? cellIndices : [this.cellIdx];
-        for (const cellIdx of targetIndices) {
-          this.wasm.setCellProperties(sec, ppi, ci, cellIdx, newProps as Partial<CellProperties>);
-        }
+        for (const cellIdx of targetIndices) setOne(cellIdx);
       } else {
-        this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+        setOne(this.cellIdx);
       }
     };
     // 셀 테두리/배경 일괄 적용도 undo 대상이다 — 편집 라우터를 통과시켜

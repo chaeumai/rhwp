@@ -23,6 +23,19 @@ fn char_shape_mods_affect_text_flow(mods: &crate::model::style::CharShapeMods) -
         || mods.char_offsets.is_some()
 }
 
+/// 문단 모양 변경이 중첩 셀의 줄나눔 또는 문단 세로 위치를 바꾸는가 — 줄 간격·들여쓰기·좌우 여백은
+/// 줄나눔을, 문단 앞뒤 간격은 다음 문단의 vpos 를 바꾼다. 중첩 셀은 저장 vpos 를 그대로 그리므로
+/// 이 중 하나라도 바뀌면 `reflow_nested_cell_paragraphs_by_path` 로 다시 쌓아야 한다(E5′).
+fn para_shape_mods_affect_cell_layout(mods: &crate::model::style::ParaShapeMods) -> bool {
+    mods.line_spacing.is_some()
+        || mods.line_spacing_type.is_some()
+        || mods.indent.is_some()
+        || mods.margin_left.is_some()
+        || mods.margin_right.is_some()
+        || mods.spacing_before.is_some()
+        || mods.spacing_after.is_some()
+}
+
 fn body_available_width_for_para_shape(
     core: &DocumentCore,
     sec_idx: usize,
@@ -2291,11 +2304,11 @@ impl DocumentCore {
 
         // 글자 폭·높이가 바뀌면 그 셀 폭으로 LineSeg 재계산 (깊이 1 의 set_char_shape_id 경로와 같은 폭 계산)
         if char_shape_mods_affect_text_flow(&mods) {
-            self.reflow_cell_paragraph_by_path(
+            self.reflow_nested_cell_paragraphs_by_path(
                 sec_idx,
                 parent_para_idx,
                 path,
-                cell_idx,
+                cell_para_idx,
                 cell_para_idx,
             );
         }
@@ -2350,7 +2363,13 @@ impl DocumentCore {
                 cell_para.apply_char_shape_range(start_offset, end_offset, char_shape_id);
             }
         }
-        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.reflow_nested_cell_paragraphs_by_path(
+            sec_idx,
+            parent_para_idx,
+            path,
+            cell_para_idx,
+            cell_para_idx,
+        );
         self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
         self.event_log.push(DocumentEvent::CharFormatChanged {
             section: sec_idx,
@@ -2416,12 +2435,12 @@ impl DocumentCore {
         self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?
             .para_shape_id = new_id;
 
-        if mods.line_spacing.is_some() || mods.line_spacing_type.is_some() {
-            self.reflow_cell_paragraph_by_path(
+        if para_shape_mods_affect_cell_layout(&mods) {
+            self.reflow_nested_cell_paragraphs_by_path(
                 sec_idx,
                 parent_para_idx,
                 path,
-                cell_idx,
+                cell_para_idx,
                 cell_para_idx,
             );
         }
@@ -2463,7 +2482,13 @@ impl DocumentCore {
         }
         self.get_cell_paragraph_mut_by_path(sec_idx, parent_para_idx, path)?
             .para_shape_id = para_shape_id;
-        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.reflow_nested_cell_paragraphs_by_path(
+            sec_idx,
+            parent_para_idx,
+            path,
+            cell_para_idx,
+            cell_para_idx,
+        );
         self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
         self.event_log.push(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
@@ -2520,11 +2545,11 @@ impl DocumentCore {
                 cell_para.apply_char_shape_to_entire_text(new_char_shape_id);
                 cell_para.text.chars().count()
             };
-            self.reflow_cell_paragraph_by_path(
+            self.reflow_nested_cell_paragraphs_by_path(
                 sec_idx,
                 parent_para_idx,
                 path,
-                cell_idx,
+                cell_para_idx,
                 cell_para_idx,
             );
             self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
@@ -2554,7 +2579,13 @@ impl DocumentCore {
                 cell_para.set_single_char_shape(new_char_shape_id);
             }
         }
-        self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, cell_idx, cell_para_idx);
+        self.reflow_nested_cell_paragraphs_by_path(
+            sec_idx,
+            parent_para_idx,
+            path,
+            cell_para_idx,
+            cell_para_idx,
+        );
         self.finish_cell_format_by_path(sec_idx, parent_para_idx, path);
         self.event_log.push(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
