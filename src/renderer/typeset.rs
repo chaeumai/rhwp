@@ -4245,7 +4245,55 @@ impl TypesetEngine {
                                 && s.vertical_pos > 0
                         })
                         .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi));
+                    // [R4 #2390] 빈 앵커 자리차지(TopAndBottom·vert=Para·voff 0) 표 호스트의 저장 vpos 는
+                    // 호스트 문단의 **앞 간격(sb)을 포함**하지만, 한컴은 표 프레임을 **직전 문단 끝 +
+                    // outMargin.top** 에 그린다 — sb 는 프레임 위에 들어가지 않는다(host_spacing.before 도
+                    // 같은 형상에서 sb 를 억제한다: suppress_empty_anchor_spacing). 저장 vpos 로 그대로
+                    // 스냅하면 예산이 sb 만큼 짧다.
+                    // 실측 issue1853(HWPX, 한컴 2024 정본) 자리차지 표 19개 전수(온전한 괘선 18개):
+                    //   한컴 프레임 상단 − (own_vpos + om) = −7.1 ~ −7.6px,
+                    //   한컴 프레임 상단 − (own_vpos − sb + om) = −0.4 ~ −0.9px (sb 500HU, om 141HU).
+                    // p13 표(pi=105): 종전 스냅 750.1 → 셀 컷 예산 137.0 이 7줄(149.0)을 12.0 넘겨 A2
+                    // 꼬리 구제(그 줄 ls 6.6) 밖 → 6줄. 743.5 로 스냅하면 초과 5.3 ≤ ls 로 구제되어 한컴과
+                    // 같은 7줄(p13 Δ −19 → 0). HWPX · 빈 호스트 · voff 0 · 다음 문단이 표 앵커가 아닐 때만
+                    // (표 스택은 sb 를 보존하는 종전 규칙 그대로). voff > 0 은 미측정.
+                    let empty_anchor_sb_suppressed = self.is_hwpx_source.get()
+                        && para.text.is_empty()
+                        && para.controls.iter().any(|c| {
+                            matches!(c, Control::Table(t)
+                                if is_para_topbottom_float(&t.common)
+                                    && signed_hwpunit(t.common.vertical_offset) == 0)
+                        })
+                        && !paragraphs.get(para_idx + 1).is_some_and(|p| {
+                            para_is_empty_topbottom_table_anchor(p)
+                                || para_is_empty_tac_table_anchor(p)
+                        });
+                    let host_sb_px = if empty_anchor_sb_suppressed {
+                        composed
+                            .get(para_idx)
+                            .map(|c| c.para_style_id as usize)
+                            .or(Some(para.para_shape_id as usize))
+                            .and_then(|id| styles.para_styles.get(id))
+                            .map(|s| s.spacing_before.max(0.0))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                     if let Some(v) = own_vpos_px {
+                        // [R4 #2390 진단] 조건 발화 census 용 — 스냅 발화 여부와 무관하게 찍는다. 동작 불변.
+                        if host_sb_px > 0.0 && std::env::var("RHWP_DIAG_TAC").is_ok() {
+                            eprintln!(
+                                "DIAG_TBL_ANCHOR_SB pi={} cur_h={:.1} own_vpos={:.1} sb={:.1} delta_old={:.1} delta_new={:.1} underrun={:.1}",
+                                para_idx,
+                                st.current_height,
+                                v,
+                                host_sb_px,
+                                v - st.current_height,
+                                v - host_sb_px - st.current_height,
+                                st.flow_underrun
+                            );
+                        }
+                        let v = (v - host_sb_px).max(0.0);
                         let delta = v - st.current_height;
                         // 보정 폭은 이 단에서 실제로 트림한 누계(flow_underrun)
                         // 이내로만 — 좌표계 상수 오프셋(+4px 계 등, jbnu-550 실측)
@@ -4257,8 +4305,8 @@ impl TypesetEngine {
                         {
                             if std::env::var("RHWP_DIAG_TAC").is_ok() {
                                 eprintln!(
-                                    "DIAG_TBL_ANCHOR pi={} cur_h={:.1} -> own_vpos={:.1} (underrun={:.1})",
-                                    para_idx, st.current_height, v, st.flow_underrun
+                                    "DIAG_TBL_ANCHOR pi={} cur_h={:.1} -> own_vpos={:.1} (underrun={:.1} sb_off={:.1})",
+                                    para_idx, st.current_height, v, st.flow_underrun, host_sb_px
                                 );
                             }
                             st.current_height = v;
@@ -19197,6 +19245,132 @@ mod tests {
             first_end_row, 1,
             "표 분할 예산은 저장 vpos(40px) 기준이어야 한다 — 2행이 들어갔다면 \
              표 문단 vpos 스냅이 빠진 것 (드리프트 예산 과대)"
+        );
+    }
+
+    /// [R4 #2390] 빈 앵커 자리차지 표(HWPX) 호스트의 저장 vpos 는 앞 간격(sb)을 포함한다 —
+    /// 프레임은 직전 문단 끝 + outMargin.top 에 놓이므로 스냅 목표는 own_vpos − sb.
+    /// RED 근거: issue1853 p13(pi=105) 한컴 정본 프레임 상단 744.4px vs 종전 스냅 752.0 (sb 6.67 과대)
+    /// → 셀 컷 예산 137.0 이 7줄(149.0)을 12.0 넘겨 A2 구제 밖(Δ −19). 이 테스트는 같은 형상을
+    /// 행 단위로 줄였다: 2행째가 (own−sb) 예산에는 들어가고 own 예산에는 안 들어가는 표.
+    #[test]
+    fn r4_empty_anchor_float_snap_excludes_host_spacing_before() {
+        use crate::model::control::Control;
+        use crate::model::shape::{TextWrap, VertRelTo};
+        use crate::model::table::{Cell, Table, TablePageBreak};
+
+        let engine = TypesetEngine::with_default_dpi();
+        let mut styles = ResolvedStyleSet::default();
+        // 0: 선행 문단 — sa 3000HU(40px) 트림이 flow_underrun 을 만들어 앵커 스냅 가드(≤ underrun+2)를 연다.
+        styles
+            .para_styles
+            .push(crate::renderer::style_resolver::ResolvedParaStyle {
+                spacing_after: hwpunit_to_px(3000, DEFAULT_DPI),
+                ..Default::default()
+            });
+        // 1: 호스트 문단 — sb 500HU(6.67px), issue1853 paraPr 6 과 동일.
+        styles
+            .para_styles
+            .push(crate::renderer::style_resolver::ResolvedParaStyle {
+                spacing_before: hwpunit_to_px(500, DEFAULT_DPI),
+                ..Default::default()
+            });
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let base =
+            PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI).available_body_height();
+
+        // 선행 문단: 저장 vpos 2000, lh 1000 → 끝 3000HU(40.0px).
+        let lead = Paragraph {
+            text: "lead".to_string(),
+            para_shape_id: 0,
+            line_segs: vec![LineSeg {
+                vertical_pos: 2000,
+                line_height: 1000,
+                text_height: 1000,
+                line_spacing: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // 호스트: 저장 vpos 3500 = 선행 끝 3000 + sb 500 (한컴 저장 규약). 빈 문단, 표 하나.
+        // 표 상단(한컴) = 40.0 + om 1.88. 종전 스냅은 46.67 + 1.88.
+        // 2행 합이 (base − 40.0 − om·2) 안, (base − 46.67 − om·2) 밖이 되는 행 높이.
+        let om_px = hwpunit_to_px(141, DEFAULT_DPI);
+        let two_rows = base - 43.3 - 2.0 * om_px;
+        let row_h_hu = ((two_rows / 2.0) * 7200.0 / DEFAULT_DPI).round() as u32;
+        let mut common = crate::model::shape::CommonObjAttr::default();
+        common.text_wrap = TextWrap::TopAndBottom;
+        common.vert_rel_to = VertRelTo::Para;
+        common.treat_as_char = false;
+        common.vertical_offset = 0;
+        common.width = 30000;
+        common.height = row_h_hu * 3;
+        let mut host = Paragraph::default();
+        host.para_shape_id = 1;
+        host.line_segs.push(LineSeg {
+            vertical_pos: 3500,
+            line_height: 200,
+            text_height: 200,
+            line_spacing: 120,
+            ..Default::default()
+        });
+        host.controls.push(Control::Table(Box::new(Table {
+            row_count: 3,
+            col_count: 1,
+            page_break: TablePageBreak::CellBreak,
+            common,
+            outer_margin_top: 141,
+            outer_margin_bottom: 141,
+            cells: (0..3)
+                .map(|r| Cell {
+                    row: r,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    height: row_h_hu,
+                    width: 30000,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })));
+        let paras = vec![lead, host, make_paragraph_with_height(1500)];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured =
+            HeightMeasurer::with_default_dpi().measure_section(&paras, &composed, &styles, None);
+        let result = engine.typeset_section_with_variant(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            &std::collections::HashSet::new(),
+            false,
+            true,
+            false,
+            EndnoteDeferral::None,
+        );
+        let first_end_row = result.pages[0].column_contents[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                PageItem::PartialTable { end_row, .. } => Some(*end_row),
+                _ => None,
+            })
+            .expect("첫 쪽에 표 fragment 가 있어야 한다");
+        assert_eq!(
+            first_end_row, 2,
+            "빈 앵커 자리차지 표의 첫 조각 예산은 (own_vpos − sb + om) 기준이어야 한다 — 1행이면 \
+             앞 간격 500HU 가 프레임 위에 이중으로 들어간 것 (issue1853 p13 형상)"
         );
     }
 
