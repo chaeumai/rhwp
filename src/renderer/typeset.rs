@@ -17100,6 +17100,18 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 //   조건 ② 를 만족할 때만 계산해서, 8px 근접 경로로 걸린 표가 자기 경계
                 //   행을 부동소수 차로 놓쳤다 — 실측: 표 2084162751(pi=479) 선언 808.0
                 //   = 42행 누적 808.00 인데 `over=0.00` 으로 REJECT → p25 Δ −19.
+                // [#2391] HWP5 는 경계 일치를 **측정기 행높이(mt.row_heights)** 누적합으로 본다 — 렌더러가
+                // 그리는 값이고 한컴 괘선과 일치하는 축이다(kps-ai p37 16행 |Δ|<1px). 컷 예산 행높이는
+                // 퇴화 선언 셀의 [Task #501] pad 압축을 그대로 더해 측정보다 작을 수 있다(kps-ai r12
+                // 42.8 vs 53.5 — 그 차로 r0..r14 누적 847.0 이 선언 857.7 과 어긋나 ① 이 닫혔다). 예산
+                // 자체를 측정으로 올리는 안(pad 미러)은 issue1937_rowbreak_footnote_overpagination.hwp
+                // 를 50→51쪽(정본 50)으로 깨서 기각 — 같은 형상(2mm pad·퇴화 선언)에서 한컴이 kps-ai 는
+                // 압축 없이, issue1937 은 압축해 갈리는 축을 못 찾았다. HWPX 는 종전대로 컷 예산 누적.
+                let boundary_row_h: &[f64] = if st.is_hwpx_source {
+                    &cut_row_h
+                } else {
+                    &mt.row_heights
+                };
                 let declared_boundary: Option<(f64, usize)> = if declared_rows_h > 0.0 {
                     let mut acc = 0.0f64;
                     let mut found = None;
@@ -17107,7 +17119,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                         if r > cursor_row {
                             acc += cs;
                         }
-                        acc += cut_row_h[r];
+                        acc += boundary_row_h[r];
                         if (acc - declared_rows_h).abs() <= DECLARED_ROW_BOUNDARY_EPS_PX {
                             found = Some((acc, r + 1));
                             break;
@@ -17125,26 +17137,52 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 //    표의 상한을 신뢰할 자격. ①(경계 일치)만으로는 모든 접두합을 훑어
                 //    거의 항상 맞아 사실상 가드 해제가 된다(complex-full 73→74쪽 실증).
                 let declared_one_row_ahead = declared_boundary.is_some_and(|(acc, next)| {
-                    let Some(&h1) = cut_row_h.get(next) else {
+                    let Some(&h1) = boundary_row_h.get(next) else {
                         return false; // 경계가 마지막 행 — 더 담을 것이 없다
                     };
                     let one_more = acc + cs + h1;
-                    if one_more > base {
-                        return false; // 우리도 그 행을 안 담는다 — 상한이 무의미
+                    // [#2391] "우리가 그 행을 담는가" 는 plain 예산만이 아니라 쪽 하단 압축
+                    // ([#2097] BOTTOM_SQUEEZE_TOLERANCE_PX)까지 본다 — 압축 게이트가 선언 밖 행을
+                    // 담는 형상이 정확히 이 상한이 막아야 할 것이다.
+                    //   실측 (kps-ai.hwp pi=329, HWP5 32×2 RowBreak, p37): 선언 878.5 − 호스트 간격
+                    //   20.8 = 857.7 = r0..r14 누적 857.68(①), r15 34.5px 는 plain 예산 887.1 을
+                    //   5.05 넘겨 REJECT 되지만 압축(headroom 13.5·air 3.4)이 다시 담는다 → 종전 ② 는
+                    //   "우리도 안 담는다" 로 상한을 풀어 p37 Δ+42. 한컴 정본 괘선은 762.25pt 에서
+                    //   끝나고 r15 는 p38 첫 행이다 — 파일 선언 그대로.
+                    if st.is_hwpx_source {
+                        if one_more > base {
+                            return false; // 우리도 그 행을 안 담는다 — 상한이 무의미 (HWPX 종전 그대로)
+                        }
+                    } else if one_more <= base || one_more > base + BOTTOM_SQUEEZE_TOLERANCE_PX {
+                        // HWP5: plain 예산은 거부하고 [#2097] 쪽 하단 **압축만** 담으려는 행에 한정 —
+                        // 파일이 적어 둔 첫 조각 프레임이 압축 휴리스틱을 거부하는 것이다.
+                        //   kps-ai p37 r15: 측정 척도 one_more 892.2 vs base 887.1 (plain 거부) ≤ 900.1 (압축 수용).
+                        // plain 예산으로 담기는 행까지 넓히면(sijang-2017 pi=723·1298·1320 — 선언 경계가
+                        // 한컴 정본 쪽 머리와 3/3 일치, 판정 문서 §5-b) 오라클 없는 HWP5 코퍼스 문서
+                        // (76076·hwpctl_API·편람 .hwp)의 첫 조각도 같이 움직인다 → 넓히는 것은 별건 승인.
+                        return false;
                     }
-                    match cut_row_h.get(next + 1) {
+                    match boundary_row_h.get(next + 1) {
                         Some(&h2) => one_more + cs + h2 > base, // 두 행째는 안 담겨야 한다
                         None => true,
                     }
                 });
-                let base = if st.is_hwpx_source
-                    && !is_continuation
+                // [#2391] HWP5 도 **행 경계 일치 + 1행 차**(①+②) 증거가 있으면 선언을 신뢰한다.
+                // 종전 HWPX 한정은 "선언 높이를 신뢰하는 것이 HWPX 에서만 확인됐다" 는 미확인이었고,
+                // kps-ai.hwp(Hwp 2022 저장 HWP5)에서 선언 = 첫 조각 누적합이 0.02px 로 성립하며
+                // 한컴 정본 PDF 의 첫 조각 하단과 일치함을 실측했다. 8px 근접 경로는 HWPX 그대로.
+                let declared_cap_qualified = if st.is_hwpx_source {
+                    base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
+                        || declared_one_row_ahead
+                } else {
+                    declared_one_row_ahead
+                };
+                let base = if !is_continuation
                     && cursor_row == 0
                     && declared_rows_h > 0.0
                     && total_rows_h > declared_rows_h
                     && declared_rows_h < base
-                    && (base - declared_rows_h <= DECLARED_FIRST_FRAGMENT_CAP_PX
-                        || declared_one_row_ahead)
+                    && declared_cap_qualified
                 {
                     if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
                         eprintln!(
@@ -19371,6 +19409,107 @@ mod tests {
             first_end_row, 2,
             "빈 앵커 자리차지 표의 첫 조각 예산은 (own_vpos − sb + om) 기준이어야 한다 — 1행이면 \
              앞 간격 500HU 가 프레임 위에 이중으로 들어간 것 (issue1853 p13 형상)"
+        );
+    }
+
+    /// [R5 #2391] HWP5 RowBreak 표의 첫 조각도 파일 선언 프레임(표 높이)이 한컴의 컷을 적고 있다 —
+    /// 선언이 우리 행 누적합과 정확히 겹치고(①) 우리가 한 행을 더 담으려 하면(②) 그 경계로 상한한다.
+    /// ② 는 plain 예산만이 아니라 쪽 하단 압축(BOTTOM_SQUEEZE_TOLERANCE_PX)으로 담기는 행도 "우리가 담는다"로
+    /// 본다. RED 근거: kps-ai.hwp pi=329(32×2 RowBreak) 선언 878.5 − 호스트 간격 20.8 = 857.7 = r0..r14 누적
+    /// 857.68 인데, r15(34.5px, 잔여 29.5) 를 압축 게이트(headroom 13.5·air 3.4)가 담아 p37 Δ+42 — 한컴 정본은
+    /// 762.25pt 에서 끊고 r15 를 p38 첫 행으로 둔다. 이 테스트는 같은 형상을 4행으로 줄였다: 선언 = 2행,
+    /// 3행째(30px)가 잔여 22px 를 8px 넘쳐 plain 은 거부·압축은 수용하는 표(4행째는 분할을 강제하는 밸러스트).
+    #[test]
+    fn r5_hwp5_declared_frame_caps_first_fragment_against_bottom_squeeze() {
+        use crate::model::control::Control;
+        use crate::model::shape::{TextWrap, VertRelTo};
+        use crate::model::table::{Cell, Table, TablePageBreak};
+
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let base =
+            PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI).available_body_height();
+        // 두 행이 잔여 22px 를 남기고, 셋째 행 30px 이 8px 넘친다(압축 수용치 13 안, headroom 22−12=10 ≥ 5).
+        let two_rows = base - 22.0;
+        let row_h_hu = ((two_rows / 2.0) * 7200.0 / DEFAULT_DPI).round() as u32;
+        let last_h_hu: u32 = 2250; // 30px
+        let mut common = crate::model::shape::CommonObjAttr::default();
+        common.text_wrap = TextWrap::TopAndBottom;
+        common.vert_rel_to = VertRelTo::Para;
+        common.treat_as_char = false;
+        common.width = 30000;
+        // 선언 프레임 = 첫 조각(2행) — 한컴이 자기 컷을 적어 둔 값.
+        common.height = row_h_hu * 2;
+        let mk_cell = |r: u16, h: u32, text: &str| Cell {
+            row: r,
+            col: 0,
+            row_span: 1,
+            col_span: 1,
+            height: h,
+            width: 30000,
+            paragraphs: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Paragraph {
+                    text: text.to_string(),
+                    char_count: text.chars().count() as u32,
+                    line_segs: vec![LineSeg {
+                        vertical_pos: 0,
+                        line_height: 900,
+                        text_height: 900,
+                        line_spacing: 0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]
+            },
+            ..Default::default()
+        };
+        let mut host = Paragraph::default();
+        // 4행째(큰 행)는 표를 반드시 분할시키는 밸러스트 — 통째 배치 허용치 경로를 막는다.
+        host.controls.push(Control::Table(Box::new(Table {
+            row_count: 4,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            common,
+            cells: vec![
+                mk_cell(0, row_h_hu, ""),
+                mk_cell(1, row_h_hu, ""),
+                mk_cell(2, last_h_hu, "가"),
+                mk_cell(3, row_h_hu, ""),
+            ],
+            ..Default::default()
+        })));
+        let paras = vec![host, make_paragraph_with_height(1500)];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured =
+            HeightMeasurer::with_default_dpi().measure_section(&paras, &composed, &styles, None);
+        // typeset_section 은 HWP5(is_hwpx_source=false) 경로다.
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+        let first_end_row = result.pages[0].column_contents[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                PageItem::PartialTable { end_row, .. } => Some(*end_row),
+                _ => None,
+            })
+            .expect("첫 쪽에 표 fragment 가 있어야 한다");
+        assert_eq!(
+            first_end_row, 2,
+            "파일 선언 프레임(2행)이 첫 조각의 상한이어야 한다 — 3행이면 쪽 하단 압축이 선언 밖 행을 담은 것 \
+             (kps-ai p37 형상)"
         );
     }
 
