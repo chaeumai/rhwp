@@ -3,7 +3,7 @@
 
 import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand } from './command';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
-import { CELL_SELECTION_FORMAT_COMMANDS } from './cell-selection-format';
+import { CELL_SELECTION_FORMAT_COMMANDS, CELL_SELECTION_HISTORY_COMMANDS } from './cell-selection-format';
 import * as _connector from './input-handler-connector';
 import {
   detectPlatformKind,
@@ -1032,6 +1032,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       if (fmtCmd && CELL_SELECTION_FORMAT_COMMANDS.has(fmtCmd)) {
         e.preventDefault();
         this.dispatcher?.dispatch(fmtCmd);
+        return;
+      }
+    }
+    // 되돌리기/다시 실행(Ctrl+Z·Ctrl+Y·Ctrl+Shift+Z)도 셀 선택을 유지한 채 실행한다 — 한컴은 셀 블록에 서식을 걸고
+    // 되돌려도 블록이 남는다(E2, 한컴 실측 2026-09-06). 점프 뒤 표 문맥 재검증은 handleUndo/handleRedo 가 한다.
+    {
+      const histCmd = matchShortcut(e, defaultShortcuts);
+      if (histCmd && CELL_SELECTION_HISTORY_COMMANDS.has(histCmd)) {
+        e.preventDefault();
+        this.dispatcher?.dispatch(histCmd);
         return;
       }
     }

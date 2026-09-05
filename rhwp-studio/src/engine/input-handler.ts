@@ -2492,6 +2492,7 @@ export class InputHandler {
       this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
       this.afterEdit();
+      this.refreshCellSelectionAfterHistoryJump();
     }
   }
 
@@ -2506,7 +2507,24 @@ export class InputHandler {
       this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
       this.afterEdit(!boundaryHandled);
+      this.refreshCellSelectionAfterHistoryJump();
     }
+  }
+
+  /**
+   * 되돌리기/다시 실행 뒤 F5 셀 선택을 한컴처럼 유지한다 (E2, 한컴 실측 2026-09-06: 셀 블록→굵게→Ctrl+Z 뒤 블록이 남고
+   * 캐럿도 블록 안). 히스토리 점프는 표 구조를 되돌릴 수 있으므로 `cellTableCtx` 를 재검증하고(표 크기·범위·캐럿 위치),
+   * 어긋나면 해제한다 — 그대로 두면 다음 서식이 다른 셀에 들어간다(UI-1 류 오적용). 유지하면 오버레이를 다시 그리고
+   * 서식바를 선택 첫 셀 기준으로 재통지한다(`updateCellSelection`).
+   */
+  private refreshCellSelectionAfterHistoryJump(): void {
+    if (!this.cursor.isInCellSelectionMode()) return;
+    if (this.cursor.revalidateCellSelectionAfterHistoryJump()) {
+      this.updateCellSelection();
+      return;
+    }
+    this.cellSelectionRenderer?.clear();
+    this.updateCaret();
   }
 
   /**

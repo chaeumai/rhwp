@@ -129,6 +129,31 @@ export const CELL_SELECTION_FORMAT_COMMANDS: ReadonlySet<string> = new Set([
   ...CELL_SELECTION_FORMAT_DIALOG_COMMANDS,
 ]);
 
+/**
+ * F5 셀 선택을 유지한 채 실행하는 되돌리기/다시 실행 커맨드 id (E2).
+ * 한컴 실측(2026-09-06, rhwp-cai `docs/E1-한컴실측-…-20260906-0128.md` §1): 셀 블록에 굵게를 걸고 Ctrl+Z 를 눌러도
+ * 블록이 그대로 남고 캐럿도 블록 안에 있다. 종전에는 키 처리 fall-through 가 선택을 풀고 나서 undo 를 돌렸다.
+ * 히스토리 점프는 표 구조를 되돌릴 수 있으므로 점프 뒤 표 문맥 재검증(`cellSelectionStillValid`)이 반드시 따른다.
+ */
+export const CELL_SELECTION_HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit:undo', 'edit:redo']);
+
+/**
+ * 히스토리 점프(undo/redo) 뒤 셀 선택이 여전히 유효한가 — 순수 판정 (E2).
+ * `dims` 는 점프 뒤 같은 (sec, ppi, ci[, cellPath]) 에서 다시 읽은 표 크기, 표가 없으면 null.
+ * 표가 사라졌거나(null) 행·열 수가 달라졌거나 선택 범위가 새 크기 밖이면 false — 그대로 두면 다음 서식이 다른 셀에 들어간다
+ * (UI-1 이 고친 종류의 오적용, 선례 `exitObjectSelectionAfterHistoryJump` #2303).
+ */
+export function cellSelectionStillValid(
+  ctx: { rowCount: number; colCount: number },
+  range: CellGridRange | null,
+  dims: { rowCount: number; colCount: number } | null,
+): boolean {
+  if (!dims || !range) return false;
+  if (dims.rowCount !== ctx.rowCount || dims.colCount !== ctx.colCount) return false;
+  return range.startRow >= 0 && range.startCol >= 0
+    && range.endRow < dims.rowCount && range.endCol < dims.colCount;
+}
+
 /** 표 문맥 (셀 선택이 걸린 표의 위치). `cellPath` 깊이 2 이상이면 중첩 표 — 경로 기반 API 대상. */
 export interface CellTableRef {
   sec: number;

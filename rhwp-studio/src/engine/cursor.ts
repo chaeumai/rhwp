@@ -1,5 +1,6 @@
 import type { DocumentPosition, CursorRect, LineInfo, CellPathEntry, NavContextEntry, CellBbox } from '@/core/types';
 import { WasmBridge } from '@/core/wasm-bridge';
+import { cellSelectionStillValid } from './cell-selection-format';
 
 type CellSelectionReason = 'manual' | 'protected';
 
@@ -1108,6 +1109,49 @@ export class CursorState {
     this.cellFocus = null;
     this.excludedCells.clear();
     this.cellTableCtx = null;
+  }
+
+  /**
+   * 히스토리 점프(undo/redo) 뒤 셀 선택을 재검증한다 (E2). 한컴은 되돌리기 뒤에도 셀 블록을 유지하지만,
+   * 점프가 표 구조(행·열 병합/분할·표 삭제·삽입)를 되돌리면 `cellTableCtx` 는 낡은 참조가 된다 —
+   * 표 크기를 같은 자리에서 다시 읽어 `cellSelectionStillValid` 가 거부하거나 캐럿이 그 표 밖이면 선택을 해제하고 false.
+   */
+  revalidateCellSelectionAfterHistoryJump(): boolean {
+    if (!this._cellSelectionMode || !this.cellTableCtx) return false;
+    const { sec, ppi, ci, cellPath } = this.cellTableCtx;
+    let dims: { rowCount: number; colCount: number } | null = null;
+    try {
+      dims = (cellPath?.length ?? 0) > 0
+        ? this.wasm.getTableDimensionsByPath(sec, ppi, JSON.stringify(cellPath))
+        : this.wasm.getTableDimensions(sec, ppi, ci);
+    } catch {
+      dims = null;
+    }
+    if (!cellSelectionStillValid(this.cellTableCtx, this.getSelectedCellRange(), dims) || !this.isCaretInCellSelectionTable()) {
+      this.exitCellSelectionMode();
+      return false;
+    }
+    return true;
+  }
+
+  /** 캐럿이 셀 선택이 걸린 표 안에 있는가 (중첩 표는 마지막 항목 앞까지 경로가 같고 마지막 항목의 표가 같아야 한다). */
+  private isCaretInCellSelectionTable(): boolean {
+    const ctx = this.cellTableCtx;
+    if (!ctx || !this.isInCell()) return false;
+    const pos = this.position;
+    if (pos.sectionIndex !== ctx.sec || pos.parentParaIndex !== ctx.ppi) return false;
+    const ctxPath = ctx.cellPath ?? [];
+    const posPath = pos.cellPath ?? [];
+    if (ctxPath.length <= 1 && posPath.length <= 1) {
+      const posCi = posPath[0]?.controlIndex ?? pos.controlIndex;
+      return posCi === ctx.ci;
+    }
+    if (ctxPath.length !== posPath.length) return false;
+    for (let i = 0; i < ctxPath.length - 1; i++) {
+      const a = ctxPath[i], b = posPath[i];
+      if (a.controlIndex !== b.controlIndex || a.cellIndex !== b.cellIndex || a.cellParaIndex !== b.cellParaIndex) return false;
+    }
+    return ctxPath[ctxPath.length - 1].controlIndex === posPath[posPath.length - 1].controlIndex;
   }
 
   /** 셀 선택 단계를 반환한다. */

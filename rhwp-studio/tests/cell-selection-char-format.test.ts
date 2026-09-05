@@ -14,6 +14,8 @@ import {
   CELL_SELECTION_PARA_FORMAT_COMMANDS,
   CELL_SELECTION_FORMAT_DIALOG_COMMANDS,
   CELL_SELECTION_FORMAT_COMMANDS,
+  CELL_SELECTION_HISTORY_COMMANDS,
+  cellSelectionStillValid,
   nestedRangeCellPaths,
 } from '../src/engine/cell-selection-format.ts';
 
@@ -247,7 +249,7 @@ test('서식바 적용이 거부되면 표시값을 실제 서식으로 되돌�
 
 test('셀 선택 키 처리는 서식 단축키를 선택 해제 前에 그대로 dispatch 한다', () => {
   const kb = source('src/engine/input-handler-keyboard.ts');
-  assert.match(kb, /import \{ CELL_SELECTION_FORMAT_COMMANDS \} from '\.\/cell-selection-format'/);
+  assert.match(kb, /import \{ CELL_SELECTION_FORMAT_COMMANDS(?:, CELL_SELECTION_HISTORY_COMMANDS)? \} from '\.\/cell-selection-format'/);
   const block = kb.slice(kb.indexOf('if (this.cursor.isInCellSelectionMode()) {'));
   const dispatch = block.indexOf('CELL_SELECTION_FORMAT_COMMANDS.has(fmtCmd)');
   // fall-through exit(그 외 키 → 셀 선택 모드 종료). block 첫 exit 은 Escape 핸들러라 앵커로 못 쓴다.
@@ -340,6 +342,46 @@ test('번호/글머리표 토글·개요 수준은 셀 선택 첫 셀 상태로 
   assert.match(lvlBody, /this\.applyStyle\(targetStyle\.id\)/);
   const info = ih.slice(ih.indexOf('  private getCurrentStyleInfo():'));
   assert.match(info.slice(0, 300), /const first = this\.firstSelectedCell\(\);\s*if \(first\) return this\.cellStyleAt\(first\.ctx, first\.cellIdx, 0\);/);
+});
+
+// ─── E2 되돌리기/다시 실행이 셀 선택을 풀지 않는다 (한컴 실측 2026-09-06 §1: 블록→굵게→Ctrl+Z 뒤 블록 잔존) ─────
+
+test('셀 선택 키 처리는 되돌리기/다시 실행 단축키도 선택 해제 前에 그대로 dispatch 한다 (E2)', () => {
+  assert.deepEqual([...CELL_SELECTION_HISTORY_COMMANDS].sort(), ['edit:redo', 'edit:undo']);
+  for (const id of CELL_SELECTION_HISTORY_COMMANDS) assert.equal(CELL_SELECTION_FORMAT_COMMANDS.has(id), false, id);
+  const kb = source('src/engine/input-handler-keyboard.ts');
+  assert.match(kb, /import \{ CELL_SELECTION_FORMAT_COMMANDS, CELL_SELECTION_HISTORY_COMMANDS \} from '\.\/cell-selection-format'/);
+  const block = kb.slice(kb.indexOf('if (this.cursor.isInCellSelectionMode()) {'));
+  const dispatch = block.indexOf('CELL_SELECTION_HISTORY_COMMANDS.has(histCmd)');
+  const fallthrough = block.indexOf('그 외 키 → 셀 선택 모드 종료');
+  assert.ok(dispatch >= 0 && fallthrough >= 0 && dispatch < fallthrough, 'undo/redo dispatch 가 fall-through exit 보다 앞이어야 한다');
+  assert.match(block.slice(dispatch, dispatch + 200), /this\.dispatcher\?\.dispatch\(histCmd\)/);
+});
+
+test('undo/redo 뒤 셀 선택 표 문맥을 재검증하고, 유효하면 오버레이·서식바를 다시 그린다 (E2)', () => {
+  const ih = source('src/engine/input-handler.ts');
+  for (const fn of ['handleUndo', 'handleRedo']) {
+    const body = ih.slice(ih.indexOf(`  private ${fn}(): void {`), ih.indexOf(`  private ${fn}(): void {`) + 700);
+    assert.match(body, /this\.cursor\.moveTo\(newPos\);[\s\S]{0,120}?this\.afterEdit\([^)]*\);\s*this\.refreshCellSelectionAfterHistoryJump\(\);/, fn);
+  }
+  const rf = ih.slice(ih.indexOf('  private refreshCellSelectionAfterHistoryJump(): void {'));
+  assert.match(rf.slice(0, 400), /if \(this\.cursor\.revalidateCellSelectionAfterHistoryJump\(\)\) \{\s*this\.updateCellSelection\(\);/);
+  assert.match(rf.slice(0, 500), /this\.cellSelectionRenderer\?\.clear\(\);\s*this\.updateCaret\(\);/);
+  const cur = source('src/engine/cursor.ts');
+  const rv = cur.slice(cur.indexOf('  revalidateCellSelectionAfterHistoryJump(): boolean {'));
+  assert.match(rv.slice(0, 900), /getTableDimensionsByPath\(sec, ppi, JSON\.stringify\(cellPath\)\)[\s\S]*getTableDimensions\(sec, ppi, ci\)/);
+  assert.match(rv.slice(0, 900), /cellSelectionStillValid\(this\.cellTableCtx, this\.getSelectedCellRange\(\), dims\) \|\| !this\.isCaretInCellSelectionTable\(\)\) \{\s*this\.exitCellSelectionMode\(\);\s*return false;/);
+});
+
+test('cellSelectionStillValid: 표가 없거나 크기가 달라졌거나 범위가 밖이면 거부한다 (E2)', () => {
+  const ctx = { rowCount: 3, colCount: 4 };
+  const range = { startRow: 0, startCol: 0, endRow: 1, endCol: 1 };
+  assert.equal(cellSelectionStillValid(ctx, range, { rowCount: 3, colCount: 4 }), true);
+  assert.equal(cellSelectionStillValid(ctx, range, null), false, '표 삭제 되돌리기');
+  assert.equal(cellSelectionStillValid(ctx, range, { rowCount: 2, colCount: 4 }), false, '행 삭제 되돌리기');
+  assert.equal(cellSelectionStillValid(ctx, range, { rowCount: 3, colCount: 5 }), false, '열 추가 다시 실행');
+  assert.equal(cellSelectionStillValid(ctx, null, { rowCount: 3, colCount: 4 }), false);
+  assert.equal(cellSelectionStillValid({ rowCount: 2, colCount: 2 }, { startRow: 0, startCol: 0, endRow: 2, endCol: 0 }, { rowCount: 2, colCount: 2 }), false, '범위 밖');
 });
 
 // 중첩 셀 캐럿(비-F5) — 서식바가 호스트 문단을 읽고 정렬·문단 모양이 무동작이던 결함(E5, 2026-09-04 제품 표면 실측).
