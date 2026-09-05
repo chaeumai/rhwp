@@ -1035,6 +1035,27 @@ export class WasmBridge {
     return JSON.parse(this.doc.setCellProperties(sec, parentPara, controlIdx, cellIdx, JSON.stringify(props)));
   }
 
+  /** 셀 속성 조회 (경로 기반, 중첩 표 셀). cellzone overlay 를 합성한 유효 borderFill. `pathJson` 계약은 `applyCharFormatInCellByPath` 와 같다. */
+  getCellPropertiesByPath(sec: number, parentPara: number, pathJson: string): CellProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).getCellPropertiesByPath(sec, parentPara, pathJson));
+  }
+
+  /** 셀 고유 속성 조회 (경로 기반, 중첩 표 셀) — 모양 복사가 중첩 셀 캐럿에서 복사원을 읽는다. */
+  getCellOwnPropertiesByPath(sec: number, parentPara: number, pathJson: string): CellProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).getCellOwnPropertiesByPath(sec, parentPara, pathJson));
+  }
+
+  /** 셀 속성 수정 (경로 기반, 중첩 표 셀) — 모양 복사가 중첩 표 셀 선택에 셀 속성(배경·테두리)을 붙인다. */
+  setCellPropertiesByPath(sec: number, parentPara: number, pathJson: string, props: Partial<CellProperties>): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return JSON.parse((this.doc as any).setCellPropertiesByPath(sec, parentPara, pathJson, JSON.stringify(props)));
+  }
+
   setCellZoneProperties(
     sec: number,
     parentPara: number,

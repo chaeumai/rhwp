@@ -2228,7 +2228,7 @@ impl DocumentCore {
 
     /// 경로 기반 서식 변경의 뒤처리 — 대상(중첩) 표와 최외곽 표를 dirty 로 마킹해 셀 높이를
     /// 다시 재고, 구역을 재구성한다. 깊이 2 이상 전용(깊이 1 은 flat 네이티브가 처리).
-    fn finish_cell_format_by_path(
+    pub(crate) fn finish_cell_format_by_path(
         &mut self,
         sec_idx: usize,
         parent_para_idx: usize,

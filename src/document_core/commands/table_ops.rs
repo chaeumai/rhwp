@@ -787,7 +787,63 @@ impl DocumentCore {
                 ))
             }
         };
+        self.cell_properties_json_for_table(table, cell_idx, use_effective_border_fill)
+    }
 
+    /// 셀 속성 조회 — 경로 기반 (중첩 표 셀). cellzone overlay 를 합성한 유효 borderFill.
+    /// 경로 규약은 `resolve_table_by_path` 와 같고(마지막 항목의 control_idx 가 대상 표,
+    /// cell_idx 가 대상 셀), 깊이 1 은 flat 네이티브에 위임한다.
+    pub(crate) fn get_cell_properties_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        self.get_cell_properties_by_path_with_border_mode(section_idx, parent_para_idx, path, true)
+    }
+
+    /// 셀 고유 속성 조회 — 경로 기반 (중첩 표 셀). 셀 자체의 borderFill 만 반환한다.
+    /// 모양 복사가 중첩 셀에서 복사원 셀을 읽는 경로 — 종전에는 flat 인덱스로 바깥 문단 기준의
+    /// 다른 셀을 읽었다.
+    pub(crate) fn get_cell_own_properties_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        self.get_cell_properties_by_path_with_border_mode(section_idx, parent_para_idx, path, false)
+    }
+
+    fn get_cell_properties_by_path_with_border_mode(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        use_effective_border_fill: bool,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, _)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.get_cell_properties_with_border_mode(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                use_effective_border_fill,
+            );
+        }
+        let table = self.resolve_table_by_path(section_idx, parent_para_idx, path)?;
+        self.cell_properties_json_for_table(table, cell_idx, use_effective_border_fill)
+    }
+
+    /// 표 하나의 셀 속성 JSON — flat·경로 두 조회가 공유하는 본체.
+    fn cell_properties_json_for_table(
+        &self,
+        table: &crate::model::table::Table,
+        cell_idx: usize,
+        use_effective_border_fill: bool,
+    ) -> Result<String, HwpError> {
         let cell = table
             .cells
             .get(cell_idx)
@@ -1024,7 +1080,7 @@ impl DocumentCore {
             self.update_neighbor_borders(
                 section_idx,
                 parent_para_idx,
-                control_idx,
+                &[(control_idx, cell_idx, 0)],
                 cell_idx,
                 target_row,
                 target_col,
@@ -1038,6 +1094,236 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// 셀 속성을 수정한다 — 경로 기반 (중첩 표 셀). 경로 규약은 hitTest cellPath 와 같고
+    /// (`[(control_idx, cell_idx, cell_para_idx), …]`, 마지막 항목의 control_idx 가 대상 표·cell_idx 가 대상 셀),
+    /// 깊이 1 은 `set_cell_properties_native` 에 위임해 편집 계약을 하나로 둔다.
+    ///
+    /// 깊이 2 이상은 flat 과 같은 필드 규칙(padding·정렬·머리글·보호·필드·`borderFillId` 직접 대입은
+    /// cellzone 덮임 검사, 테두리/채우기 JSON 은 새 BorderFill + 이웃 셀 공유 엣지 갱신)을 대상 표에 적용하고,
+    /// 뒤처리는 `finish_cell_format_by_path`(대상·최외곽 표 dirty + 구역 재구성)로 호스트 행 높이까지 따라오게 한다.
+    /// rhwp-studio 모양 복사가 중첩 표 셀 선택에 셀 속성(배경·테두리)을 붙이는 경로 — 종전에는
+    /// 경로 API 가 없어 글자 서식만 붙였다.
+    pub(crate) fn set_cell_properties_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        json: &str,
+    ) -> Result<String, HwpError> {
+        let Some(&(control_idx, cell_idx, _)) = path.last() else {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        };
+        if path.len() == 1 {
+            return self.set_cell_properties_native(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                json,
+            );
+        }
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+        let obj = parsed.as_object();
+        let top_u32 = |key: &str| -> Option<u32> {
+            obj.and_then(|m| m.get(key))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        };
+        let top_u8 = |key: &str| -> Option<u8> { top_u32(key).map(|v| v as u8) };
+        let top_i16 = |key: &str| -> Option<i16> {
+            obj.and_then(|m| m.get(key))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i16)
+        };
+        let top_bool =
+            |key: &str| -> Option<bool> { obj.and_then(|m| m.get(key)).and_then(|v| v.as_bool()) };
+        let top_str = |key: &str| -> Option<String> {
+            obj.and_then(|m| m.get(key))
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned)
+        };
+
+        let has_border_fill_change = json.contains("\"borderLeft\"")
+            || json.contains("\"fillType\"")
+            || json.contains("\"diagonalLine\"")
+            || json.contains("\"diagonalSlash\"")
+            || json.contains("\"diagonalBackSlash\"")
+            || json.contains("\"diagonalWidth\"")
+            || json.contains("\"diagonalColor\"")
+            || json.contains("\"centerLine\"");
+        let cell_border_fill_json = if has_border_fill_change {
+            let table = self.resolve_table_by_path(section_idx, parent_para_idx, path)?;
+            Some(self.normalize_cell_border_fill_json_for_table(table, cell_idx, json))
+        } else {
+            None
+        };
+
+        let (needs_reflow, reflow_para_count) = {
+            let mut needs_reflow = false;
+            let mut size_changed = false;
+            let table = self.get_table_mut_by_path(section_idx, parent_para_idx, path)?;
+            let direct_border_fill_id = if has_border_fill_change {
+                None
+            } else {
+                top_u32("borderFillId").map(|v| v as u16).and_then(|bf_id| {
+                    table.cells.get(cell_idx).and_then(|cell| {
+                        if Self::cell_is_covered_by_zone_border_fill(table, cell, bf_id) {
+                            None
+                        } else {
+                            Some(bf_id)
+                        }
+                    })
+                })
+            };
+            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
+            })?;
+
+            if let Some(v) = top_u32("width") {
+                needs_reflow |= cell.width != v;
+                size_changed |= cell.width != v;
+                cell.width = v;
+            }
+            if let Some(v) = top_u32("height") {
+                size_changed |= cell.height != v;
+                cell.height = v;
+            }
+            if let Some(v) = top_i16("paddingLeft") {
+                needs_reflow |= cell.padding.left != v;
+                cell.padding.left = v;
+            }
+            if let Some(v) = top_i16("paddingRight") {
+                needs_reflow |= cell.padding.right != v;
+                cell.padding.right = v;
+            }
+            if let Some(v) = top_i16("paddingTop") {
+                cell.padding.top = v;
+            }
+            if let Some(v) = top_i16("paddingBottom") {
+                cell.padding.bottom = v;
+            }
+            if let Some(v) = top_bool("applyInnerMargin") {
+                needs_reflow |= cell.apply_inner_margin != v;
+                cell.set_apply_inner_margin(v);
+            }
+            if let Some(v) = top_u8("verticalAlign") {
+                cell.vertical_align = match v {
+                    1 => crate::model::table::VerticalAlign::Center,
+                    2 => crate::model::table::VerticalAlign::Bottom,
+                    _ => crate::model::table::VerticalAlign::Top,
+                };
+            }
+            if let Some(v) = top_u8("textDirection") {
+                cell.text_direction = v;
+            }
+            if let Some(v) = top_bool("isHeader") {
+                cell.set_header(v);
+            }
+            if let Some(v) = top_bool("cellProtect") {
+                cell.set_cell_protect(v);
+            }
+            if let Some(v) = top_bool("editableInForm") {
+                cell.set_editable_in_form(v);
+            }
+            if let Some(v) = top_str("fieldName") {
+                cell.field_name = if v.is_empty() { None } else { Some(v) };
+            }
+            if let Some(v) = direct_border_fill_id {
+                cell.border_fill_id = v;
+            }
+            if size_changed {
+                table.update_ctrl_dimensions();
+            }
+            table.dirty = true;
+            (needs_reflow, table.cells[cell_idx].paragraphs.len())
+        };
+
+        if needs_reflow && reflow_para_count > 0 {
+            // 중첩 셀은 저장 vpos 를 그대로 그리므로 줄 수가 바뀌면 문단 세로 위치를 다시 쌓고
+            // 안쪽 표 선언 높이를 바깥으로 전파해야 한다(E7 `reflow_nested_cell_paragraphs_by_path`) —
+            // 줄나눔만 다시 하면 다음 문단이 새 둘째 줄 위에 겹쳐 그려진다(2026-09-05 실측: padding 4000 → 「이메일 주소」가 「사무실 번호」 위에).
+            self.reflow_nested_cell_paragraphs_by_path(
+                section_idx,
+                parent_para_idx,
+                path,
+                0,
+                reflow_para_count - 1,
+            );
+        }
+
+        if has_border_fill_change {
+            let border_fill_json = cell_border_fill_json.as_deref().unwrap_or(json);
+            let new_bf_id = self.create_border_fill_from_json(border_fill_json);
+            let new_bf_has_cell_diagonal = self
+                .document
+                .doc_info
+                .border_fills
+                .get((new_bf_id as usize).saturating_sub(1))
+                .is_some_and(Self::border_fill_has_cell_diagonal);
+            let cell_diagonal_bf_ids: Vec<u16> = self
+                .document
+                .doc_info
+                .border_fills
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, bf)| {
+                    Self::border_fill_has_cell_diagonal(bf).then_some((idx + 1) as u16)
+                })
+                .collect();
+            let new_borders = {
+                let bf_idx = (new_bf_id as usize).saturating_sub(1);
+                self.document
+                    .doc_info
+                    .border_fills
+                    .get(bf_idx)
+                    .map(|bf| bf.borders)
+                    .unwrap_or_default()
+            };
+
+            let (target_row, target_col, target_col_span, target_row_span) = {
+                let table = self.get_table_mut_by_path(section_idx, parent_para_idx, path)?;
+                let (row, col, col_span, row_span) = {
+                    let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
+                        HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
+                    })?;
+                    cell.border_fill_id = new_bf_id;
+                    (cell.row, cell.col, cell.col_span, cell.row_span)
+                };
+                Self::sync_cellzone_origin_cell_diagonal_override(
+                    table,
+                    row,
+                    col,
+                    new_bf_id,
+                    new_bf_has_cell_diagonal,
+                    &cell_diagonal_bf_ids,
+                );
+                (
+                    row as usize,
+                    col as usize,
+                    col_span as usize,
+                    row_span as usize,
+                )
+            };
+
+            self.update_neighbor_borders(
+                section_idx,
+                parent_para_idx,
+                path,
+                cell_idx,
+                target_row,
+                target_col,
+                target_col_span,
+                target_row_span,
+                &new_borders,
+            );
+        }
+
+        self.finish_cell_format_by_path(section_idx, parent_para_idx, path);
         Ok("{\"ok\":true}".to_string())
     }
 
@@ -1131,12 +1417,36 @@ impl DocumentCore {
             .get(section_idx)
             .and_then(|section| section.paragraphs.get(parent_para_idx))
             .and_then(|para| match para.controls.get(control_idx) {
-                Some(Control::Table(table)) => Some(table),
+                Some(Control::Table(table)) => Some(&**table),
                 _ => None,
             })
         else {
             return json.to_string();
         };
+        self.normalize_cell_border_fill_json_for_table(table, cell_idx, json)
+    }
+
+    /// `normalize_cell_border_fill_json_for_edit` 의 본체 — 표 참조를 받는다(flat·경로 공유).
+    fn normalize_cell_border_fill_json_for_table(
+        &self,
+        table: &crate::model::table::Table,
+        cell_idx: usize,
+        json: &str,
+    ) -> String {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+            return json.to_string();
+        };
+        let Some(obj) = value.as_object_mut() else {
+            return json.to_string();
+        };
+        let incoming_bf_id = obj
+            .get("borderFillId")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u16)
+            .unwrap_or(0);
+        if incoming_bf_id == 0 {
+            return json.to_string();
+        }
         let Some(cell) = table.cells.get(cell_idx) else {
             return json.to_string();
         };
@@ -1303,11 +1613,13 @@ impl DocumentCore {
     /// 변경이 반영되지 않을 수 있으므로, 이웃 셀의 대응 테두리도 함께 갱신한다.
     ///
     /// borders 배열: [좌(0), 우(1), 상(2), 하(3)]
+    /// `table_path` 는 대상 표의 경로 — flat 호출은 `[(control_idx, _, _)]` 한 항목(같은 표에 닿는다),
+    /// 중첩 표는 hitTest cellPath 그대로.
     fn update_neighbor_borders(
         &mut self,
         section_idx: usize,
         parent_para_idx: usize,
-        control_idx: usize,
+        table_path: &[(usize, usize, usize)],
         skip_cell_idx: usize,
         target_row: usize,
         target_col: usize,
@@ -1320,7 +1632,7 @@ impl DocumentCore {
         // 1단계: 이웃 셀 탐색 — (셀 인덱스, old_bf_id, 갱신할 방향, 새 테두리)
         let mut updates: Vec<(usize, u16, usize, BorderLine)> = Vec::new();
         {
-            let table = match self.get_table_mut(section_idx, parent_para_idx, control_idx) {
+            let table = match self.get_table_mut_by_path(section_idx, parent_para_idx, table_path) {
                 Ok(t) => t,
                 Err(_) => return,
             };
@@ -1398,7 +1710,7 @@ impl DocumentCore {
                 }
             };
 
-            let table = match self.get_table_mut(section_idx, parent_para_idx, control_idx) {
+            let table = match self.get_table_mut_by_path(section_idx, parent_para_idx, table_path) {
                 Ok(t) => t,
                 Err(_) => return,
             };
@@ -3300,5 +3612,287 @@ mod table_attr_save_roundtrip_tests {
             after_reload, target,
             "targetHeight 가 HWPX 왕복에서 유실되면 안 된다"
         );
+    }
+}
+
+#[cfg(test)]
+mod cell_properties_by_path_tests {
+    //! [E3] 모양 복사 셀 속성(배경·테두리)의 중첩 표 경로 API —
+    //! `set_cell_properties_by_path_native` / `get_cell_own_properties_by_path_native`.
+    //! 깊이 2 경로는 그 셀만 바꾸고 중첩 표 이웃 셀·호스트 셀은 그대로, 깊이 1 은 flat 과 같은 결과.
+
+    use crate::document_core::helpers::json_u32;
+    use crate::document_core::DocumentCore;
+
+    /// 1×2 표 안 셀 0 문단 0 에 같은 모양의 1×2 표를 중첩시킨 문서. 반환: (parent_para, 깊이2 경로 셀0·문단0)
+    fn nested_table_fixture() -> (DocumentCore, usize, Vec<(usize, usize, usize)>) {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        let res = core.create_table_native(0, 0, 0, 1, 2).unwrap();
+        let para_idx = json_u32(&res, "paraIdx").unwrap() as usize;
+        let ctrl_idx = json_u32(&res, "controlIdx").unwrap() as usize;
+
+        let inner = match &core.document.sections[0].paragraphs[para_idx].controls[ctrl_idx] {
+            crate::model::control::Control::Table(t) => (**t).clone(),
+            _ => panic!("표가 아니다"),
+        };
+        let host = core
+            .get_cell_paragraph_mut(0, para_idx, ctrl_idx, 0, 0)
+            .unwrap();
+        host.controls
+            .push(crate::model::control::Control::Table(Box::new(inner)));
+        let inner_ctrl = host.controls.len() - 1;
+        (core, para_idx, vec![(ctrl_idx, 0, 0), (inner_ctrl, 0, 0)])
+    }
+
+    fn compact(json: &str) -> String {
+        json.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    fn nested_cell<'a>(
+        core: &'a DocumentCore,
+        ppi: usize,
+        path: &[(usize, usize, usize)],
+    ) -> &'a crate::model::table::Cell {
+        let table = core.resolve_table_by_path(0, ppi, path).unwrap();
+        &table.cells[path.last().unwrap().1]
+    }
+
+    /// 깊이 2 경로로 셀 속성을 바꾸면 중첩 표의 그 셀만 바뀌고, 중첩 표 이웃 셀·호스트 셀은 그대로다.
+    #[test]
+    fn set_cell_properties_by_path_targets_nested_cell_only() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        let host_ctrl = path[0].0;
+        let before = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        let sib_before = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &sibling)
+                .unwrap(),
+        );
+        let host_before = compact(
+            &core
+                .get_cell_own_properties_native(0, ppi, host_ctrl, 0)
+                .unwrap(),
+        );
+        assert!(!before.contains(r#""paddingLeft":500"#), "{before}");
+
+        core.set_cell_properties_by_path_native(
+            0,
+            ppi,
+            &path,
+            r#"{"paddingLeft":500,"paddingTop":120,"verticalAlign":2,"isHeader":true,"fieldName":"e3"}"#,
+        )
+        .unwrap();
+
+        let cell = nested_cell(&core, ppi, &path);
+        assert_eq!(cell.padding.left, 500);
+        assert_eq!(cell.padding.top, 120);
+        assert!(matches!(
+            cell.vertical_align,
+            crate::model::table::VerticalAlign::Bottom
+        ));
+        assert!(cell.is_header);
+        assert_eq!(cell.field_name.as_deref(), Some("e3"));
+
+        let after = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        for key in [
+            r#""paddingLeft":500"#,
+            r#""paddingTop":120"#,
+            r#""verticalAlign":2"#,
+            r#""isHeader":true"#,
+            r#""fieldName":"e3""#,
+        ] {
+            assert!(after.contains(key), "{key} 가 조회에 없다: {after}");
+        }
+
+        let sib_after = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &sibling)
+                .unwrap(),
+        );
+        assert_eq!(sib_after, sib_before, "중첩 표 이웃 셀은 불변");
+        let host_after = compact(
+            &core
+                .get_cell_own_properties_native(0, ppi, host_ctrl, 0)
+                .unwrap(),
+        );
+        assert_eq!(host_after, host_before, "호스트 셀은 불변");
+    }
+
+    /// 모양 복사가 옮기는 `borderFillId` 직접 대입과, 대화상자가 보내는 테두리/채우기 JSON 둘 다
+    /// 깊이 2 셀에 붙고 조회(경로)가 그 borderFill 을 돌려준다.
+    #[test]
+    fn set_cell_properties_by_path_applies_border_fill() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let sibling = [path[0], (path[1].0, 1, 0)];
+        let host_ctrl = path[0].0;
+        let host_before = compact(
+            &core
+                .get_cell_own_properties_native(0, ppi, host_ctrl, 0)
+                .unwrap(),
+        );
+
+        // ① 모양 복사 경로: 복사원 셀의 borderFillId 를 그대로 옮긴다
+        let red =
+            core.create_border_fill_from_json(r##"{"fillType":"solid","fillColor":"#FF0000"}"##);
+        core.set_cell_properties_by_path_native(
+            0,
+            ppi,
+            &path,
+            &format!(r#"{{"borderFillId":{red}}}"#),
+        )
+        .unwrap();
+        assert_eq!(nested_cell(&core, ppi, &path).border_fill_id, red);
+        let json = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        assert!(json.contains(&format!(r#""borderFillId":{red}"#)), "{json}");
+        assert!(json.contains(r#""fillType":"solid""#), "{json}");
+        assert!(json.contains(r##""fillColor":"#ff0000""##), "{json}");
+
+        // ② 대화상자 경로: 테두리/채우기 JSON → 새 BorderFill 생성 + 이웃 셀 공유 엣지 갱신
+        let sib_bf_before = nested_cell(&core, ppi, &sibling).border_fill_id;
+        core.set_cell_properties_by_path_native(
+            0,
+            ppi,
+            &sibling,
+            r##"{"borderLeft":{"type":1,"width":5,"color":"#0000FF"},"borderRight":{"type":1,"width":5,"color":"#0000FF"},"borderTop":{"type":1,"width":5,"color":"#0000FF"},"borderBottom":{"type":1,"width":5,"color":"#0000FF"},"fillType":"solid","fillColor":"#00FF00"}"##,
+        )
+        .unwrap();
+        let sib_bf = nested_cell(&core, ppi, &sibling).border_fill_id;
+        assert_ne!(sib_bf, sib_bf_before, "새 BorderFill 이 만들어져야 한다");
+        let sib_json = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &sibling)
+                .unwrap(),
+        );
+        assert!(
+            sib_json.contains(r##""fillColor":"#00ff00""##),
+            "{sib_json}"
+        );
+        // 이웃(셀 0)의 오른쪽 엣지가 셀 1 의 왼쪽 테두리(width 5)를 따라온다
+        let cell0_json = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        assert!(
+            cell0_json.contains(r#""borderRight":{"type":1,"width":5"#),
+            "{cell0_json}"
+        );
+        // 셀 0 의 채우기(빨강)는 그대로
+        assert!(
+            cell0_json.contains(r##""fillColor":"#ff0000""##),
+            "{cell0_json}"
+        );
+
+        let host_after = compact(
+            &core
+                .get_cell_own_properties_native(0, ppi, host_ctrl, 0)
+                .unwrap(),
+        );
+        assert_eq!(host_after, host_before, "호스트 셀은 불변");
+    }
+
+    /// padding 으로 셀 안쪽 폭이 줄어 문단 0 이 두 줄로 감기면, 다음 문단의 세로 위치(vpos)가 그만큼 내려간다 —
+    /// 중첩 셀은 저장 vpos 를 그대로 그리므로 줄나눔만 다시 하면 「이메일 주소」가 새 둘째 줄 위에 겹쳐 그려졌다(2026-09-05 실측).
+    #[test]
+    fn set_cell_properties_by_path_restacks_following_paragraph_vpos() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let text = "가나다라마바사아자차카타파하 가나다라마바사아자차카타파하 가나다라마바사아자차카타파하";
+        core.insert_text_in_cell_by_path(0, ppi, &path, 0, text)
+            .unwrap();
+        let len = text.chars().count();
+        core.split_paragraph_in_cell_by_path(0, ppi, &path, len)
+            .unwrap();
+        core.insert_text_in_cell_by_path(0, ppi, &[path[0], (path[1].0, 0, 1)], 0, "이메일 주소")
+            .unwrap();
+        let para1 = [path[0], (path[1].0, 0, 1)];
+        let lines_before = core
+            .resolve_paragraph_by_path(0, ppi, &path)
+            .unwrap()
+            .line_segs
+            .len();
+        let vpos_before = core
+            .resolve_paragraph_by_path(0, ppi, &para1)
+            .unwrap()
+            .line_segs
+            .first()
+            .map(|s| s.vertical_pos)
+            .unwrap();
+
+        core.set_cell_properties_by_path_native(
+            0,
+            ppi,
+            &path,
+            r#"{"paddingLeft":4000,"paddingRight":4000,"applyInnerMargin":true}"#,
+        )
+        .unwrap();
+
+        let lines_after = core
+            .resolve_paragraph_by_path(0, ppi, &path)
+            .unwrap()
+            .line_segs
+            .len();
+        let vpos_after = core
+            .resolve_paragraph_by_path(0, ppi, &para1)
+            .unwrap()
+            .line_segs
+            .first()
+            .map(|s| s.vertical_pos)
+            .unwrap();
+        assert!(
+            lines_after > lines_before,
+            "padding 으로 줄 수가 늘어야 한다: {lines_before} → {lines_after}"
+        );
+        assert!(
+            vpos_after > vpos_before,
+            "다음 문단 vpos 가 내려가야 한다: {vpos_before} → {vpos_after}"
+        );
+    }
+
+    /// 깊이 1 경로는 flat 네이티브에 위임한다 — 결과가 flat 조회와 같다.
+    #[test]
+    fn set_cell_properties_by_path_depth1_delegates_to_flat() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let host_ctrl = path[0].0;
+        core.set_cell_properties_by_path_native(
+            0,
+            ppi,
+            &[(host_ctrl, 1, 0)],
+            r#"{"paddingLeft":700,"cellProtect":true}"#,
+        )
+        .unwrap();
+        let flat = compact(
+            &core
+                .get_cell_own_properties_native(0, ppi, host_ctrl, 1)
+                .unwrap(),
+        );
+        let by_path = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &[(host_ctrl, 1, 0)])
+                .unwrap(),
+        );
+        assert_eq!(flat, by_path);
+        assert!(flat.contains(r#""paddingLeft":700"#), "{flat}");
+        assert!(flat.contains(r#""cellProtect":true"#), "{flat}");
+        // 중첩 표 셀은 불변
+        let nested = compact(
+            &core
+                .get_cell_own_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        assert!(!nested.contains(r#""paddingLeft":700"#), "{nested}");
     }
 }

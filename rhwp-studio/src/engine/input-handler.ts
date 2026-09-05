@@ -4568,7 +4568,14 @@ export class InputHandler {
       pickDefined(this.getParaProperties(), FORMAT_COPY_PARA_KEYS) as Partial<ParaProperties>,
     );
     const pos = this.cursor.getPosition();
-    const cellProps = pos.parentParaIndex !== undefined
+    // 중첩 셀(cellPath 깊이 2 이상)은 flat (controlIndex, cellIndex) 가 바깥 문단 기준의 다른 셀을 가리키므로 경로로 읽는다
+    const nestedPath = this.nestedCaretPathJson(pos);
+    const cellProps = nestedPath
+      ? pickDefined(
+          this.wasm.getCellOwnPropertiesByPath(pos.sectionIndex, pos.parentParaIndex!, nestedPath),
+          FORMAT_COPY_CELL_KEYS,
+        ) as Partial<CellProperties>
+      : pos.parentParaIndex !== undefined
       ? pickDefined(
           this.wasm.getCellOwnProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!, pos.cellIndex!),
           FORMAT_COPY_CELL_KEYS,
@@ -4601,23 +4608,21 @@ export class InputHandler {
       this.focusTextarea();
       return false;
     }
-    // 셀 속성(배경·테두리)은 경로 기반 setCellProperties 가 없어 중첩 표에서는 글자 서식만 붙인다.
-    const nested = this.isNestedTarget(target.ctx);
-    if (nested && hasCellProps) console.info('[InputHandler] 중첩 표 모양 복사: 셀 속성은 건너뛰고 글자 서식만 적용합니다');
-    if (nested && !hasCharProps) {
-      this.focusTextarea();
-      return false;
-    }
-
-    const cellPropsCopy = hasCellProps && !nested ? JSON.parse(JSON.stringify(cellProps)) as Partial<CellProperties> : null;
+    // 셀 속성(배경·테두리)도 중첩 표(cellPath 깊이 2 이상)에는 경로 기반 setCellPropertiesByPath 로 붙인다 —
+    // 종전에는 경로 API 가 없어 글자 서식만 붙였다.
+    const cellPropsCopy = hasCellProps ? JSON.parse(JSON.stringify(cellProps)) as Partial<CellProperties> : null;
     const charPropsJson = hasCharProps ? JSON.stringify(charProps) : null;
     this.executeOperation({
       kind: 'snapshot',
       operationType: 'formatCopyCells',
       operation: (wasm) => {
+        const ctx = target.ctx;
         for (const cellIdx of this.selectedCellIndices(wasm, target)) {
-          if (cellPropsCopy) wasm.setCellProperties(target.ctx.sec, target.ctx.ppi, target.ctx.ci, cellIdx, cellPropsCopy);
-          if (charPropsJson) this.applyCharFormatToWholeCell(wasm, target.ctx, cellIdx, charPropsJson);
+          if (cellPropsCopy) {
+            if (this.isNestedTarget(ctx)) wasm.setCellPropertiesByPath(ctx.sec, ctx.ppi, this.cellPathJsonFor(ctx, cellIdx), cellPropsCopy);
+            else wasm.setCellProperties(ctx.sec, ctx.ppi, ctx.ci, cellIdx, cellPropsCopy);
+          }
+          if (charPropsJson) this.applyCharFormatToWholeCell(wasm, ctx, cellIdx, charPropsJson);
         }
         return this.cursor.getPosition();
       },

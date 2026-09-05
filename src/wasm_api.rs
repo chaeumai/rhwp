@@ -2612,6 +2612,64 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 셀 속성을 조회한다 — 경로 기반 (중첩 표 셀). `cell_path_json` 계약은
+    /// `applyCharFormatInCellByPath` 와 같다(마지막 항목의 controlIndex·cellIndex 가 대상 표·셀, 깊이 1 은 flat 위임).
+    #[wasm_bindgen(js_name = getCellPropertiesByPath)]
+    pub fn get_cell_properties_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.get_cell_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 셀 고유 속성을 조회한다 — 경로 기반 (중첩 표 셀). cellzone overlay 를 합성하지 않는다.
+    /// 모양 복사가 중첩 셀 캐럿에서 복사원 셀을 읽는 경로.
+    #[wasm_bindgen(js_name = getCellOwnPropertiesByPath)]
+    pub fn get_cell_own_properties_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.get_cell_own_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 셀 속성을 수정한다 — 경로 기반 (중첩 표 셀). JSON 계약은 `setCellProperties` 와 같다.
+    /// rhwp-studio 모양 복사가 중첩 표 셀 선택에 셀 속성(배경·테두리)을 붙이는 경로.
+    ///
+    /// 반환: JSON `{"ok":true}`
+    #[wasm_bindgen(js_name = setCellPropertiesByPath)]
+    pub fn set_cell_properties_by_path(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.set_cell_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            json,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 선택 영역을 하나의 셀처럼 취급하는 cellzone 테두리/배경 속성을 적용한다.
     ///
     /// 반환: JSON `{"ok":true,"startRow":...,"borderFillId":...}`
