@@ -4875,6 +4875,13 @@ export class InputHandler {
             if (l !== null) return l;
           }
         }
+        // 한 단계 «바깥 셀»로 올라간다 — body 로 바로 뛰면 중간 깊이의 개요 문단을 건너뛴다.
+        // 한컴 실측(E9 ③, 2026-09-06): 깊이 2 셀의 비개요 문단에 ▼ 를 누르면 그 중첩 표 «앞»에 있는
+        // 깊이 1 셀 문단의 개요 수준(「가.」=2)을 계승해 「나.」가 된다. 부모 경로의 마지막 엔트리
+        // `cellParaIndex` 가 «중첩 표를 담은 문단» 이므로 그 앞 문단부터 훑으면 그 규칙이 그대로 성립한다.
+        if (cellPath.length > 1) {
+          return this.precedingOutlineLevel({ kind: 'path', sec, parentPara, cellPath: cellPath.slice(0, -1) });
+        }
         return this.precedingOutlineLevel({ kind: 'body', sec, para: parentPara });
       }
       for (let p = target.para - 1; p >= 0; p--) {
