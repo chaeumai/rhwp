@@ -1694,6 +1694,11 @@ impl LayoutEngine {
         is_continuation: bool,
         start_cut: &[usize],
         end_cut: &[usize],
+        // [#2393/R4″] `end_cut` 을 고른 배치가 쪽 하단에 **매달아 둔** 셀별 행간
+        // (A2 `#2363` `RowCutResult.tail_trim`). 배치는 이 값을 빼고 예산을 쟀는데
+        // (`row_cut_content_height_trimmed`) 렌더는 몰라서 같은 행을 그만큼 크게 그렸다.
+        // 빈 슬라이스 = 깎을 것 없음(종전 동작).
+        end_cut_tail_trim: &[f64],
         is_block_split: bool,
         host_margin_left: f64,
         host_margin_right: f64,
@@ -1906,10 +1911,20 @@ impl LayoutEngine {
                     // 기반이어야 하고, rowspan 가시분은 아래 블록-합 보정이 채운다
                     // (교육부 r3: rs=1 셀 2개 전체 소비 17.1px 인데 선언 max 로
                     // 2107.1 유지 → 셀 bbox 2354.6 → valign 이 페이지 밖으로).
+                    // [#2393/R4″] 조각의 «마지막 행» 만 배치가 매달아 둔 행간을 뺀다.
+                    // 블록 분할 경로(`advance_row_block_cut`)는 `tail_trim` 을 안 채우므로
+                    // 여기서는 항상 빈 슬라이스가 되어 종전 동작 그대로다.
+                    let trim: &[f64] = if r == split_last_row {
+                        end_cut_tail_trim
+                    } else {
+                        &[]
+                    };
                     let h = if !has_visible_range {
                         0.0
                     } else if has_row_cut || in_start || in_end {
-                        self.row_cut_content_height(table, r, &per_start, &per_end, styles)
+                        self.row_cut_content_height_trimmed(
+                            table, r, &per_start, &per_end, trim, styles,
+                        )
                     } else {
                         self.row_cut_content_height(table, r, &[], &[], styles)
                     };
@@ -1956,7 +1971,15 @@ impl LayoutEngine {
                             continue;
                         }
                     }
-                    let h = self.row_cut_content_height(table, r, su, eu, styles);
+                    // [#2393/R4″] 조각의 마지막 행이면 배치가 쪽 하단에 매달아 둔 셀별
+                    // 행간을 렌더도 뺀다 — 안 빼면 조각 bbox 가 본문 하단을 `trim`(≤ 행간)
+                    // 넘고, 하단 괘선이 한컴보다 그만큼 아래에 그어진다(R4 §6).
+                    let trim: &[f64] = if r == split_last_row && !eu.is_empty() {
+                        end_cut_tail_trim
+                    } else {
+                        &[]
+                    };
+                    let h = self.row_cut_content_height_trimmed(table, r, su, eu, trim, styles);
                     if h > 0.0 {
                         row_heights[r] = h;
                     }

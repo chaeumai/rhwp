@@ -225,6 +225,7 @@ mod tests {
             is_continuation: false,
             start_cut: Vec::new(),
             end_cut: Vec::new(),
+            end_cut_tail_trim: Vec::new(),
             is_block_split: false,
             squeeze_last_row_to: None,
         }]);
@@ -239,6 +240,7 @@ mod tests {
             is_continuation: true,
             start_cut: Vec::new(),
             end_cut: Vec::new(),
+            end_cut_tail_trim: Vec::new(),
             is_block_split: false,
             squeeze_last_row_to: None,
         }]);

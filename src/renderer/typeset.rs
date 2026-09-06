@@ -44,6 +44,11 @@ struct BlockTableRowScan {
     end_row: usize,
     split_block_start: Option<usize>,
     split_end_cut: Vec<usize>,
+    /// [#2393/R4″] `split_end_cut` 을 고른 `advance_row_cut` 이 **쪽 하단에 매달아 둔**
+    /// 셀별 행간(`RowCutResult.tail_trim`). 배치는 이 값을 빼고 예산을 재는데
+    /// (`row_cut_content_height_trimmed`, A2 `#2363`) 렌더는 몰라서 같은 행을 그만큼
+    /// 크게 그렸다 — 조각 bbox 가 본문 하단을 ≤ls 넘는다. 렌더까지 실어 나른다.
+    split_end_tail_trim: Vec<f64>,
     split_end_limit: f64,
 }
 
@@ -66,7 +71,7 @@ struct BlockTableRowScan {
 ///
 /// 그래서 **코퍼스가 정한 창**을 쓴다(§D-8: "얼마면 충분한가"가 아니라 "얼마부터 다른
 /// 경로와 어긋나는가"). 게이트 12 + 코퍼스 재귀 640문서의 `RHWP_DIAG_T6B` 여유 census:
-/// ```
+/// ```text
 /// 하한 0.450px  korea-0005 p55   ← 넘어야 표적이 뒤집힌다
 /// 상한 1.060px  task1716/table_scattered_header_rowbreak.hwpx p4  ← 넘으면 회귀
 /// ```
@@ -2274,6 +2279,7 @@ impl TypesetState {
                 is_continuation: false,
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
+                end_cut_tail_trim: Vec::new(),
                 is_block_split: false,
                 squeeze_last_row_to: None,
             });
@@ -9851,6 +9857,7 @@ impl TypesetEngine {
                         is_continuation,
                         start_cut,
                         end_cut,
+                        end_cut_tail_trim,
                         is_block_split,
                         squeeze_last_row_to,
                     } => lookup_local(*para_index).map(|l| PageItem::PartialTable {
@@ -9861,6 +9868,7 @@ impl TypesetEngine {
                         is_continuation: *is_continuation,
                         start_cut: start_cut.clone(),
                         end_cut: end_cut.clone(),
+                        end_cut_tail_trim: end_cut_tail_trim.clone(),
                         is_block_split: *is_block_split,
                         squeeze_last_row_to: *squeeze_last_row_to,
                     }),
@@ -14597,6 +14605,7 @@ impl TypesetEngine {
             mut end_row,
             mut split_block_start,
             mut split_end_cut,
+            mut split_end_tail_trim,
             mut split_end_limit,
         } = scan;
         let mut r = cursor_row;
@@ -14943,6 +14952,7 @@ impl TypesetEngine {
                         b_end
                     };
                     split_end_cut = cut_res.end_cut.clone();
+                    split_end_tail_trim = cut_res.tail_trim.clone();
                     split_end_limit = cut_res.consumed_height;
                     split_block_start = Some(b_start);
                     let split_total = if use_offsets {
@@ -15422,6 +15432,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 if band_cut_ok {
                     end_row = r + 1;
                     split_end_cut = res.end_cut.clone();
+                    split_end_tail_trim = res.tail_trim.clone();
                     split_end_limit = budget.max(res.consumed_height);
                     consumed += cs_before + split_end_limit;
                     if diag_scan {
@@ -15550,6 +15561,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                         if cand2 <= avail_for_rows + split_row_overflow_tolerance {
                             end_row = r + 1;
                             split_end_cut = res2.end_cut.clone();
+                            split_end_tail_trim = res2.tail_trim.clone();
                             split_end_limit = res2.consumed_height;
                             consumed += cs_before + split_total2;
                             retried = true;
@@ -15575,6 +15587,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                         }
                         end_row = r + 1;
                         split_end_cut = res.end_cut.clone();
+                        split_end_tail_trim = res.tail_trim.clone();
                         split_end_limit = res.consumed_height;
                         consumed += cs_before + split_total;
                         retried = true;
@@ -15585,6 +15598,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 } else {
                     end_row = r + 1;
                     split_end_cut = res.end_cut.clone();
+                    split_end_tail_trim = res.tail_trim.clone();
                     split_end_limit = res.consumed_height;
                     consumed += cs_before + split_total;
                 }
@@ -15596,6 +15610,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             end_row,
             split_block_start,
             split_end_cut,
+            split_end_tail_trim,
             split_end_limit,
         }
     }
@@ -17423,6 +17438,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 mut end_row,
                 mut split_block_start,
                 mut split_end_cut,
+                mut split_end_tail_trim,
                 mut split_end_limit,
             } = self.scan_block_table_split_rows(
                 st,
@@ -17460,6 +17476,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     end_row: cursor_row,
                     split_block_start: None,
                     split_end_cut: Vec::new(),
+                    split_end_tail_trim: Vec::new(),
                     split_end_limit: 0.0,
                 },
             );
@@ -17558,6 +17575,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                                 end_row: cursor_row,
                                 split_block_start: None,
                                 split_end_cut: Vec::new(),
+                                split_end_tail_trim: Vec::new(),
                                 split_end_limit: 0.0,
                             },
                         );
@@ -17580,6 +17598,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                             end_row = refit.end_row;
                             split_block_start = refit.split_block_start;
                             split_end_cut = refit.split_end_cut;
+                            split_end_tail_trim = refit.split_end_tail_trim;
                             split_end_limit = refit.split_end_limit;
                             if end_row <= cursor_row {
                                 end_row = cursor_row + 1;
@@ -17661,6 +17680,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                         is_continuation,
                         start_cut: start_cut.clone(),
                         end_cut: Vec::new(),
+                        end_cut_tail_trim: Vec::new(),
                         is_block_split: start_cut_is_block,
                         // 이 경로는 표를 끝내는 조각이라 선언 프레임 압축의 대상이 아니다.
                         squeeze_last_row_to: None,
@@ -17704,6 +17724,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     is_continuation,
                     start_cut: start_cut.clone(),
                     end_cut: split_end_cut.clone(),
+                    end_cut_tail_trim: split_end_tail_trim.clone(),
                     is_block_split: start_cut_is_block,
                     squeeze_last_row_to: None,
                 });
@@ -17721,6 +17742,9 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 is_continuation,
                 start_cut: start_cut.clone(),
                 end_cut: split_end_cut.clone(),
+                // [#2393/R4″] 배치가 쪽 하단에 매달아 둔 셀별 행간 — 렌더가 같은 값을 빼야
+                // 조각 하단 괘선이 한컴 자리에 온다(한컴 실측 R4 §6: 매달린 행간을 뺀 자리).
+                end_cut_tail_trim: split_end_tail_trim.clone(),
                 // [Task #1025] 이번 분할이 블록 분할이거나 start_cut 이 이미 블록 인덱스.
                 is_block_split: split_block_start.is_some() || start_cut_is_block,
                 // [#2392 §6-1] 선언 프레임 압축이 이 조각의 마지막 행을 담게 했으면 그 행의
@@ -18839,6 +18863,7 @@ mod tests {
                 is_continuation: false,
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
+                end_cut_tail_trim: Vec::new(),
                 is_block_split: false,
                 squeeze_last_row_to: None,
             }]),
@@ -18850,6 +18875,7 @@ mod tests {
                 is_continuation: true,
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
+                end_cut_tail_trim: Vec::new(),
                 is_block_split: false,
                 squeeze_last_row_to: None,
             }]),

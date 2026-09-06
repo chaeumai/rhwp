@@ -6107,6 +6107,7 @@ impl LayoutEngine {
                 is_continuation,
                 start_cut,
                 end_cut,
+                end_cut_tail_trim,
                 is_block_split,
                 squeeze_last_row_to,
             } => {
@@ -6121,6 +6122,7 @@ impl LayoutEngine {
                     *is_continuation,
                     start_cut,
                     end_cut,
+                    end_cut_tail_trim,
                     *is_block_split,
                     *squeeze_last_row_to,
                     &ctx,
@@ -7539,6 +7541,8 @@ impl LayoutEngine {
         is_continuation: bool,
         start_cut: &[usize],
         end_cut: &[usize],
+        // [#2393/R4″] 배치가 쪽 하단에 매달아 둔 셀별 행간 — 렌더도 같은 값을 뺀다.
+        end_cut_tail_trim: &[f64],
         is_block_split: bool,
         // [#2392 §6-1] 선언 프레임 압축이 담은 마지막 행의 목표 높이(= 선언 잔여).
         squeeze_last_row_to: Option<f64>,
@@ -7699,6 +7703,7 @@ impl LayoutEngine {
             is_continuation,
             start_cut,
             end_cut,
+            end_cut_tail_trim,
             is_block_split,
             pt_margin_left,
             pt_margin_right,

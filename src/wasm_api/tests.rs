@@ -24550,6 +24550,7 @@ fn issue2214_target_cuts(doc: &HwpDocument) -> Vec<Issue2214TargetCut> {
                         is_continuation,
                         start_cut,
                         end_cut,
+                        end_cut_tail_trim: _,
                         is_block_split,
                         squeeze_last_row_to: _,
                     } => Some(Issue2214TargetCut {

@@ -315,6 +315,12 @@ pub enum PageItem {
         /// [Task #993] `end_row-1`행의 끝 컷 — 이 페이지에서 보일 마지막 유닛
         /// 까지의 셀별 소비 유닛 수. 빈 Vec = 끝까지.
         end_cut: Vec<usize>,
+        /// [#2393/R4″] `end_cut` 을 고른 `advance_row_cut` 이 **쪽 하단에 매달아 둔** 셀별
+        /// 행간(A2 `#2363` `RowCutResult.tail_trim`). 배치는 이 값을 빼고 예산을 재는데
+        /// (`row_cut_content_height_trimmed`) 렌더는 몰라서 같은 행을 그만큼 크게 그렸다 —
+        /// 조각 bbox 가 본문 하단을 `trim`(≤ 행간) 넘는다. 한컴은 조각 하단 괘선을 **매달린
+        /// 행간을 뺀 자리**에 긋는다(R4 §6 실측). 빈 Vec = 깎을 것 없음(종전 동작).
+        end_cut_tail_trim: Vec<f64>,
         /// [Task #1025] true 이면 컷이 rowspan 블록-셀 `(row,col)` 인덱스
         /// (`advance_row_block_cut`). false 이면 단일 행 `row_span==1` col 인덱스
         /// (`advance_row_cut`, 기존). page-larger 셀 내부 분할에서만 true.
@@ -455,6 +461,7 @@ impl PageItem {
                 is_continuation,
                 start_cut,
                 end_cut,
+                end_cut_tail_trim,
                 is_block_split,
                 squeeze_last_row_to,
             } => PageItem::PartialTable {
@@ -465,6 +472,7 @@ impl PageItem {
                 is_continuation: *is_continuation,
                 start_cut: start_cut.clone(),
                 end_cut: end_cut.clone(),
+                end_cut_tail_trim: end_cut_tail_trim.clone(),
                 is_block_split: *is_block_split,
                 squeeze_last_row_to: *squeeze_last_row_to,
             },

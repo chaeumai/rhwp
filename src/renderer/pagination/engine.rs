@@ -2748,6 +2748,7 @@ impl Paginator {
                         is_continuation,
                         start_cut: Vec::new(),
                         end_cut: Vec::new(),
+                        end_cut_tail_trim: Vec::new(),
                         is_block_split: false,
                         squeeze_last_row_to: None,
                     });
@@ -2768,6 +2769,7 @@ impl Paginator {
                 is_continuation,
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
+                end_cut_tail_trim: Vec::new(),
                 is_block_split: false,
                 squeeze_last_row_to: None,
             });
