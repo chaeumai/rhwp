@@ -319,6 +319,12 @@ pub enum PageItem {
         /// (`advance_row_block_cut`). false 이면 단일 행 `row_span==1` col 인덱스
         /// (`advance_row_cut`, 기존). page-larger 셀 내부 분할에서만 true.
         is_block_split: bool,
+        /// [#2392 §6-1] 선언 프레임 압축(`declared_frame_squeeze`)이 이 조각의 **마지막 행**을
+        /// 담게 했을 때 그 행의 목표 높이(= 선언 잔여). 배치는 `#2392` 가 이미 맞췄지만 렌더는
+        /// 측정 행높이로 그려 표 하단이 본문 하단을 넘었다(kps-ai p46 r10 81.10 vs 69.21,
+        /// 4.1px 초과). 렌더가 이 값으로 마지막 행을 클램프해야 오라클 괘선과 맞는다.
+        /// None 이면 종전 동작(측정 행높이 그대로).
+        squeeze_last_row_to: Option<f64>,
     },
     /// 그리기 개체
     Shape {
@@ -450,6 +456,7 @@ impl PageItem {
                 start_cut,
                 end_cut,
                 is_block_split,
+                squeeze_last_row_to,
             } => PageItem::PartialTable {
                 para_index: adjust(*para_index),
                 control_index: *control_index,
@@ -459,6 +466,7 @@ impl PageItem {
                 start_cut: start_cut.clone(),
                 end_cut: end_cut.clone(),
                 is_block_split: *is_block_split,
+                squeeze_last_row_to: *squeeze_last_row_to,
             },
             PageItem::Shape {
                 para_index,

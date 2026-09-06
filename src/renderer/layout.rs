@@ -6108,6 +6108,7 @@ impl LayoutEngine {
                 start_cut,
                 end_cut,
                 is_block_split,
+                squeeze_last_row_to,
             } => {
                 y_offset = self.layout_partial_table_item(
                     tree,
@@ -6121,6 +6122,7 @@ impl LayoutEngine {
                     start_cut,
                     end_cut,
                     *is_block_split,
+                    *squeeze_last_row_to,
                     &ctx,
                     y_offset,
                 );
@@ -7538,6 +7540,8 @@ impl LayoutEngine {
         start_cut: &[usize],
         end_cut: &[usize],
         is_block_split: bool,
+        // [#2392 §6-1] 선언 프레임 압축이 담은 마지막 행의 목표 높이(= 선언 잔여).
+        squeeze_last_row_to: Option<f64>,
         ctx: &ColumnItemCtx,
         mut y_offset: f64,
     ) -> f64 {
@@ -7700,6 +7704,7 @@ impl LayoutEngine {
             pt_margin_right,
             pt_mt,
             false,
+            squeeze_last_row_to,
         );
         if render_deferred_rowbreak_host_text_after {
             if let Some(para) = paragraphs.get(para_index) {

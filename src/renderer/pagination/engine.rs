@@ -2749,6 +2749,7 @@ impl Paginator {
                         start_cut: Vec::new(),
                         end_cut: Vec::new(),
                         is_block_split: false,
+                        squeeze_last_row_to: None,
                     });
                     // 마지막 부분 표: spacing_after도 포함 (레이아웃과 일치)
                     let mp = measured.get_measured_paragraph(para_idx);
@@ -2768,6 +2769,7 @@ impl Paginator {
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
                 is_block_split: false,
+                squeeze_last_row_to: None,
             });
             st.advance_column_or_new_page();
 

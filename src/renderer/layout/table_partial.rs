@@ -1699,6 +1699,10 @@ impl LayoutEngine {
         host_margin_right: f64,
         measured_table: Option<&MeasuredTable>,
         clamp_header_negative_para_offset: bool,
+        // [#2392 §6-1] 선언 프레임 압축이 이 조각의 마지막 행을 담게 했을 때 그 행의 목표
+        // 높이. `#2392` 는 **어느 행이 어느 쪽에** 가는지만 맞췄고 렌더는 여전히 측정
+        // 행높이로 그려, 표 하단이 본문 하단을 넘었다(kps-ai p46 4.1px). None 이면 종전.
+        squeeze_last_row_to: Option<f64>,
     ) -> f64 {
         let para = match paragraphs.get(para_index) {
             Some(p) => p,
@@ -2002,6 +2006,20 @@ impl LayoutEngine {
                             row_heights[last] += target - cur;
                         }
                     }
+                }
+            }
+        }
+
+        // [#2392 §6-1] 선언 프레임 압축으로 담은 마지막 행은 «측정 행높이가 아니라 선언 잔여»로
+        // 그린다. `#2392` 는 어느 행이 어느 쪽에 가는지(배치)만 맞췄고 렌더는 종전대로 측정
+        // 행높이를 썼다 — kps-ai p46 은 r0~r9 피치가 한컴과 |Δ| ≤ 0.6px 인데 마지막 행만
+        // 81.10 vs 69.21 이라 표 하단이 본문 하단(1046.9)을 4.1px 넘었다. 한컴 괘선이 선언
+        // 잔여 자리에 그어져 있으므로(0.01px) 여기서 그 값으로 클램프한다.
+        // 늘리지는 않는다 — 목표가 현재보다 크면 다른 규칙(#2287 블록-합 보정 등) 소관이다.
+        if let Some(target) = squeeze_last_row_to {
+            if let Some(last) = end_row.min(row_count).checked_sub(1) {
+                if last >= start_row && target > 0.0 && row_heights[last] > target + 0.01 {
+                    row_heights[last] = target;
                 }
             }
         }

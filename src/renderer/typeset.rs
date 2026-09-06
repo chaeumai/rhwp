@@ -129,7 +129,9 @@ struct BlockRowScanVars {
     /// 맞으면 쪽 하단 압축의 `BOTTOM_SQUEEZE_MAX_REST_PX`(쪽 끝자락 한정)를 면제한다
     /// — 한컴이 그 행을 담고 선언 프레임에 맞춰 누른 것이 오라클 괘선으로 확인된
     /// 자리다(자격·반증은 typeset_block_table 의 계산 지점 주석). None 이면 종전 동작.
-    declared_frame_squeeze_row_end: Option<usize>,
+    /// [#2392 §6-1] 두 번째 원소는 그 행의 **목표 높이**(= 선언 잔여 `gap`) — 렌더가 마지막
+    /// 행을 이 높이로 클램프해야 표 하단이 본문 하단을 안 넘는다(배치는 이미 맞다).
+    declared_frame_squeeze_row_end: Option<(usize, f64)>,
 }
 
 /// [#2064] `compute_endnote_metrics` 의 호출-시점 입력 묶음 — 라운드 5 클로저의 캡처를
@@ -2273,6 +2275,7 @@ impl TypesetState {
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
                 is_block_split: false,
+                squeeze_last_row_to: None,
             });
             self.current_height = d.table_height;
             if std::env::var("RHWP_CUT_DBG").is_ok() {
@@ -9849,6 +9852,7 @@ impl TypesetEngine {
                         start_cut,
                         end_cut,
                         is_block_split,
+                        squeeze_last_row_to,
                     } => lookup_local(*para_index).map(|l| PageItem::PartialTable {
                         para_index: l + 1,
                         control_index: *control_index,
@@ -9858,6 +9862,7 @@ impl TypesetEngine {
                         start_cut: start_cut.clone(),
                         end_cut: end_cut.clone(),
                         is_block_split: *is_block_split,
+                        squeeze_last_row_to: *squeeze_last_row_to,
                     }),
                     PageItem::Shape {
                         para_index,
@@ -15015,7 +15020,8 @@ impl TypesetEngine {
                     // 그 행을 담고 선언 프레임에 맞춰 누른다(kps-ai p46 r10 81.09 → 69.21,
                     // 오라클 괘선과 0.01px. 자격·반증은 typeset_block_table 계산 지점 주석).
                     // 나머지 문(초과 ≤ TOLERANCE·headroom·중첩 표 제외)은 그대로 지킨다.
-                    let declared_frame_holds_block = declared_frame_squeeze_row_end == Some(b_end);
+                    let declared_frame_holds_block =
+                        declared_frame_squeeze_row_end.map(|(e, _)| e) == Some(b_end);
                     let squeeze_rest_ok =
                         rest <= BOTTOM_SQUEEZE_MAX_REST_PX || declared_frame_holds_block;
                     if diag_scan {
@@ -17299,7 +17305,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
             //   · 59043 pi=124(HWP5, over 16.47, 콘텐츠 0) — 압축 수용치 밖 + 콘텐츠 0 행.
             //   · edumap pi=11 sec=1(HWP5, over 27.68) — 압축 수용치 밖.
             const DECLARED_FRAME_ROW_EPS_PX: f64 = 0.5;
-            let declared_frame_squeeze_row_end: Option<usize> = {
+            let declared_frame_squeeze_row_end: Option<(usize, f64)> = {
                 let frame_cs = if cs > 0.0 { 2.0 * cs } else { 0.0 };
                 let declared_rows_h =
                     (declared_object_total - host_spacing_total - frame_cs).max(0.0);
@@ -17368,7 +17374,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                                 gap, content,
                             );
                         }
-                        Some(end)
+                        Some((end, gap))
                     } else {
                         None
                     }
@@ -17656,6 +17662,8 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                         start_cut: start_cut.clone(),
                         end_cut: Vec::new(),
                         is_block_split: start_cut_is_block,
+                        // 이 경로는 표를 끝내는 조각이라 선언 프레임 압축의 대상이 아니다.
+                        squeeze_last_row_to: None,
                     });
                     // 마지막 fragment: spacing_after만 포함 (Paginator engine.rs:1051 동일)
                     // host_line_spacing과 outer_bottom은 포함하지 않음
@@ -17697,6 +17705,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     start_cut: start_cut.clone(),
                     end_cut: split_end_cut.clone(),
                     is_block_split: start_cut_is_block,
+                    squeeze_last_row_to: None,
                 });
                 st.current_height +=
                     partial_height + bottom_caption_extra + ft.host_spacing.spacing_after_only;
@@ -17714,6 +17723,15 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 end_cut: split_end_cut.clone(),
                 // [Task #1025] 이번 분할이 블록 분할이거나 start_cut 이 이미 블록 인덱스.
                 is_block_split: split_block_start.is_some() || start_cut_is_block,
+                // [#2392 §6-1] 선언 프레임 압축이 이 조각의 마지막 행을 담게 했으면 그 행의
+                // 목표 높이를 렌더에 넘긴다 — 배치(#2392)는 맞췄지만 렌더가 측정 행높이로
+                // 그려 표 하단이 본문 하단을 넘고 있었다. 첫 조각에서만 발화한다.
+                squeeze_last_row_to: if !is_continuation && cursor_row == 0 {
+                    declared_frame_squeeze_row_end
+                        .and_then(|(e, h)| (e == end_row).then_some(h))
+                } else {
+                    None
+                },
             });
             // [#2238] 중간 fragment 가시높이 부기 — used_height(flush 시 current_height)
             // 표시용. advance 직후 current_height 가 리셋되므로 흐름/기하 불변.
@@ -18822,6 +18840,7 @@ mod tests {
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
                 is_block_split: false,
+                squeeze_last_row_to: None,
             }]),
             page_with_items(vec![PageItem::PartialTable {
                 para_index: 7,
@@ -18832,6 +18851,7 @@ mod tests {
                 start_cut: Vec::new(),
                 end_cut: Vec::new(),
                 is_block_split: false,
+                squeeze_last_row_to: None,
             }]),
         ];
 
