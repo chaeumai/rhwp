@@ -17733,6 +17733,67 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 break;
             }
 
+            // [A1 #2394] 첫 조각이 **저장 쪽경계에서 매달린 행간 트림**(A2 `#2363` → 렌더
+            // `#2393` `tail_trim`)으로 끝났는데 행 누적(`consumed`)이 파일이 선언한 첫 조각
+            // 프레임을 넘으면, 넘친 만큼 마지막 행을 눌러 조각을 **선언 프레임에서 끝낸다**
+            // (줄이기만, `#2392 §6-1` 과 같은 클램프 통로).
+            //
+            // 왜 「얼마를 깎나」의 답이 규칙이 아니라 선언인가 — 한컴 정본 조각 하단 괘선 실측
+            // (2026-09-06 A1, `docs/A1-…`): 오라클 있는 첫 조각 5표본 전부 **선언 프레임 ±1px**
+            //   80168 p4     선언 928.44 · 한컴 929.35 · min(over,ls) 937.9(+8.55) · 전량 ls 928.9
+            //   pic-in p18   선언 905.83 · 한컴 906.7  · 909.6(−2.9)  · 905.4
+            //   issue1853 p37 선언 118.67 · 한컴 118.43 · 121.1(−2.7) · 113.1(**+5.3**)
+            //   issue1853 p44 선언 855.65 · 한컴 854.75 · 859.4(−4.7) · 855.1
+            //   issue1853 p13 선언 171.20 · 한컴 171.02 · 171.7 · 170.4
+            // `min(over, ls)` 는 1/5, 전량 `ls` 는 4/5(p37 이 반증) — 한컴의 «행위»는 표본마다
+            // 갈리는데(over/ls ≥ 0.33 이면 전량 매달고 ≈0.1 이면 예산에서 자른다) 첫 조각은
+            // **파일이 결과를 적어 둔다**(T6-e 선언 = 한컴 자신의 첫 조각). 규칙을 짐작하는 대신
+            // 그 값을 그린다. 연속 조각(선언 없음)은 종전 `min(over, ls)` 그대로 — 오라클 표본 0.
+            //
+            // 자격: 첫 조각 · 단일 행 컷(블록 컷은 `tail_trim` 이 비어 자동 제외) · `tail_trim` 발화
+            // · 0.5 < 초과 ≤ 그 컷 마지막 유닛의 후행 행간(`row_cut_tail_ls_max`) — 초과가 행간을
+            // 넘으면 선언이 다른 이유로 어긋난 것이라 손대지 않는다.
+            let saved_tail_declared_clamp: Option<f64> = if !is_continuation
+                && cursor_row == 0
+                && end_row > cursor_row
+                && split_end_limit > 0.0
+                && split_block_start.is_none()
+                && !start_cut_is_block
+                && split_end_tail_trim.iter().any(|t| *t > 0.0)
+            {
+                const SAVED_TAIL_DECL_EPS_PX: f64 = 0.5;
+                let frame_cs = if cs > 0.0 { 2.0 * cs } else { 0.0 };
+                let declared_rows_h =
+                    (declared_object_total - host_spacing_total - frame_cs).max(0.0);
+                let excess = consumed - declared_rows_h;
+                let last = end_row - 1;
+                let su: &[usize] = if last == cursor_row { &start_cut } else { &[] };
+                let last_h = layout_engine.row_cut_content_height_trimmed(
+                    table,
+                    last,
+                    su,
+                    &split_end_cut,
+                    &split_end_tail_trim,
+                    styles,
+                );
+                let tail_ls = layout_engine.row_cut_tail_ls_max(table, last, &split_end_cut, styles);
+                let target = last_h - excess;
+                let ok = declared_rows_h > 0.0
+                    && excess > SAVED_TAIL_DECL_EPS_PX
+                    && excess <= tail_ls + SAVED_TAIL_DECL_EPS_PX
+                    && target > 0.0;
+                if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
+                    eprintln!(
+                        "TABLE_SAVED_TAIL_DECL_CLAMP: pi={} sec={} row={} consumed={:.2} declared_rows={:.2} excess={:.2} tail_ls={:.2} last_h={:.2} target={}",
+                        para_idx, st.section_index, last, consumed, declared_rows_h, excess, tail_ls, last_h,
+                        if ok { format!("{target:.2}") } else { "None".to_string() },
+                    );
+                }
+                ok.then_some(target)
+            } else {
+                None
+            };
+
             // 중간 fragment 배치
             st.current_items.push(PageItem::PartialTable {
                 para_index: para_idx,
@@ -17753,6 +17814,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 squeeze_last_row_to: if !is_continuation && cursor_row == 0 {
                     declared_frame_squeeze_row_end
                         .and_then(|(e, h)| (e == end_row).then_some(h))
+                        .or(saved_tail_declared_clamp)
                 } else {
                     None
                 },

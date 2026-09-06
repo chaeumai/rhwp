@@ -8261,6 +8261,38 @@ impl LayoutEngine {
         self.row_cut_content_height_trimmed(table, row, start_cut, end_cut, &[], styles)
     }
 
+    /// [A1 #2394] 컷 `end_cut` 의 셀별 **마지막에 담긴 유닛**의 후행 행간(`trail_ls`) 최댓값(px).
+    /// 첫 조각 선언 프레임 클램프(typeset `saved_tail_declared_clamp`)의 상한 — 클램프가 줄이는
+    /// 양은 배치가 쪽 하단에 매달아 둔 행간(A2 `#2363`)을 넘을 수 없다. 넘으면 선언이 우리 행
+    /// 누적과 **다른 이유**로 어긋난 것이라 손대지 않는다.
+    pub(crate) fn row_cut_tail_ls_max(
+        &self,
+        table: &crate::model::table::Table,
+        row: usize,
+        end_cut: &[usize],
+        styles: &ResolvedStyleSet,
+    ) -> f64 {
+        let mut row_cells: Vec<&crate::model::table::Cell> = table
+            .cells
+            .iter()
+            .filter(|c| c.row as usize == row && c.row_span == 1)
+            .collect();
+        row_cells.sort_by_key(|c| c.col);
+        let mut best = 0.0f64;
+        for (i, cell) in row_cells.iter().enumerate() {
+            let units = self.cell_units(cell, table, styles);
+            let eu = end_cut
+                .get(i)
+                .copied()
+                .unwrap_or(units.len())
+                .min(units.len());
+            if eu > 0 {
+                best = best.max(units[eu - 1].trail_ls);
+            }
+        }
+        best
+    }
+
     /// [A2] `row_cut_content_height` 에 `advance_row_cut` 이 알려 준 셀별 `tail_trim`(쪽 하단에
     /// 매단 마지막 줄의 후행 행간)을 반영한 판 — 컷 워크의 `consumed_height` 와 같은 값을 빼야
     /// 예산 판정이 워크와 어긋나지 않는다.
@@ -9668,6 +9700,66 @@ mod row_cut_tests {
     /// [Issue #2214 Stage 3] 실제 deferred insert 호출부가 edited cell만 제거하는지
     /// 고정한다. #2214 fixture의 owner table-wide nested-text flag는 입력 전후 불변이므로
     /// flag와 same-table sibling identity를 함께 보존해야 한다.
+    /// [A1 #2394] 첫 조각이 저장 쪽경계에서 **매달린 행간 트림**으로 끝나면 렌더 조각(표 bbox)
+    /// 높이는 파일이 선언한 첫 조각 프레임과 같아야 한다 — 한컴 정본 실측(2026-09-06 A1):
+    ///   80168 p4  선언 69633HU = 928.44px · 한컴 괘선 929.35 · 종전 `min(over,ls)` 937.9(+8.55)
+    ///   pic-in-table-01 p18 선언 67937HU = 905.83px · 한컴 점선 906.7 · 종전 909.6(+2.9)
+    /// bbox 는 프레임 선 두께만큼(≈0.5px) 선언보다 크다. 종전 값은 허용치 밖(9.5·3.8)이라 RED.
+    #[test]
+    fn a1_saved_tail_first_fragment_ends_at_declared_frame() {
+        use crate::document_core::DocumentCore;
+        fn find_table(v: &serde_json::Value, pi: u64, in_cell: bool) -> Option<f64> {
+            match v {
+                serde_json::Value::Object(m) => {
+                    let ty = m.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if ty == "Table" && !in_cell {
+                        if m.get("pi").and_then(|p| p.as_u64()) == Some(pi) {
+                            return m
+                                .get("bbox")
+                                .and_then(|b| b.get("h"))
+                                .and_then(|h| h.as_f64());
+                        }
+                        return None;
+                    }
+                    let in_cell = in_cell || ty == "Cell";
+                    m.values().find_map(|c| find_table(c, pi, in_cell))
+                }
+                serde_json::Value::Array(a) => a.iter().find_map(|c| find_table(c, pi, in_cell)),
+                _ => None,
+            }
+        }
+        for (relative, page0, pi, declared_hu, old_h) in [
+            (
+                "samples/80168_regulatory_analysis.hwp",
+                3usize,
+                15u64,
+                69633.0f64,
+                937.9f64,
+            ),
+            ("samples/pic-in-table-01.hwp", 17, 65, 67937.0, 909.6),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+            let bytes = std::fs::read(&path).expect("read A1 fixture");
+            let core = DocumentCore::from_bytes(&bytes).expect("load A1 fixture");
+            let tree = core
+                .build_page_render_tree(page0 as u32)
+                .expect("render tree");
+            let v: serde_json::Value = serde_json::from_str(&tree.root.to_json()).expect("json");
+            let h = find_table(&v, pi, false)
+                .unwrap_or_else(|| panic!("{relative} p{} pi={pi} 표 없음", page0 + 1));
+            let declared = declared_hu * 96.0 / 7200.0;
+            assert!(
+                (h - declared).abs() <= 0.8,
+                "{relative} p{} pi={pi}: 첫 조각 bbox h {h:.2} ≠ 선언 프레임 {declared:.2} (종전 {old_h})",
+                page0 + 1
+            );
+            assert!(
+                (old_h - declared).abs() > 2.0,
+                "{relative}: 종전 값이 허용치 안이면 이 테스트는 아무것도 못 가른다"
+            );
+        }
+    }
+
     #[test]
     fn issue2214_deferred_insert_uses_scoped_cache_eviction() {
         use crate::document_core::DocumentCore;
