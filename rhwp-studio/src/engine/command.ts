@@ -743,7 +743,7 @@ function getParaShapeId(wasm: WasmBridge, target: ParaFormatTarget): number {
   return paraShapeId;
 }
 
-function applyParaFormatToTarget(wasm: WasmBridge, target: ParaFormatTarget, propsJson: string): void {
+export function applyParaFormatToTarget(wasm: WasmBridge, target: ParaFormatTarget, propsJson: string): void {
   if (target.kind === 'body') {
     wasm.applyParaFormat(target.sec, target.para, propsJson);
     return;

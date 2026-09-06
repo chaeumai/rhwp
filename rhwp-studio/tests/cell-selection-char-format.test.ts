@@ -383,14 +383,39 @@ test('changeOutlineLevel 은 문단마다 스타일을 읽어 계획대로 한 �
   const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
   const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
   assert.match(lvlBody, /const targets = this\.getParaFormatTargetsAtCursor\(\);/);
-  assert.match(lvlBody, /targets\.map\(\(t\) => outlineLevelOf\(this\.styleOfParaTarget\(t\)\?\.name\)\)/);
+  assert.match(lvlBody, /targets\.map\(\(t, i\) => this\.outlineLevelOfTarget\(t, /);
   assert.match(lvlBody, /planOutlineLevelChange\(levels, delta, maxLevel, preceding\)/);
   assert.match(lvlBody, /operationType: 'applyStyle', operation \}\);\s*this\.refreshCellSelectionAfterFormat\(\)/);
   assert.doesNotMatch(lvlBody, /getCurrentStyleInfo\(\)/, '첫 셀 규칙(UI-5)이 남아 있으면 안 된다');
   assert.doesNotMatch(lvlBody, /this\.applyStyle\(/, '문단마다 스냅샷을 나누면 되돌리기가 여러 단계가 된다');
+  // E8-b 결함 2: 스타일만 바꾸면 직접 서식 문단의 para_shape 가 보존돼 head/level 이 안 바뀐다(번호 미렌더).
+  // 같은 스냅샷 안에서 head 를 명시해야 한다.
+  assert.match(lvlBody, /headType: 'Outline', paraLevel: entry - 1/);
+  assert.match(lvlBody, /headType: 'None'/);
+  assert.match(lvlBody, /applyStyleToParaTarget\(wasm, target, styleId\);\s*applyParaFormatToTarget\(wasm, target, propsJson\);/);
   // 세 갈래 조회·적용
   const st = ih.slice(ih.indexOf('  private styleOfParaTarget(target: ParaFormatTarget)'));
   assert.match(st.slice(0, 600), /getStyleAt\(target\.sec, target\.para\)[\s\S]*getStyleByPath\(target\.sec, target\.parentPara, JSON\.stringify\(target\.cellPath\)\)[\s\S]*getCellStyleAt\(target\.sec, target\.parentPara, target\.controlIdx, target\.cellIdx, target\.cellParaIdx\)/);
+});
+
+test('개요 수준 읽기는 문단 모양의 head/level 을 먼저 보고, 앞선 수준 탐색은 같은 셀의 앞 문단부터 본다 (E8-b)', () => {
+  const ih = source('src/engine/input-handler.ts');
+  // 결함 2: 렌더 번호는 head_type/para_level 이 정한다 — 스타일 이름은 폴백
+  const lot = ih.slice(ih.indexOf('  private outlineLevelOfTarget(target: ParaFormatTarget'));
+  const lotBody = lot.slice(0, lot.indexOf('\n  }\n'));
+  assert.match(lotBody, /headType === 'Outline'/);
+  assert.match(lotBody, /return level \+ 1;/);
+  assert.match(lotBody, /return outlineLevelOf\(this\.styleOfParaTarget\(target\)\?\.name\);/);
+  // 결함 1: 같은 셀의 앞 문단이 문서 순 직전이다
+  const pre = ih.slice(ih.indexOf('  private precedingOutlineLevel(target: ParaFormatTarget)'));
+  const preBody = pre.slice(0, pre.indexOf('\n  }\n'));
+  const sameCell = preBody.indexOf('for (let p = cellParaIdx - 1; p >= 0; p--)');
+  const prevCell = preBody.indexOf('for (let c = cellIdx - 1; c >= 0; c--)');
+  assert.ok(sameCell >= 0 && prevCell >= 0 && sameCell < prevCell, '같은 셀 앞 문단을 앞 셀보다 먼저 본다');
+  const sameCellPath = preBody.indexOf('for (let p = (last.cellParaIndex ?? 0) - 1; p >= 0; p--)');
+  const prevCellPath = preBody.indexOf('for (let c = last.cellIndex - 1; c >= 0; c--)');
+  assert.ok(sameCellPath >= 0 && prevCellPath >= 0 && sameCellPath < prevCellPath, '경로 대상도 같은 셀 앞 문단이 먼저다');
+  assert.doesNotMatch(preBody, /const level = \(st: \{ name: string \} \| null\)/, '스타일 이름만 읽던 지역 헬퍼는 폐기');
 });
 
 // ─── E2 되돌리기/다시 실행이 셀 선택을 풀지 않는다 (한컴 실측 2026-09-06 §1: 블록→굵게→Ctrl+Z 뒤 블록 잔존) ─────

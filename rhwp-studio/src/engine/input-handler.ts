@@ -6,7 +6,7 @@ import { CaretRenderer } from './caret-renderer';
 import { FieldMarkerRenderer } from './field-marker-renderer';
 import { SelectionRenderer } from './selection-renderer';
 import { CommandHistory } from './history';
-import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS } from './command';
+import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyParaFormatToTarget } from './command';
 import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects } from './command';
 import { VirtualScroll } from '@/view/virtual-scroll';
 import { ViewportManager } from '@/view/viewport-manager';
@@ -4747,20 +4747,34 @@ export class InputHandler {
       if (outlineByLevel.size === 0) return;
       const maxLevel = Math.max(...outlineByLevel.keys());
       const bodyStyle = styles.find((s) => s.name === '바탕글') ?? styles.find((s) => s.id === 0);
-      const levels = targets.map((t) => outlineLevelOf(this.styleOfParaTarget(t)?.name));
+      const heads = targets.map((t) => this.paraPropsOfTarget(t)?.headType);
+      const levels = targets.map((t, i) => this.outlineLevelOfTarget(t, i < heads.length ? heads[i] : undefined));
       const preceding = levels.every((l) => l === null) && delta > 0 ? this.precedingOutlineLevel(targets[0]) : null;
       const plan = planOutlineLevelChange(levels, delta, maxLevel, preceding);
-      const ops: Array<{ target: ParaFormatTarget; styleId: number }> = [];
+      const ops: Array<{ target: ParaFormatTarget; styleId: number; propsJson: string }> = [];
       plan.forEach((entry, i) => {
         if (entry === null) return;
         const styleId = entry === 'body' ? bodyStyle?.id : outlineByLevel.get(entry);
         if (styleId === undefined) return;
-        ops.push({ target: targets[i], styleId });
+        // 스타일만 바꾸면 **직접 문단 서식이 있는 문단**에서는 `para_shape_id` 가 보존돼(task 1470)
+        // head/level 이 그대로다 — 렌더 개요 번호는 para_shape 의 head_type·para_level 로만 정해지므로
+        // 서식바만 「개요 N」 으로 바뀌고 번호가 안 그려진다(E8 리뷰 결함 2). 같은 스냅샷에서 head 를 명시한다.
+        const props: Record<string, unknown> =
+          entry === 'body'
+            ? { headType: 'None' }
+            : { headType: 'Outline', paraLevel: entry - 1 };
+        // 개요로 새로 바꾸는 문단만 numbering_id 를 0 으로 — 개요 번호는 구역의 outline_numbering_id 로 해석된다.
+        // 이미 개요인 문단은 자기 numbering_id 를 지킨다(수준만 옮긴다).
+        if (entry !== 'body' && heads[i] !== 'Outline') props.numberingId = 0;
+        ops.push({ target: targets[i], styleId, propsJson: JSON.stringify(props) });
       });
       if (ops.length === 0) return;
       const cursorBefore = this.cursor.getPosition();
       const operation = (wasm: WasmBridge): DocumentPosition => {
-        for (const { target, styleId } of ops) this.applyStyleToParaTarget(wasm, target, styleId);
+        for (const { target, styleId, propsJson } of ops) {
+          this.applyStyleToParaTarget(wasm, target, styleId);
+          applyParaFormatToTarget(wasm, target, propsJson);
+        }
         return { ...cursorBefore };
       };
       this.executeOperation({ kind: 'snapshot', operationType: 'applyStyle', operation });
@@ -4781,6 +4795,31 @@ export class InputHandler {
     }
   }
 
+  /** 문단 서식 대상 하나의 문단 속성 — 본문·셀(flat)·중첩 셀(경로). 조회 실패는 null. */
+  private paraPropsOfTarget(target: ParaFormatTarget): ParaProperties | null {
+    try {
+      if (target.kind === 'body') return this.wasm.getParaPropertiesAt(target.sec, target.para);
+      if (target.kind === 'path') return this.wasm.getParaPropertiesByPath(target.sec, target.parentPara, JSON.stringify(target.cellPath));
+      return this.wasm.getCellParaPropertiesAt(target.sec, target.parentPara, target.controlIdx, target.cellIdx, target.cellParaIdx);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 문단 하나의 개요 수준(1-based). **문단 모양의 `headType`/`paraLevel` 을 먼저 본다** — 렌더 개요 번호가
+   * 그것으로만 정해지므로 스타일 이름만 보면 화면과 다른 것을 읽는다(E8 리뷰 결함 2). head 가 개요가 아니면
+   * 스타일 이름(`개요 N`)으로 폴백한다. 개요가 아니면 null.
+   */
+  private outlineLevelOfTarget(target: ParaFormatTarget, head?: string): number | null {
+    const headType = head ?? this.paraPropsOfTarget(target)?.headType;
+    if (headType === 'Outline') {
+      const level = this.paraPropsOfTarget(target)?.paraLevel;
+      if (typeof level === 'number') return level + 1;
+    }
+    return outlineLevelOf(this.styleOfParaTarget(target)?.name);
+  }
+
   /** 문단 서식 대상 하나에 스타일을 적용한다 (`applyStyle` 과 같은 세 갈래). */
   private applyStyleToParaTarget(wasm: WasmBridge, target: ParaFormatTarget, styleId: number): void {
     if (target.kind === 'body') {
@@ -4794,18 +4833,24 @@ export class InputHandler {
 
   /**
    * 대상 문단보다 문서 순으로 앞선 가장 가까운 개요 문단의 수준 (E8 규칙 3 — 비개요만 있는 블록을 ▼ 로 개요로 바꿀 때 잇는 수준).
-   * 셀 대상은 같은 표의 앞 셀들(문단 역순) → 표를 담은 본문 문단 앞의 본문 문단, 본문 대상은 앞 본문 문단을 본다.
-   * 표 안에 든 다른 표·글상자는 건너뛴다(근사). 없으면 null → 호출자가 1 로 둔다.
+   * 셀 대상은 **같은 셀의 앞 문단** → 같은 표의 앞 셀들(문단 역순) → 표를 담은 본문 문단 앞의 본문 문단,
+   * 본문 대상은 앞 본문 문단을 본다. 같은 셀의 앞 문단이 곧 문서 순 직전인데 종전에는 건너뛰었다(E8 리뷰 결함 1).
+   * 표 안에 든 다른 표·글상자, 그리고 중첩 표에서 바깥 표의 앞 셀·앞 구역은 건너뛴다(근사). 없으면 null → 호출자가 1 로 둔다.
    */
   private precedingOutlineLevel(target: ParaFormatTarget): number | null {
-    const level = (st: { name: string } | null) => outlineLevelOf(st?.name);
     try {
       if (target.kind === 'cell') {
-        const { sec, parentPara, controlIdx, cellIdx } = target;
+        const { sec, parentPara, controlIdx, cellIdx, cellParaIdx } = target;
+        const cellLevel = (c: number, p: number) =>
+          this.outlineLevelOfTarget({ kind: 'cell', sec, parentPara, controlIdx, cellIdx: c, cellParaIdx: p });
+        for (let p = cellParaIdx - 1; p >= 0; p--) {
+          const l = cellLevel(cellIdx, p);
+          if (l !== null) return l;
+        }
         for (let c = cellIdx - 1; c >= 0; c--) {
           const n = this.wasm.getCellParagraphCount(sec, parentPara, controlIdx, c);
           for (let p = n - 1; p >= 0; p--) {
-            const l = level(this.wasm.getCellStyleAt(sec, parentPara, controlIdx, c, p));
+            const l = cellLevel(c, p);
             if (l !== null) return l;
           }
         }
@@ -4814,17 +4859,23 @@ export class InputHandler {
       if (target.kind === 'path') {
         const { sec, parentPara, cellPath } = target;
         const last = cellPath[cellPath.length - 1];
+        const pathLevel = (c: number, p: number) =>
+          this.outlineLevelOfTarget({ kind: 'path', sec, parentPara, cellPath: cellPathForCell(cellPath, c, p) });
+        for (let p = (last.cellParaIndex ?? 0) - 1; p >= 0; p--) {
+          const l = pathLevel(last.cellIndex, p);
+          if (l !== null) return l;
+        }
         for (let c = last.cellIndex - 1; c >= 0; c--) {
           const n = this.wasm.getCellParagraphCountByPath(sec, parentPara, JSON.stringify(cellPathForCell(cellPath, c)));
           for (let p = n - 1; p >= 0; p--) {
-            const l = level(this.wasm.getStyleByPath(sec, parentPara, JSON.stringify(cellPathForCell(cellPath, c, p))));
+            const l = pathLevel(c, p);
             if (l !== null) return l;
           }
         }
         return this.precedingOutlineLevel({ kind: 'body', sec, para: parentPara });
       }
       for (let p = target.para - 1; p >= 0; p--) {
-        const l = level(this.wasm.getStyleAt(target.sec, p));
+        const l = this.outlineLevelOfTarget({ kind: 'body', sec: target.sec, para: p });
         if (l !== null) return l;
       }
     } catch {
