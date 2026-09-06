@@ -165,10 +165,21 @@ export function outlineLevelOf(styleName: string | null | undefined): number | n
 export type OutlineLevelPlanEntry = number | 'body' | null;
 
 /**
+ * 한컴의 개요 수준 상한 — **고정 7**이며 문서의 스타일 목록에서 오지 않는다 (E9 실측 2026-09-06).
+ * 근거: 실측 픽스처 `e1-cellblock.hwpx` 는 스타일 목록에 「개요 1」~「개요 10」 을 갖고 있는데도
+ * 한컴은 **개요 7 에서 한 번 더 증가하면 개요를 풀었다**. 스타일 목록 최대치(`Math.max(...)`)를
+ * 상한으로 쓰면 그 픽스처에서만도 8·9·10 까지 더 가서 갈린다.
+ * 코퍼스 hwpx 250편 실측: 스타일 목록 최대 수준이 10 인 문서가 97편(39%)·7 인 문서가 97편이다.
+ */
+export const HANCOM_MAX_OUTLINE_LEVEL = 7;
+
+/**
  * 개요 수준 ▲▼ 를 문단마다 어떻게 바꿀지 정한다 — 한컴 규칙 (E8, 한컴 실측 2026-09-06 E1 판정 §2).
  * `levels` 는 대상 문단들의 현재 개요 수준(비개요는 null), `delta` 는 -1(▲ = 한컴 Ctrl+Num−) 또는 +1(▼ = Ctrl+Num+).
  *  1. 개요 문단이 하나라도 있으면 **개요 문단만 각자 ±1**, 비개요 문단은 불변. 첫 셀·캐럿 셀·확장 방향은 결과에 안 들어간다.
- *  2. 개요 1 에서 ▲ 는 개요 해제(`'body'`). 최대 수준을 넘는 ▼ 는 불변(한컴 미실측 — 보수적으로 둔다).
+ *  2. 개요 1 에서 ▲ 는 개요 해제(`'body'`), **최대 수준(7)에서 ▼ 도 개요 해제** — 양 끝에서 똑같이 풀린다
+ *     (E9 실측 2026-09-06: 개요 7 에서 한 번 더 증가하면 번호가 사라지고 바탕글이 된다. 종전 「불변」은 미실측 상태의
+ *     보수적 선택이었고 실측이 그 반대였다). 풀린 뒤 다시 ▼ 하면 규칙 3 이 받아 개요 1 로 재진입한다.
  *  3. 개요 문단이 하나도 없으면 ▼ 는 전부 개요로(수준 = 문서 순 앞선 개요 문단의 수준 `precedingLevel`, 없으면 1), ▲ 는 무동작.
  * 종전(UI-5)의 「첫 셀 첫 문단이 개요가 아니면 무동작」은 한컴에 대한 반례로 확인돼 폐기했다.
  */
@@ -187,8 +198,8 @@ export function planOutlineLevelChange(
   return levels.map((l) => {
     if (l === null) return null;
     const next = l + delta;
-    if (next < 1) return 'body';
-    if (next > maxLevel) return null;
+    // 양 끝에서 똑같이 풀린다 — 개요 1 에서 ▲(E1 §2), 상한 7 에서 ▼(E9 §1) 둘 다 개요 해제다.
+    if (next < 1 || next > maxLevel) return 'body';
     return next;
   });
 }

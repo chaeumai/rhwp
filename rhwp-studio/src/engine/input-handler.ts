@@ -39,7 +39,7 @@ import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
 import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
 import type { NavigationKeyInput } from './navigation-keymap';
-import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, nestedRangeCellPaths, outlineLevelOf, planOutlineLevelChange, type CellGridRange } from './cell-selection-format';
+import { hasCharFormatTarget as hasCharFormatTargetIn, isNestedCellPath, cellPathForCell, collectSelectedCellIndices, collectCellParaTargets, nestedRangeCellPaths, outlineLevelOf, planOutlineLevelChange, HANCOM_MAX_OUTLINE_LEVEL, type CellGridRange } from './cell-selection-format';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -4745,7 +4745,10 @@ export class InputHandler {
         if (level !== null && !outlineByLevel.has(level)) outlineByLevel.set(level, s.id);
       }
       if (outlineByLevel.size === 0) return;
-      const maxLevel = Math.max(...outlineByLevel.keys());
+      // 상한은 **문서 스타일 목록이 아니라 한컴 고정값 7** 이다 — 실측 픽스처가 「개요 1」~「개요 10」 을
+      // 갖고도 7 에서 풀렸다(E9 §1, `HANCOM_MAX_OUTLINE_LEVEL` 주석). 스타일이 없는 수준은 아래
+      // `outlineByLevel.get(entry)` 가 undefined 라 그 문단만 건너뛴다 — 종전(상한=스타일 최대)과 같은 무동작.
+      const maxLevel = HANCOM_MAX_OUTLINE_LEVEL;
       const bodyStyle = styles.find((s) => s.name === '바탕글') ?? styles.find((s) => s.id === 0);
       const heads = targets.map((t) => this.paraPropsOfTarget(t)?.headType);
       const levels = targets.map((t, i) => this.outlineLevelOfTarget(t, i < heads.length ? heads[i] : undefined));

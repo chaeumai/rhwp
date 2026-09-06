@@ -18,6 +18,7 @@ import {
   cellSelectionStillValid,
   outlineLevelOf,
   planOutlineLevelChange,
+  HANCOM_MAX_OUTLINE_LEVEL,
   nestedRangeCellPaths,
 } from '../src/engine/cell-selection-format.ts';
 
@@ -365,10 +366,32 @@ test('planOutlineLevelChange: 개요만 있는 블록은 각자 ±1 — 첫 셀 
   assert.deepEqual(planOutlineLevelChange([null, 2, 3], -1, 7, null), [null, 1, 2]);
 });
 
-test('planOutlineLevelChange: 개요 1 ▲ 는 개요 해제, 최대 수준 ▼ 는 불변 (w3·w4)', () => {
+test('planOutlineLevelChange: 개요 1 ▲ 도 개요 7 ▼ 도 개요 해제 — 양 끝에서 풀린다 (w3·w4 · E9 §1)', () => {
   assert.deepEqual(planOutlineLevelChange([2], -1, 7, null), [1]);
   assert.deepEqual(planOutlineLevelChange([1], -1, 7, null), ['body']);
-  assert.deepEqual(planOutlineLevelChange([1, 7], 1, 7, null), [2, null]);
+  // 한컴 실측(E9 §1): 개요 7 에서 한 번 더 증가하면 번호가 사라지고 바탕글이 된다. 종전 기대값은 [2, null] 이었다.
+  assert.deepEqual(planOutlineLevelChange([1, 7], 1, 7, null), [2, 'body']);
+  assert.deepEqual(planOutlineLevelChange([7], 1, 7, null), ['body']);
+});
+
+test('planOutlineLevelChange: 상한에서 풀린 뒤 ▼ 는 개요 1 → 2 로 재진입한다 (E9 §1 표 7·8번째)', () => {
+  // 7 에서 ▼ → 해제. 그 문단은 이제 비개요이므로 다음 ▼ 는 규칙 3(개요 없는 블록)이 받는다.
+  assert.deepEqual(planOutlineLevelChange([7], 1, 7, null), ['body']);
+  assert.deepEqual(planOutlineLevelChange([null], 1, 7, null), [1]);   // 7번째 — 앞선 개요 없음 → 1
+  assert.deepEqual(planOutlineLevelChange([1], 1, 7, null), [2]);      // 8번째 — 개요 1 → 2
+});
+
+test('HANCOM_MAX_OUTLINE_LEVEL 은 문서 스타일 목록이 아니라 한컴 고정 7 이다 (E9)', () => {
+  assert.equal(HANCOM_MAX_OUTLINE_LEVEL, 7);
+  // 실측 픽스처는 「개요 1」~「개요 10」 을 갖고도 7 에서 풀렸다 — 스타일 최대치를 상한으로 쓰면 8·9·10 까지 간다.
+  assert.deepEqual(planOutlineLevelChange([7], 1, HANCOM_MAX_OUTLINE_LEVEL, null), ['body']);
+  assert.deepEqual(planOutlineLevelChange([7], 1, 10, null), [8], '스타일 최대치를 넣으면 한컴과 갈린다(반증용)');
+  const ih = source('src/engine/input-handler.ts');
+  const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
+  const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
+  assert.match(lvlBody, /const maxLevel = HANCOM_MAX_OUTLINE_LEVEL;/);
+  assert.doesNotMatch(lvlBody, /const maxLevel = Math\.max\(\.\.\.outlineByLevel\.keys\(\)\)/,
+    '상한을 문서 스타일 목록에서 뽑으면 개요 10 문서에서 한컴과 갈린다 (E9 §1)');
 });
 
 test('planOutlineLevelChange: 개요 없는 블록 ▼ 는 전부 개요(앞선 개요 수준 계승, 없으면 1), ▲ 는 무동작 (w1·w2·t2b)', () => {
