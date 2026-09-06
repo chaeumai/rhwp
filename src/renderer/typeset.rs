@@ -124,6 +124,12 @@ struct BlockRowScanVars {
     landscape_short_row_tolerance: f64,
     landscape_short_row_max_height: f64,
     rowbreak_split_row_overflow_tolerance: f64,
+    /// [#2392] 파일이 선언한 첫 조각 프레임이 **행 안**에서 끝날 때 그 행의 다음
+    /// 인덱스(= 첫 조각의 배타적 끝). rowspan 보호 블록의 마지막 행이 이 값과
+    /// 맞으면 쪽 하단 압축의 `BOTTOM_SQUEEZE_MAX_REST_PX`(쪽 끝자락 한정)를 면제한다
+    /// — 한컴이 그 행을 담고 선언 프레임에 맞춰 누른 것이 오라클 괘선으로 확인된
+    /// 자리다(자격·반증은 typeset_block_table 의 계산 지점 주석). None 이면 종전 동작.
+    declared_frame_squeeze_row_end: Option<usize>,
 }
 
 /// [#2064] `compute_endnote_metrics` 의 호출-시점 입력 묶음 — 라운드 5 클로저의 캡처를
@@ -14579,6 +14585,7 @@ impl TypesetEngine {
             landscape_short_row_tolerance,
             landscape_short_row_max_height,
             rowbreak_split_row_overflow_tolerance,
+            declared_frame_squeeze_row_end,
         } = v;
         let BlockTableRowScan {
             mut consumed,
@@ -15003,10 +15010,18 @@ impl TypesetEngine {
                                     .any(|ctrl| matches!(ctrl, Control::Table(_)))
                             })
                     });
+                    // [#2392] 파일이 이 블록의 **마지막 행 안**에서 첫 조각 프레임을 끝냈으면
+                    // 쪽 끝자락 한정(`rest ≤ MAX_REST`)을 면제한다 — 한컴은 잔여가 넉넉해도
+                    // 그 행을 담고 선언 프레임에 맞춰 누른다(kps-ai p46 r10 81.09 → 69.21,
+                    // 오라클 괘선과 0.01px. 자격·반증은 typeset_block_table 계산 지점 주석).
+                    // 나머지 문(초과 ≤ TOLERANCE·headroom·중첩 표 제외)은 그대로 지킨다.
+                    let declared_frame_holds_block = declared_frame_squeeze_row_end == Some(b_end);
+                    let squeeze_rest_ok =
+                        rest <= BOTTOM_SQUEEZE_MAX_REST_PX || declared_frame_holds_block;
                     if diag_scan {
                         eprintln!(
                             "DIAG_SCAN {diag_tag} SQUEEZE_BLOCK? r={}..{} block_h={:.1} content={:.1} rest={:.1} \
-headroom={:.1} nested={} gate={}",
+headroom={:.1} nested={} declframe={} gate={}",
                             r,
                             b_end,
                             block_h,
@@ -15014,9 +15029,10 @@ headroom={:.1} nested={} gate={}",
                             rest,
                             rest - block_content,
                             block_has_nested,
+                            declared_frame_holds_block,
                             rest - block_content >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
                                 && !block_has_nested
-                                && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
+                                && squeeze_rest_ok
                         );
                     }
                     // [#2097 프로브 기록] 쪽 끝자락 한정(rest ≤ MAX_REST) 완화는 반증됨:
@@ -15027,7 +15043,7 @@ headroom={:.1} nested={} gate={}",
                     // 여유로는 분리 불가. 한글의 판별 신호는 별도 규명 필요.
                     if rest - block_content >= BOTTOM_SQUEEZE_MIN_HEADROOM_PX
                         && !block_has_nested
-                        && rest <= BOTTOM_SQUEEZE_MAX_REST_PX
+                        && squeeze_rest_ok
                     {
                         consumed += cs_before + block_h;
                         r = b_end;
@@ -17221,6 +17237,134 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                 );
             }
 
+            // [#2392] 선언 프레임이 **행 안**에서 끝나는 첫 조각 — 한컴은 그 행을 담고
+            // 프레임에 맞춰 **누른다**. T6-e/#2366/#2391 의 선언 상한은 선언 높이가 우리 행
+            // 누적합과 **정확히 겹칠 때만**(①) 발화한다. 겹치지 않는 표에서는 선언이 아무
+            // 뜻도 없다고 보고 버려 왔는데, 오라클은 그 반대다.
+            //
+            // **실측 (kps-ai.hwp pi=443, HWP5 13×5 RowBreak, 우리 p46 / 한컴 p46)**
+            //   선언 프레임 838.2133 − 호스트 간격 1.88 = declared_rows_h **836.3333**
+            //   우리 측정 행 누적: r9 = 767.1333 · r10 = 848.2267 → 선언은 **r10 안**에 떨어진다
+            //   rowspan 보호 블록 r8..r10(「프로젝트 지원(15점)」 3행 = 243.28px)이 잔여
+            //   237.28 을 6.0px 넘겨 통째로 다음 쪽으로 갔다 — 압축 게이트는 잔여 237.3 이
+            //   BOTTOM_SQUEEZE_MAX_REST_PX(100) 밖이라 닫힌다(`SQUEEZE_BLOCK? … gate=false`).
+            //   한컴 정본 괘선(`pdf/kps-ai-2022.pdf` p46, PyMuPDF `get_drawings` 가로선):
+            //     표 상단 207.13px · 머리행 244.85 · r1..r9 피치 81.03 ·
+            //     **r10 973.33 → 1042.54 = 69.21px** · 첫 조각 총 835.41px
+            //     (본문 하단 1046.9 의 4.4px 위 — 쪽을 넘지 않는다)
+            //   우리 선언 잔여 = 836.3333 − 767.1333 = **69.2000** → 한컴 69.21 과 **0.01px**.
+            //   즉 한컴은 마지막 행을 선언 프레임에 맞춰 81.09 → 69.20 으로 눌렀다.
+            //
+            // ⚠ 종전 `BOTTOM_SQUEEZE_MAX_REST_PX` 주석의 근거 "kps-ai 잔여 237.3px 이월 실측"
+            //   과 [#2097] 프로브 기록의 "kps-ai r=8..11 은 한글이 이월(issue_1073 골든)" 은
+            //   **이 오라클과 정반대**다. 인용된 `issue_1073` 골든은 같은 문서의 **다른 표**
+            //   (pi=674, 0-based p65/66 「소프트웨어사업 영향평가 결과서」)가 오버플로 없이
+            //   분할되는지만 보는 회귀 핀이었고, p46 의 이 블록과 아무 상관이 없다(그 테스트는
+            //   f28f5bd52 「upstream 회귀 핀 275개 제거」에서 삭제됐다). 상수는 그대로 두고
+            //   (1741000·complex-full 캘리브레이션 보존) **파일 선언이 있는 자리만** 연다.
+            //
+            // **둘째 오라클 (`samples/float-stack-defer.hwp` vs `pdf/float-stack-defer-2022.pdf`,
+            // Hwp 2022 / Hancom PDF 1.3.0.550)** — 코퍼스 640 대조가 찾아낸 독립 표본:
+            //   12행 RowBreak 표 pi=1, 선언 907.35 · 예산 910.57 · 행 누적 r11 = 914.24
+            //   → 선언 잔여 = **70.48px**. 한컴 p2 마지막 행 괘선 957.03 → 1027.52 = **70.48px**
+            //   (**0.00px**). 종전엔 블록 r10..r12(150.1px)이 잔여 146.4 를 3.7px 넘겨 통째
+            //   이월돼 3쪽(정본 2쪽)이었고, 이 규칙으로 **2쪽·F 1 → 2 완주**가 된다.
+            //   즉 산식은 「첫 조각 행높이 합 = 선언 프레임, 모자란 만큼 마지막 행을 누른다」이고
+            //   서로 다른 두 문서에서 0.01px·0.00px 로 맞았다.
+            //
+            // 자격 — 78문서 DECL_PROBE 전수(첫 조각 분할 표 373건) 중 선언이 행 안에 떨어지고
+            // 그 행이 물리적으로 눌릴 수 있는(콘텐츠 ≤ 선언 잔여) 후보는 11건(고유 8표)이었다.
+            // 아래 다섯으로 좁히면 78문서에서 발화는 3표(kps-ai 1 + edumap 2)뿐이고, 실제로
+            // 배치가 바뀌는 것은 kps-ai 하나다(edumap 2표는 블록 끝이 선언이 가로지르는 행과
+            // 달라 `Some(b_end)` 매칭에서 빠진다 — 그 문서는 첫 어긋남 p18 뒤라 오라클 대응도
+            // 안 된다). 코퍼스 640 전수에서 바뀐 문서는 kps-ai·float-stack-defer **둘**이고
+            // 둘 다 정본과 가까워졌다. 기각한 후보와 근거:
+            //   · complex-full pi=11 sec=10(HWPX, over 3.99) — **F 73 완주 문서**라 한컴이 그
+            //     행을 안 담는 것이 확정. 이 표는 HWPX 8px 근접 상한이 이미 발화해
+            //     `declared == avail_for_rows` 라 위 `declared < 예산` 조건이 거른다(그 행은
+            //     rowspan 블록도 아니라 실동작은 이 조건 전에도 불변이었다).
+            //   · complex-full pi=21 sec=4(HWPX, over 13.53) — 같은 완주 문서. 압축 수용치 밖.
+            //   · aift pi=236 sec=2(HWP5, k=0, over 40.63) — **F 74 완주 문서**. 선언이 표
+            //     **첫 행** 안에 떨어져 첫 조각에 온전한 행이 하나도 없다 → `r > cursor_row`.
+            //   · 59043 pi=124(HWP5, over 16.47, 콘텐츠 0) — 압축 수용치 밖 + 콘텐츠 0 행.
+            //   · edumap pi=11 sec=1(HWP5, over 27.68) — 압축 수용치 밖.
+            const DECLARED_FRAME_ROW_EPS_PX: f64 = 0.5;
+            let declared_frame_squeeze_row_end: Option<usize> = {
+                let frame_cs = if cs > 0.0 { 2.0 * cs } else { 0.0 };
+                let declared_rows_h =
+                    (declared_object_total - host_spacing_total - frame_cs).max(0.0);
+                // 경계 판정 척도는 #2391 과 같다 — HWP5 는 측정기 행높이(렌더러·한컴 괘선과
+                // 같은 축), HWPX 는 컷 예산 행높이.
+                let boundary_row_h: &[f64] = if st.is_hwpx_source {
+                    &cut_row_h
+                } else {
+                    &mt.row_heights
+                };
+                if is_continuation
+                    || cursor_row != 0
+                    || declared_rows_h <= 0.0
+                    || total_rows_h <= declared_rows_h + DECLARED_FRAME_ROW_EPS_PX
+                    || declared_rows_h >= avail_for_rows - DECLARED_FRAME_ROW_EPS_PX
+                {
+                    // ⚠ 마지막 조건은 **선언 상한(#2366/#2391)이 이미 발화한 표를 제외**한다.
+                    // 그 경로가 걸리면 `avail_for_rows` 가 선언값(또는 선언 경계 누적합)으로
+                    // 내려와 있어 `declared_rows_h == avail_for_rows` 가 되는데, 거기서 이 규칙을
+                    // 다시 적용하면 상한이 뺀 행을 도로 담아 **상한을 무효화**한다
+                    // (complex-full pi=11 sec=10: HWPX 8px 근접 경로로 base 156.07 → 155.52 로
+                    // 상한된 뒤 declared == base. 그 행은 rowspan 블록이 아니라 실동작은
+                    // 불변이었지만, 규칙 사이의 모순은 조건으로 닫는다).
+                    // 첫 조각이 눌려 들어갈 여지(선언 < 예산)가 있는 표만 이 규칙의 대상이다.
+                    None
+                } else {
+                    let mut acc = 0.0f64;
+                    let mut hit = None;
+                    for r in cursor_row..row_count {
+                        let prev = acc;
+                        if r > cursor_row {
+                            acc += cs;
+                        }
+                        acc += boundary_row_h[r];
+                        if (acc - declared_rows_h).abs() <= DECLARED_FRAME_ROW_EPS_PX {
+                            break; // 행 경계 일치 — 종전 선언 **상한**(#2366/#2391) 소관
+                        }
+                        if acc > declared_rows_h + DECLARED_FRAME_ROW_EPS_PX {
+                            // 선언이 행 r 안에서 끝난다: 앞 행들은 온전히, r 은 눌려서.
+                            let gap = declared_rows_h - prev;
+                            let content = layout_engine.row_block_content_height(
+                                table,
+                                r,
+                                r + 1,
+                                &[],
+                                &[],
+                                styles,
+                            );
+                            let fits_page = acc > avail_for_rows
+                                && acc - avail_for_rows <= BOTTOM_SQUEEZE_TOLERANCE_PX;
+                            if r > cursor_row
+                                && fits_page
+                                && content > 0.0
+                                && content <= gap + DECLARED_FRAME_ROW_EPS_PX
+                            {
+                                hit = Some((r + 1, declared_rows_h, gap, content, acc));
+                            }
+                            break;
+                        }
+                    }
+                    if let Some((end, decl, gap, content, acc)) = hit {
+                        if std::env::var("RHWP_TABLE_DRIFT").is_ok() {
+                            eprintln!(
+                                "TABLE_DECL_FRAME_SQUEEZE: pi={} sec={} row={} declared={:.2} base={:.2} row_end={:.2} gap={:.2} content={:.2}",
+                                para_idx, st.section_index, end - 1, decl, avail_for_rows, acc,
+                                gap, content,
+                            );
+                        }
+                        Some(end)
+                    } else {
+                        None
+                    }
+                }
+            };
+
             // [Task #993] 컷 기반 행 경계 walk — cursor_row 부터 avail_for_rows
             // 안에 들어가는 행을 advance_row_cut(단일 권위 함수)으로 누적 배치한다.
             // 예산을 못 채우거나 vpos 리셋(hard break)을 만난 첫 행이 분할 행이
@@ -17293,6 +17437,7 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                     landscape_short_row_tolerance,
                     landscape_short_row_max_height,
                     rowbreak_split_row_overflow_tolerance,
+                    declared_frame_squeeze_row_end,
                 },
                 BlockTableRowScan {
                     consumed: 0.0,
@@ -17388,6 +17533,9 @@ headroom={:.1} budget={:.1} decl={:.1} slack={:.1} rspan={} squeeze_band={} end_
                                 landscape_short_row_tolerance,
                                 landscape_short_row_max_height,
                                 rowbreak_split_row_overflow_tolerance,
+                                // 앵커 재적합은 예산 자체가 늘어난 경로 — 선언 프레임
+                                // 면제는 원 예산에서만 뜻이 있다.
+                                declared_frame_squeeze_row_end: None,
                             },
                             BlockTableRowScan {
                                 consumed: 0.0,
@@ -19510,6 +19658,117 @@ mod tests {
             first_end_row, 2,
             "파일 선언 프레임(2행)이 첫 조각의 상한이어야 한다 — 3행이면 쪽 하단 압축이 선언 밖 행을 담은 것 \
              (kps-ai p37 형상)"
+        );
+    }
+
+    /// [R9 #2392] 선언 프레임이 **행 안**에서 끝나면 한컴은 그 행을 담고 프레임에 맞춰 누른다 —
+    /// rowspan 보호 블록이 쪽 끝자락(`BOTTOM_SQUEEZE_MAX_REST_PX`) 밖이라 통째 이월되던 자리.
+    ///
+    /// RED 근거: kps-ai.hwp pi=443(13×5 RowBreak) 선언 838.21 − 호스트 간격 1.88 = 836.33 이
+    /// r9 누적 767.13 과 r10 누적 848.23 **사이**에 떨어진다. 블록 r8..r10(243.28px)이 잔여
+    /// 237.28 을 6.0px 넘기는데 잔여가 100 밖이라 압축 게이트가 닫혀 3행이 통째로 다음 쪽으로
+    /// 갔다(우리 p46 −208자). 한컴 정본 괘선(p46)은 그 3행을 담고 **마지막 행을 81.03 → 69.21px**
+    /// 로 눌러 첫 조각을 1042.54px(본문 하단 1046.9 안)에서 끝낸다 — 우리 선언 잔여 69.20 과 0.01px.
+    ///
+    /// 이 테스트는 같은 형상을 5행으로 줄였다: 큰 r0 뒤 잔여 240px 에 rowspan 블록 r1..r3
+    /// (3×82 = 246px, 초과 6px), 선언 = r0 + 82 + 82 + **70**(= r3 안), 마지막 행 콘텐츠는 70 안.
+    #[test]
+    fn r9_hwp5_declared_frame_inside_row_squeezes_rowspan_block_into_first_fragment() {
+        use crate::model::control::Control;
+        use crate::model::shape::{TextWrap, VertRelTo};
+        use crate::model::table::{Cell, Table, TablePageBreak};
+
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let base =
+            PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI).available_body_height();
+        let px2hu = |px: f64| (px * 7200.0 / DEFAULT_DPI).round() as u32;
+        // r0 뒤 잔여 240px — 종전 압축 게이트의 쪽 끝자락 한정(100px) **밖**이다.
+        let head_h = base - 240.0;
+        let head_hu = px2hu(head_h);
+        let blk_row_hu = px2hu(82.0); // 3행 = 246px → 잔여를 6px 초과 (수용치 13 안)
+        let tail_hu = px2hu(200.0); // 표를 반드시 분할시키는 밸러스트
+        let mut common = crate::model::shape::CommonObjAttr::default();
+        common.text_wrap = TextWrap::TopAndBottom;
+        common.vert_rel_to = VertRelTo::Para;
+        common.treat_as_char = false;
+        common.width = 30000;
+        // 선언 프레임 = r0 + r1 + r2 + **r3 의 70px** — 행 경계와 겹치지 않는다(①이 닫힌다).
+        common.height = head_hu + blk_row_hu * 2 + px2hu(70.0);
+        let mk_cell = |r: u16, c: u16, span: u16, h: u32, text: &str| Cell {
+            row: r,
+            col: c,
+            row_span: span,
+            col_span: 1,
+            height: h,
+            width: 15000,
+            paragraphs: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Paragraph {
+                    text: text.to_string(),
+                    char_count: text.chars().count() as u32,
+                    line_segs: vec![LineSeg {
+                        vertical_pos: 0,
+                        line_height: 900,
+                        text_height: 900,
+                        line_spacing: 0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]
+            },
+            ..Default::default()
+        };
+        let mut host = Paragraph::default();
+        host.controls.push(Control::Table(Box::new(Table {
+            row_count: 5,
+            col_count: 2,
+            page_break: TablePageBreak::RowBreak,
+            common,
+            cells: vec![
+                mk_cell(0, 0, 1, head_hu, ""),
+                mk_cell(0, 1, 1, head_hu, ""),
+                // rowspan 라벨 셀이 r1..r3 을 한 단위(보호 블록)로 묶는다.
+                mk_cell(1, 0, 3, blk_row_hu * 3, "가"),
+                mk_cell(1, 1, 1, blk_row_hu, "나"),
+                mk_cell(2, 1, 1, blk_row_hu, "다"),
+                mk_cell(3, 1, 1, blk_row_hu, "라"),
+                mk_cell(4, 0, 1, tail_hu, ""),
+                mk_cell(4, 1, 1, tail_hu, ""),
+            ],
+            ..Default::default()
+        })));
+        let paras = vec![host, make_paragraph_with_height(1500)];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+        let measured =
+            HeightMeasurer::with_default_dpi().measure_section(&paras, &composed, &styles, None);
+        // typeset_section 은 HWP5(is_hwpx_source=false) 경로다.
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+        let first_end_row = result.pages[0].column_contents[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                PageItem::PartialTable { end_row, .. } => Some(*end_row),
+                _ => None,
+            })
+            .expect("첫 쪽에 표 fragment 가 있어야 한다");
+        assert_eq!(
+            first_end_row, 4,
+            "선언 프레임이 r3 안에서 끝나므로 블록 r1..r3 은 첫 조각에 담겨야 한다 — 1이면 잔여 240px 이 \
+             BOTTOM_SQUEEZE_MAX_REST_PX(100) 밖이라 블록이 통째로 이월된 것 (kps-ai p46 형상)"
         );
     }
 
