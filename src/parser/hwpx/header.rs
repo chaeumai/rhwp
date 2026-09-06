@@ -1143,6 +1143,15 @@ fn parse_para_shape_switch(
     let mut def_next: Option<i32> = None;
     let mut def_line_spacing_type: Option<LineSpacingType> = None;
     let mut def_line_spacing: Option<i32> = None;
+    // [A4 2026-09-07] heading 분기 — 코퍼스 hwpx 240개 paraPr 이 개요 8~10수준을
+    //   <hp:switch><hp:case required-namespace="…/2016/paragraph|…/2021/metatag"><hh:heading type="OUTLINE" level="8"/></hp:case>
+    //   <hp:default><hh:heading type="NONE"/></hp:default></hp:switch>
+    // 로 적는다(189+51). 종전에는 HwpUnitChar case 만 보고 heading 은 case 도 default 도 안 읽어
+    // 개요 번호가 사라졌다(감사 F9: e1-cellblock 의 heading 1건을 switch 로 감싸면 「가.」 소실).
+    // 한컴은 case 를 적용한다 — 어느 네임스페이스든 case 의 heading 을 쓰고, 없으면 default.
+    let mut in_any_case = false;
+    let mut case_heading: Option<(HeadType, u16, u8)> = None;
+    let mut def_heading: Option<(HeadType, u16, u8)> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1151,6 +1160,7 @@ fn parse_para_shape_switch(
                 let local = local_name(cname.as_ref());
                 match local {
                     b"case" => {
+                        in_any_case = true;
                         // required-namespace 속성 확인
                         let is_hwpunitchar = ce.attributes().flatten().any(|attr| {
                             let val = attr_str(&attr);
@@ -1169,6 +1179,34 @@ fn parse_para_shape_switch(
             Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
+                if (in_any_case || in_default) && local == b"heading" {
+                    let mut ht = HeadType::None;
+                    let mut id: u16 = 0;
+                    let mut lv: u8 = 0;
+                    for attr in ce.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"type" => {
+                                ht = match attr_str(&attr).as_str() {
+                                    "OUTLINE" => HeadType::Outline,
+                                    "NUMBER" | "NUMBERING" => HeadType::Number,
+                                    "BULLET" => HeadType::Bullet,
+                                    _ => HeadType::None,
+                                };
+                            }
+                            b"idRef" => id = parse_u16(&attr),
+                            b"level" => lv = parse_u8(&attr),
+                            _ => {}
+                        }
+                    }
+                    if in_any_case {
+                        // 첫 case 가 이긴다 (한컴이 지원하는 확장 네임스페이스의 분기)
+                        if case_heading.is_none() {
+                            case_heading = Some((ht, id, lv));
+                        }
+                    } else {
+                        def_heading = Some((ht, id, lv));
+                    }
+                }
                 if in_hwpunitchar_case || in_default {
                     match local {
                         b"margin" | b"intent" | b"left" | b"right" | b"prev" | b"next" => {
@@ -1251,6 +1289,7 @@ fn parse_para_shape_switch(
                 match local {
                     b"case" => {
                         in_hwpunitchar_case = false;
+                        in_any_case = false;
                     }
                     b"default" => {
                         in_default = false;
@@ -1264,6 +1303,13 @@ fn parse_para_shape_switch(
             _ => {}
         }
         buf.clear();
+    }
+
+    // [A4] heading — case 우선, 없으면 default
+    if let Some((ht, id, lv)) = case_heading.or(def_heading) {
+        ps.head_type = ht;
+        ps.numbering_id = id;
+        ps.para_level = lv;
     }
 
     // HwpUnitChar case가 없으면 default 값 적용
@@ -2290,6 +2336,57 @@ mod tests {
         assert_eq!(ps.head_type, HeadType::Number);
         assert_eq!(ps.numbering_id, 3);
         assert_eq!(ps.para_level, 0);
+    }
+
+    /// [A4 2026-09-07] `hp:switch` 안의 heading — 코퍼스 240개 paraPr 형상(2016/paragraph·2021/metatag
+    /// case 에 OUTLINE 8~10, default 에 NONE). 한컴은 case 를 적용한다. 종전 파서는 둘 다 안 읽어 NONE 이었다.
+    #[test]
+    fn test_parse_hwpx_para_shape_switch_heading_case_wins_default_fallback() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+  xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:paraProperties itemCnt="3">
+      <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/paragraph"><hh:heading type="OUTLINE" idRef="0" level="8"/></hp:case><hp:default><hh:heading type="NONE" idRef="0" level="0"/></hp:default></hp:switch>
+        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
+      </hh:paraPr>
+      <hh:paraPr id="1" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2021/metatag"><hh:heading type="OUTLINE" idRef="0" level="9"/></hp:case><hp:default><hh:heading type="NONE" idRef="0" level="0"/></hp:default></hp:switch>
+      </hh:paraPr>
+      <hh:paraPr id="2" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hp:switch><hp:default><hh:heading type="NUMBER" idRef="2" level="1"/></hp:default></hp:switch>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let p0 = &doc_info.para_shapes[0];
+        assert_eq!(
+            p0.head_type,
+            HeadType::Outline,
+            "2016/paragraph case 의 OUTLINE 이 적용돼야 한다"
+        );
+        assert_eq!(p0.para_level, 8);
+        let p1 = &doc_info.para_shapes[1];
+        assert_eq!(
+            p1.head_type,
+            HeadType::Outline,
+            "2021/metatag case 도 적용된다"
+        );
+        assert_eq!(p1.para_level, 9);
+        let p2 = &doc_info.para_shapes[2];
+        assert_eq!(
+            p2.head_type,
+            HeadType::Number,
+            "case 가 없으면 default 로 폴백"
+        );
+        assert_eq!((p2.numbering_id, p2.para_level), (2, 1));
     }
 
     #[test]
