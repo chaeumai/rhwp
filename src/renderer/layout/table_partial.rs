@@ -1911,20 +1911,15 @@ impl LayoutEngine {
                     // 기반이어야 하고, rowspan 가시분은 아래 블록-합 보정이 채운다
                     // (교육부 r3: rs=1 셀 2개 전체 소비 17.1px 인데 선언 max 로
                     // 2107.1 유지 → 셀 bbox 2354.6 → valign 이 페이지 밖으로).
-                    // [#2393/R4″] 조각의 «마지막 행» 만 배치가 매달아 둔 행간을 뺀다.
-                    // 블록 분할 경로(`advance_row_block_cut`)는 `tail_trim` 을 안 채우므로
-                    // 여기서는 항상 빈 슬라이스가 되어 종전 동작 그대로다.
-                    let trim: &[f64] = if r == split_last_row {
-                        end_cut_tail_trim
-                    } else {
-                        &[]
-                    };
+                    // [#2393/R4″] **블록 분할에서는 트림을 쓰지 않는다.** `advance_row_block_cut`
+                    // 은 `tail_trim` 을 채우지 않으므로(`table_layout.rs` 두 생성자가 `Vec::new()`)
+                    // 지금은 어느 쪽이든 결과가 같지만, 이 경로의 컷은 **블록-셀 인덱스**라
+                    // 행 셀 순서로 매긴 `tail_trim` 과 색인 축이 다르다. 나중에 블록 컷이
+                    // 트림을 채우게 되면 조용히 엉뚱한 셀을 깎으므로 아예 안 받는다.
                     let h = if !has_visible_range {
                         0.0
                     } else if has_row_cut || in_start || in_end {
-                        self.row_cut_content_height_trimmed(
-                            table, r, &per_start, &per_end, trim, styles,
-                        )
+                        self.row_cut_content_height(table, r, &per_start, &per_end, styles)
                     } else {
                         self.row_cut_content_height(table, r, &[], &[], styles)
                     };
