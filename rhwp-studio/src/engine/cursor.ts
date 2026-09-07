@@ -1101,6 +1101,33 @@ export class CursorState {
   }
 
   /** 셀 선택 모드를 종료한다. */
+  /**
+   * 캐럿을 셀 선택의 focus 셀(확장이 «끝난» 셀) 끝으로 옮긴다 (E10). 한컴 실측: E1 §1 `v1d-esc` — 셀 블록을 Esc 로
+   * 풀면 캐럿은 확장이 끝난 셀 「2」 뒤에 있고, E2 §4 — 되돌리기 뒤 캐럿도 그 셀이다. 종전에는 확장 «시작» 셀(anchor,
+   * F5 를 누른 자리)에 남아 있었다. 셀 선택 모드가 아니거나 셀을 못 찾으면 false 로 두고 캐럿은 그대로.
+   */
+  moveCaretToCellSelectionFocus(): boolean {
+    if (!this._cellSelectionMode || !this.cellFocus || !this.cellTableCtx) return false;
+    const { sec, ppi, ci, cellPath } = this.cellTableCtx;
+    let bboxes: CellBbox[];
+    try {
+      bboxes = cellPath
+        ? this.wasm.getTableCellBboxesByPath(sec, ppi, JSON.stringify(cellPath))
+        : this.wasm.getTableCellBboxes(sec, ppi, ci!);
+    } catch { return false; }
+    const f = this.cellFocus;
+    const cell = bboxes.find(b =>
+      f.row >= b.row && f.row < b.row + b.rowSpan && f.col >= b.col && f.col < b.col + b.colSpan
+    );
+    if (!cell) return false;
+    try {
+      this.moveToCellByIndex(sec, ppi, ci, cellPath, cell.cellIdx, 'end');
+    } catch { return false; }
+    this.atLineEnd = false;
+    this.updateRect();
+    return true;
+  }
+
   exitCellSelectionMode(): void {
     this._cellSelectionMode = false;
     this._cellSelectionPhase = 1;

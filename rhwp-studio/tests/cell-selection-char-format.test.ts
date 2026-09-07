@@ -472,8 +472,9 @@ test('undo/redo 뒤 셀 선택 표 문맥을 재검증하고, 유효하면 오�
     assert.match(body, /this\.cursor\.moveTo\(newPos\);[\s\S]{0,120}?this\.afterEdit\([^)]*\);\s*this\.refreshCellSelectionAfterHistoryJump\(\);/, fn);
   }
   const rf = ih.slice(ih.indexOf('  private refreshCellSelectionAfterHistoryJump(): void {'));
-  assert.match(rf.slice(0, 400), /if \(this\.cursor\.revalidateCellSelectionAfterHistoryJump\(\)\) \{\s*this\.updateCellSelection\(\);/);
-  assert.match(rf.slice(0, 500), /this\.cellSelectionRenderer\?\.clear\(\);\s*this\.updateCaret\(\);/);
+  // E10 이후: 재검증 통과 뒤 캐럿을 focus 셀로 옮기고(주석 한 줄 허용) 오버레이·서식바를 다시 그린다.
+  assert.match(rf.slice(0, 600), /if \(this\.cursor\.revalidateCellSelectionAfterHistoryJump\(\)\) \{\s*(?:\/\/[^\n]*\n\s*)?this\.cursor\.moveCaretToCellSelectionFocus\(\);\s*this\.updateCellSelection\(\);/);
+  assert.match(rf.slice(0, 700), /this\.cellSelectionRenderer\?\.clear\(\);\s*this\.updateCaret\(\);/);
   const cur = source('src/engine/cursor.ts');
   const rv = cur.slice(cur.indexOf('  revalidateCellSelectionAfterHistoryJump(): boolean {'));
   assert.match(rv.slice(0, 900), /getTableDimensionsByPath\(sec, ppi, JSON\.stringify\(cellPath\)\)[\s\S]*getTableDimensions\(sec, ppi, ci\)/);
@@ -519,4 +520,26 @@ test('nestedRangeCellPaths: 반환 경로는 입력 배열과 객체를 공유�
   const p = innerPath(0, 1);
   const [q] = nestedRangeCellPaths(p, p)!;
   assert.notEqual(q, p); assert.notEqual(q[0], p[0]); assert.deepEqual(q, p);
+});
+
+// ─── E10 되돌리기·Esc 뒤 캐럿은 확장이 «끝난» 셀 (한컴 실측 E1 §1 v1d-esc · E2 §4) ─────
+
+test('셀 선택 해제(Esc)와 히스토리 점프 뒤 캐럿을 focus 셀 끝으로 옮긴다 (E10)', () => {
+  const cur = source('src/engine/cursor.ts');
+  const fn = cur.slice(cur.indexOf('  moveCaretToCellSelectionFocus(): boolean {'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  assert.match(body, /this\.cellFocus/);
+  assert.match(body, /moveToCellByIndex\(sec, ppi, ci, cellPath, cell\.cellIdx, 'end'\)/, 'focus 셀의 «끝»에 둔다 (「2」 뒤)');
+  const ih = source('src/engine/input-handler.ts');
+  const jump = ih.slice(ih.indexOf('  private refreshCellSelectionAfterHistoryJump(): void {'));
+  const jumpBody = jump.slice(0, jump.indexOf('\n  }\n'));
+  const mv = jumpBody.indexOf('this.cursor.moveCaretToCellSelectionFocus();');
+  const upd = jumpBody.indexOf('this.updateCellSelection();');
+  assert.ok(mv >= 0 && upd >= 0 && mv < upd, '재검증 통과 뒤·오버레이 갱신 전에 캐럿을 옮긴다');
+  const kb = source('src/engine/input-handler-keyboard.ts');
+  const esc = kb.slice(kb.indexOf("  if (this.cursor.isInCellSelectionMode()) {\n    if (e.key === 'Escape') {"));
+  const escBody = esc.slice(0, esc.indexOf('enterTableObjectSelection'));
+  const mv2 = escBody.indexOf('this.cursor.moveCaretToCellSelectionFocus();');
+  const exit2 = escBody.indexOf('this.cursor.exitCellSelectionMode();');
+  assert.ok(mv2 >= 0 && exit2 >= 0 && mv2 < exit2, 'Esc 는 선택을 풀기 «전에» 캐럿을 focus 셀로 옮긴다 (풀면 focus 를 잃는다)');
 });

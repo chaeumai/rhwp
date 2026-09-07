@@ -953,6 +953,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (this.cursor.isInCellSelectionMode()) {
     if (e.key === 'Escape') {
       e.preventDefault();
+      // E10: 블록을 풀 때 캐럿은 확장이 «끝난» 셀 끝에 (한컴 E1 §1 `v1d-esc`) — 종전에는 F5 를 누른 시작 셀에 남았다.
+      this.cursor.moveCaretToCellSelectionFocus();
       // 셀 선택 모드 → 표 객체 선택 모드
       this.cursor.exitCellSelectionMode();
       this.cellSelectionRenderer?.clear();

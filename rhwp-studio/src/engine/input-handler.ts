@@ -2520,6 +2520,8 @@ export class InputHandler {
   private refreshCellSelectionAfterHistoryJump(): void {
     if (!this.cursor.isInCellSelectionMode()) return;
     if (this.cursor.revalidateCellSelectionAfterHistoryJump()) {
+      // E10: 캐럿은 확장이 끝난 셀(focus)에 — 히스토리가 돌려준 위치는 서식을 걸던 순간의 캐럿(확장 시작 셀)이라 한컴과 달랐다.
+      this.cursor.moveCaretToCellSelectionFocus();
       this.updateCellSelection();
       return;
     }
