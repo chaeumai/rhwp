@@ -21,8 +21,7 @@ use quick_xml::Writer;
 use crate::model::shape::{
     CommonObjAttr, DrawingObjAttr, HorzAlign, HorzRelTo, LineShape, ObjectNumberingType,
     OleDrawingAspect, OleShape, RectangleShape, ShapeComponentAttr, TextBox, TextFlow, TextWrap,
-    VertAlign, VertRelTo,
-};
+    VertAlign, VertRelTo, SizeCriterion};
 use crate::model::style::{Fill, FillType, ImageFillMode, ShapeBorderLine, SolidFill};
 use crate::model::ColorRef;
 
@@ -915,6 +914,19 @@ fn hatch_style_str(pattern_type: i32) -> &'static str {
     }
 }
 
+/// `hp:sz@widthRelTo/heightRelTo` — 파서 `parse_size_criterion` 의 역매핑.
+/// [S2-b 2026-09-07] 종전에는 "ABSOLUTE" 상수를 방출해 `widthRelTo="PARA"`(문단 폭 100%)
+/// 개체가 저장 뒤 35mm 절대 폭으로 바뀌었다(swuniv__028 머리말 괘선 rect, 저장 gate L1 미분류).
+pub(crate) fn size_criterion_to_hwpx(c: SizeCriterion) -> &'static str {
+    match c {
+        SizeCriterion::Paper => "PAPER",
+        SizeCriterion::Page => "PAGE",
+        SizeCriterion::Column => "COLUMN",
+        SizeCriterion::Para => "PARA",
+        SizeCriterion::Absolute => "ABSOLUTE",
+    }
+}
+
 /// `<hp:shadow>` — `parse_shape_shadow_attr` 의 역매핑.
 /// 전 필드 0 이면 원본에 shadow 부재로 간주하여 미방출.
 /// alpha 는 정수 방출 (파서의 `>1.0` 경로와 정합 — 0/1 경계값만 비가역).
@@ -999,9 +1011,9 @@ fn write_sz<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Serial
         "hp:sz",
         &[
             ("width", &width),
-            ("widthRelTo", "ABSOLUTE"),
+            ("widthRelTo", size_criterion_to_hwpx(c.width_criterion)),
             ("height", &height),
-            ("heightRelTo", "ABSOLUTE"),
+            ("heightRelTo", size_criterion_to_hwpx(c.height_criterion)),
             ("protect", "0"),
         ],
     )
@@ -1607,6 +1619,30 @@ mod tests {
         let om = xml.find("<hp:outMargin").unwrap();
         let cp = xml.find("<hp:caption").unwrap();
         assert!(om < cp, "caption 은 outMargin 뒤");
+    }
+
+    /// [S2-b 2026-09-07] `hp:sz@widthRelTo/heightRelTo` 는 파싱한 크기 기준을 되돌려 준다 —
+    /// 종전 "ABSOLUTE" 상수 방출로 문단 폭 100% 괘선(swuniv__028 머리말 rect, widthRelTo="PARA"
+    /// width=10000)이 저장 뒤 35mm 절대 폭이 되던 손실(저장 gate L1 미분류)의 회귀 테스트.
+    #[test]
+    fn s2b_size_criterion_round_trips_into_sz() {
+        assert_eq!(size_criterion_to_hwpx(SizeCriterion::Paper), "PAPER");
+        assert_eq!(size_criterion_to_hwpx(SizeCriterion::Page), "PAGE");
+        assert_eq!(size_criterion_to_hwpx(SizeCriterion::Column), "COLUMN");
+        assert_eq!(size_criterion_to_hwpx(SizeCriterion::Para), "PARA");
+        assert_eq!(size_criterion_to_hwpx(SizeCriterion::Absolute), "ABSOLUTE");
+        let mut rect = RectangleShape::default();
+        rect.common.width = 10000;
+        rect.common.width_criterion = SizeCriterion::Para;
+        rect.common.height_criterion = SizeCriterion::Page;
+        let xml = serialize_rect(&rect);
+        assert!(
+            xml.contains(r#"widthRelTo="PARA""#) && xml.contains(r#"heightRelTo="PAGE""#),
+            "크기 기준이 보존되어야 함: {}",
+            xml
+        );
+        let xml = serialize_rect(&RectangleShape::default());
+        assert!(xml.contains(r#"widthRelTo="ABSOLUTE""#), "기본값은 ABSOLUTE: {}", xml);
     }
 
     #[test]

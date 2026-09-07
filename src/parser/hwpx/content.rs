@@ -20,6 +20,9 @@ pub struct PackageItem {
     pub id: String,
     /// [Task #873] isEmbeded attribute — true = ZIP 내 embedded, false = 외부 file 참조
     pub is_embedded: bool,
+    /// [S2-b 2026-09-07] `opf:item@hashkey` — 한컴이 일부 BinData 항목에 적는 불투명 키(의미 미확인,
+    /// MD5(바이너리)와 다르다). 라운드트립 때 그대로 되돌려 준다(있을 때만 방출).
+    pub hashkey: Option<String>,
 }
 
 /// content.hpf 파싱 결과
@@ -49,7 +52,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
 
     // 임시 저장: 모든 item을 수집 후 섹션은 spine 순서로 정렬
     // [Task #873] is_embedded 추가 — isEmbeded="0" (외부 file 참조) 식별
-    let mut all_items: Vec<(String, String, String, bool)> = Vec::new(); // (id, href, media_type, is_embedded)
+    let mut all_items: Vec<(String, String, String, bool, Option<String>)> = Vec::new(); // (id, href, media_type, is_embedded, hashkey)
     let mut spine_order: Vec<String> = Vec::new(); // idref 순서
 
     loop {
@@ -65,6 +68,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
                         // [Task #873] 기본값 true (BinData/ 폴더 내 embedded image 가 일반적 케이스).
                         // isEmbeded="0" 인 경우만 false 로 설정.
                         let mut is_embedded = true;
+                        let mut hashkey: Option<String> = None;
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"id" => id = attr_value(&attr),
@@ -73,11 +77,12 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
                                 b"isEmbeded" => {
                                     is_embedded = attr_value(&attr) != "0";
                                 }
+                                b"hashkey" => hashkey = Some(attr_value(&attr)),
                                 _ => {}
                             }
                         }
                         if !id.is_empty() && !href.is_empty() {
-                            all_items.push((id, href, media_type, is_embedded));
+                            all_items.push((id, href, media_type, is_embedded, hashkey));
                         }
                     }
                     b"itemref" => {
@@ -99,7 +104,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
 
     // spine 순서대로 섹션 파일 추출
     for idref in &spine_order {
-        if let Some((_, href, media_type, _)) = all_items.iter().find(|(id, _, _, _)| id == idref) {
+        if let Some((_, href, media_type, _, _)) = all_items.iter().find(|(id, _, _, _, _)| id == idref) {
             if media_type == "application/xml" && href.contains("section") {
                 info.section_files.push(href.clone());
             }
@@ -110,12 +115,12 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
     if info.section_files.is_empty() {
         let mut section_items: Vec<_> = all_items
             .iter()
-            .filter(|(_, href, mt, _)| mt == "application/xml" && href.contains("section"))
+            .filter(|(_, href, mt, _, _)| mt == "application/xml" && href.contains("section"))
             .collect();
         section_items.sort_by(|a, b| a.1.cmp(&b.1));
         info.section_files = section_items
             .into_iter()
-            .map(|(_, href, _, _)| href.clone())
+            .map(|(_, href, _, _, _)| href.clone())
             .collect();
     }
 
@@ -126,7 +131,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
     // [Task #873] 기존: BinData/ 폴더 내 항목만 수집 → isEmbeded="0" (외부 file 참조)
     // image 가 누락되어 HWP3 → HWPX 변환본의 image 가 표시되지 않음.
     // 정정: media_type 이 image/* 인 모든 item 도 수집.
-    for (id, href, media_type, is_embedded) in &all_items {
+    for (id, href, media_type, is_embedded, hashkey) in &all_items {
         let is_image = media_type.starts_with("image/");
         let is_bin_data_path = href.starts_with("BinData/") || href.contains("/BinData/");
         // [#1891] 외부 참조(isEmbeded="0")는 media-type 과 무관하게 BinData 항목이다.
@@ -140,6 +145,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
                 media_type: media_type.clone(),
                 id: id.clone(),
                 is_embedded: *is_embedded,
+                hashkey: hashkey.clone(),
             });
         }
     }
@@ -147,23 +153,24 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
     Ok(info)
 }
 
-fn collect_master_page_items(all_items: &[(String, String, String, bool)]) -> Vec<PackageItem> {
+fn collect_master_page_items(all_items: &[(String, String, String, bool, Option<String>)]) -> Vec<PackageItem> {
     all_items
         .iter()
-        .filter(|(_, href, media_type, _)| {
+        .filter(|(_, href, media_type, _, _)| {
             media_type == "application/xml" && href.to_ascii_lowercase().contains("masterpage")
         })
-        .map(|(id, href, media_type, is_embedded)| PackageItem {
+        .map(|(id, href, media_type, is_embedded, hashkey)| PackageItem {
             href: href.clone(),
             media_type: media_type.clone(),
             id: id.clone(),
             is_embedded: *is_embedded,
+            hashkey: hashkey.clone(),
         })
         .collect()
 }
 
 fn collect_section_master_pages(
-    all_items: &[(String, String, String, bool)],
+    all_items: &[(String, String, String, bool, Option<String>)],
     section_files: &[String],
 ) -> Vec<Vec<String>> {
     let mut groups = vec![Vec::new(); section_files.len()];
@@ -172,7 +179,7 @@ fn collect_section_master_pages(
     }
 
     let mut pending: Vec<String> = Vec::new();
-    for (_, href, media_type, _) in all_items {
+    for (_, href, media_type, _, _) in all_items {
         if media_type != "application/xml" {
             continue;
         }
@@ -191,10 +198,10 @@ fn collect_section_master_pages(
     if groups.iter().all(|group| group.is_empty()) {
         let mut master_pages: Vec<String> = all_items
             .iter()
-            .filter(|(_, href, media_type, _)| {
+            .filter(|(_, href, media_type, _, _)| {
                 media_type == "application/xml" && href.to_ascii_lowercase().contains("masterpage")
             })
-            .map(|(_, href, _, _)| href.clone())
+            .map(|(_, href, _, _, _)| href.clone())
             .collect();
         master_pages.sort();
 

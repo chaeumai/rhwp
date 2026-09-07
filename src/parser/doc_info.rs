@@ -239,6 +239,7 @@ fn parse_bin_data(data: &[u8]) -> Result<BinData, DocInfoError> {
 
     let mut bin = BinData {
         raw_data: None,
+        manifest_hashkey: None,
         attr,
         data_type: data_type.clone(),
         compression,

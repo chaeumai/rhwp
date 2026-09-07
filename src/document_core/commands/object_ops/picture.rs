@@ -1296,6 +1296,7 @@ impl DocumentCore {
         let bin_attr: u16 = 0x0101;
         self.document.doc_info.bin_data_list.push(BinData {
             raw_data: None,
+            manifest_hashkey: None,
             attr: bin_attr,
             data_type: BinDataType::Embedding,
             compression: BinDataCompression::Default,
@@ -3926,6 +3927,7 @@ mod bindata_storage_id_collision_tests {
         });
         core.document.doc_info.bin_data_list.push(BinData {
             raw_data: None,
+            manifest_hashkey: None,
             attr: 0x0101,
             data_type: BinDataType::Embedding,
             compression: BinDataCompression::Default,

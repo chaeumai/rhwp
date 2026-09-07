@@ -18,6 +18,8 @@ pub struct BinDataEntry {
     pub media_type: String,
     /// content.hpf `isEmbeded` — false 면 외부 파일 참조 (ZIP 엔트리 없음, #1891)
     pub is_embedded: bool,
+    /// [S2-b 2026-09-07] 원본 `opf:item@hashkey` — 있을 때만 그대로 방출 (저장 gate L1 미분류였다).
+    pub hashkey: Option<String>,
 }
 
 /// 원본 content.hpf 에서 `<opf:metadata> … </opf:metadata>` 블록(태그 포함)을
@@ -168,16 +170,16 @@ pub fn write_content_hpf(
     )?;
 
     for entry in bin_data {
-        empty_tag(
-            &mut w,
-            "opf:item",
-            &[
-                ("id", entry.id.as_str()),
-                ("href", entry.href.as_str()),
-                ("media-type", entry.media_type.as_str()),
-                ("isEmbeded", if entry.is_embedded { "1" } else { "0" }),
-            ],
-        )?;
+        let mut attrs: Vec<(&str, &str)> = vec![
+            ("id", entry.id.as_str()),
+            ("href", entry.href.as_str()),
+            ("media-type", entry.media_type.as_str()),
+            ("isEmbeded", if entry.is_embedded { "1" } else { "0" }),
+        ];
+        if let Some(h) = entry.hashkey.as_deref() {
+            attrs.push(("hashkey", h));
+        }
+        empty_tag(&mut w, "opf:item", &attrs)?;
     }
 
     end_tag(&mut w, "opf:manifest")?;
@@ -252,6 +254,37 @@ mod tests {
     }
 
     /// 원본이 없으면(HWP5 등) 하드코딩 metadata 로 폴백한다.
+    /// [S2-b 2026-09-07] 원본 `opf:item@hashkey` 는 있을 때만 그대로 되돌려 준다
+    /// (swuniv-mentor__001 BinData/image3.BMP — 저장 gate L1 미분류였다).
+    #[test]
+    fn s2b_manifest_hashkey_preserved_when_present() {
+        let entries = vec![
+            BinDataEntry {
+                id: "image1".into(),
+                href: "BinData/image1.png".into(),
+                media_type: "image/png".into(),
+                is_embedded: true,
+                hashkey: None,
+            },
+            BinDataEntry {
+                id: "image3".into(),
+                href: "BinData/image3.BMP".into(),
+                media_type: "image/bmp".into(),
+                is_embedded: true,
+                hashkey: Some("lWf0ohU67jagHL2wyUKbEA==".into()),
+            },
+        ];
+        let out = write_content_hpf(&["Contents/section0.xml".to_string()], &entries, &[], None)
+            .expect("serialize");
+        let xml = String::from_utf8(out).unwrap();
+        assert!(
+            xml.contains(r#"href="BinData/image3.BMP" media-type="image/bmp" isEmbeded="1" hashkey="lWf0ohU67jagHL2wyUKbEA==""#),
+            "hashkey 보존: {}",
+            xml
+        );
+        assert_eq!(xml.matches("hashkey=").count(), 1, "없는 항목엔 방출하지 않는다: {}", xml);
+    }
+
     #[test]
     fn metadata_falls_back_when_no_original() {
         let out = write_content_hpf(&["Contents/section0.xml".to_string()], &[], &[], None)

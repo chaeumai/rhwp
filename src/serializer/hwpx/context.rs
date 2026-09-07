@@ -77,6 +77,8 @@ pub struct BinDataEntry {
     pub bin_data_id: u16,
     /// content.hpf `isEmbeded` — false 면 외부 파일 참조(ZIP 엔트리 없음, #1891).
     pub is_embedded: bool,
+    /// [S2-b] 원본 `opf:item@hashkey` 보존(있을 때만 방출).
+    pub hashkey: Option<String>,
 }
 
 /// 1-pass 스캔으로 구축되는 직렬화 컨텍스트.
@@ -186,6 +188,12 @@ impl SerializeContext {
                     media_type: media_type.to_string(),
                     bin_data_id: bd.id,
                     is_embedded: true,
+                    hashkey: doc
+                        .doc_info
+                        .bin_data_list
+                        .iter()
+                        .find(|b| b.storage_id == bd.id)
+                        .and_then(|b| b.manifest_hashkey.clone()),
                 },
             );
         }
@@ -213,6 +221,7 @@ impl SerializeContext {
                     media_type: mime_from_ext(ext).to_string(),
                     bin_data_id: bd.storage_id,
                     is_embedded: false,
+                    hashkey: bd.manifest_hashkey.clone(),
                 },
             );
         }

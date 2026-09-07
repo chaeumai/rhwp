@@ -358,6 +358,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
             storage_id: bin_data_numeric_ids[i],
             extension: Some(ext),
             abs_path,
+            manifest_hashkey: item.hashkey.clone(),
             ..Default::default()
         });
     }
@@ -570,6 +571,7 @@ mod tests {
             media_type: "image/png".to_string(),
             id: id.to_string(),
             is_embedded: true,
+            hashkey: None,
         };
         // swuniv 017 실측 순서: [image6, image7, image1..5]
         let items: Vec<_> = ["image6", "image7", "image1", "image2", "image3"]
@@ -605,12 +607,14 @@ mod tests {
                 href: "Contents/masterpage1.xml".to_string(),
                 media_type: "application/xml".to_string(),
                 is_embedded: true,
+                hashkey: None,
             },
             content::PackageItem {
                 id: "masterpage0".to_string(),
                 href: "Contents/masterpage0.xml".to_string(),
                 media_type: "application/xml".to_string(),
                 is_embedded: true,
+                hashkey: None,
             },
         ];
         let id_refs = vec![
@@ -653,12 +657,14 @@ mod tests {
                 href: "BinData/beta.ttf".to_string(),
                 media_type: "application/x-font-ttf".to_string(),
                 is_embedded: true,
+                hashkey: None,
             },
             content::PackageItem {
                 id: "font-resource-alpha".to_string(),
                 href: "BinData/alpha.ttf".to_string(),
                 media_type: "application/x-font-ttf".to_string(),
                 is_embedded: true,
+                hashkey: None,
             },
         ];
 

@@ -151,6 +151,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
             href: e.href.clone(),
             media_type: e.media_type.clone(),
             is_embedded: e.is_embedded,
+            hashkey: e.hashkey.clone(),
         })
         .collect();
     let content_hpf = content::write_content_hpf(

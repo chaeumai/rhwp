@@ -393,9 +393,9 @@ fn write_sz<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Serial
         "hp:sz",
         &[
             ("width", &width),
-            ("widthRelTo", "ABSOLUTE"),
+            ("widthRelTo", super::shape::size_criterion_to_hwpx(c.width_criterion)),
             ("height", &height),
-            ("heightRelTo", "ABSOLUTE"),
+            ("heightRelTo", super::shape::size_criterion_to_hwpx(c.height_criterion)),
             ("protect", "0"),
         ],
     )

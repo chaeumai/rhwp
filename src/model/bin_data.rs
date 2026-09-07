@@ -21,6 +21,8 @@ pub struct BinData {
     pub storage_id: u16,
     /// 확장자 (EMBEDDING 타입: jpg, bmp, png 등)
     pub extension: Option<String>,
+    /// [S2-b 2026-09-07] HWPX `content.hpf` `opf:item@hashkey` 원문 보존(있을 때만). HWP5 에는 없다.
+    pub manifest_hashkey: Option<String>,
 }
 
 /// 바이너리 데이터 타입

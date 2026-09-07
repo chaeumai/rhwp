@@ -305,6 +305,7 @@ fn test_serialize_style_roundtrip() {
 fn test_serialize_bin_data_embedding() {
     let bd = BinData {
         raw_data: None,
+        manifest_hashkey: None,
         attr: 0x0101, // Embedding, Default, Success
         data_type: BinDataType::Embedding,
         compression: BinDataCompression::Default,
