@@ -317,7 +317,7 @@ export class InputHandler {
 
   // 표 경계선 hover 상태
   private resizeHoverRafId = 0;
-  private cachedTableRef: { sec: number; ppi: number; ci: number; pageHint?: number } | null = null;
+  private cachedTableRef: { sec: number; ppi: number; ci: number; pageHint?: number; pathJson?: string } | null = null;
   private cachedCellBboxes: CellBbox[] | null = null;
   private protectedCellHitCache: { key: string; protected: boolean } | null = null;
   private protectedCellHoverEl: HTMLDivElement | null = null;
@@ -2286,14 +2286,29 @@ export class InputHandler {
     }
 
     const pos = this.cursor.getPosition();
-    if (pos.isTextBox || (pos.cellPath?.length ?? 0) > 1) {
-      console.info('[InputHandler] Shift+Tab hanging indent: unsupported nested/textbox context');
+    if (pos.isTextBox) {
+      console.info('[InputHandler] Shift+Tab hanging indent: unsupported textbox context');
       return false;
     }
 
     try {
       let cursorRect: CursorRect | null = this.cursor.getRect();
       let firstLineStartRect: CursorRect;
+
+      // 중첩 셀(깊이 2 이상): 줄 정보·캐럿 사각형·문단 서식을 전부 경로로 (flat 잔여 — 종전 「unsupported nested」 무동작).
+      // 깊이 1 과 같은 산식: 첫 줄 시작 x 와 캐럿 x 의 차이가 내어쓰기.
+      if ((pos.cellPath?.length ?? 0) > 1 && pos.parentParaIndex !== undefined) {
+        const pathJson = JSON.stringify(pos.cellPath);
+        const firstLineInfo = this.wasm.getLineInfoByPath(pos.sectionIndex, pos.parentParaIndex, pathJson, 0);
+        firstLineStartRect = this.wasm.getCursorRectByPath(pos.sectionIndex, pos.parentParaIndex, pathJson, firstLineInfo.charStart);
+        cursorRect ??= this.wasm.getCursorRectByPath(pos.sectionIndex, pos.parentParaIndex, pathJson, pos.charOffset);
+        const hangingPx = computeHangingIndentPx(cursorRect.x, firstLineStartRect.x);
+        this.executeParaFormatCommand(
+          [{ kind: 'path', sec: pos.sectionIndex, parentPara: pos.parentParaIndex, cellPath: pos.cellPath!.map((e) => ({ ...e })) }],
+          { indent: -pxToRaw2x(hangingPx) },
+        );
+        return true;
+      }
 
       if (pos.parentParaIndex !== undefined) {
         const pathEntry = pos.cellPath?.[0];
@@ -2442,18 +2457,24 @@ export class InputHandler {
       // 일반 커서 이동/텍스트 입력 경로에서는 새 bbox 조회를 하지 않고, 표 hover/resize 경로에서
       // 이미 확보한 캐시가 있을 때만 재사용한다.
       if (inCell) {
-        const cellKey = `${pos.sectionIndex}:${pos.parentParaIndex}:${pos.controlIndex}:${pos.cellIndex}`;
+        // 중첩 셀(깊이 2 이상)은 경로가 표를 식별한다 — flat (ci, cellIndex) 만 보면 캐시가 «바깥 표» 것일 때
+        // 같은 번호의 바깥 셀 폭을 눈금자에 그렸다(flat 잔여). 캐시가 그 중첩 표(호버·리사이즈가 채운 pathJson)일 때만 쓴다.
+        const nested = (pos.cellPath?.length ?? 0) > 1;
+        const cellKey = nested
+          ? `${pos.sectionIndex}:${pos.parentParaIndex}:${JSON.stringify(pos.cellPath)}`
+          : `${pos.sectionIndex}:${pos.parentParaIndex}:${pos.controlIndex}:${pos.cellIndex}`;
         if (cellKey !== this.lastCellKey) {
           this.lastCellKey = cellKey;
           const sec = pos.sectionIndex;
           const ppi = pos.parentParaIndex!;
           const ci = pos.controlIndex!;
           const cellIdx = pos.cellIndex!;
-          const cached = this.cachedTableRef?.sec === sec
-            && this.cachedTableRef.ppi === ppi
-            && this.cachedTableRef.ci === ci
-            ? this.cachedCellBboxes
-            : null;
+          const ref = this.cachedTableRef;
+          const sameTable = !!ref && ref.sec === sec && ref.ppi === ppi
+            && (nested
+              ? sameTablePath(ref.pathJson, pos.cellPath!)
+              : (!ref.pathJson && ref.ci === ci));
+          const cached = sameTable ? this.cachedCellBboxes : null;
           const bbox = cached?.find(b => b.cellIdx === cellIdx);
           if (bbox) {
             this.eventBus.emit('cursor-cell-changed', {
@@ -5275,4 +5296,21 @@ export class InputHandler {
       input.select();
     });
   }
+}
+
+/**
+ * 호버·리사이즈 캐시의 표 경로(`pathJson`)가 캐럿 셀 경로와 같은 표를 가리키는가 (flat 잔여 · 눈금자).
+ * 마지막 항목 앞까지는 (controlIndex, cellIndex, cellParaIndex) 가 전부 같아야 하고, 마지막 항목은 표(controlIndex)만 같으면 된다
+ * — 캐시 경로의 마지막 항목은 호버한 «셀» 이라 cellIndex 가 다를 수 있다.
+ */
+function sameTablePath(pathJson: string | undefined, cellPath: readonly CellPathEntry[]): boolean {
+  if (!pathJson) return false;
+  let cached: CellPathEntry[];
+  try { cached = JSON.parse(pathJson) as CellPathEntry[]; } catch { return false; }
+  if (!Array.isArray(cached) || cached.length !== cellPath.length) return false;
+  for (let i = 0; i < cellPath.length - 1; i++) {
+    const a = cached[i], b = cellPath[i];
+    if (a.controlIndex !== b.controlIndex || a.cellIndex !== b.cellIndex || a.cellParaIndex !== b.cellParaIndex) return false;
+  }
+  return cached[cellPath.length - 1].controlIndex === cellPath[cellPath.length - 1].controlIndex;
 }

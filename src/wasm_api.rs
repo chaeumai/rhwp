@@ -2801,6 +2801,45 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 표 속성을 조회한다 — 경로 기반(중첩 표). JSON 계약은 `getTableProperties` 와 같다.
+    /// rhwp-studio 표/셀 속성 대화상자가 중첩 셀 캐럿에서 «그 중첩 표» 를 읽는 경로 (flat 잔여 2026-09-07).
+    #[wasm_bindgen(js_name = getTablePropertiesByPath)]
+    pub fn get_table_properties_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.get_table_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 표 속성을 수정한다 — 경로 기반(중첩 표). JSON 계약은 `setTableProperties` 와 같다.
+    ///
+    /// 반환: JSON `{"ok":true}`
+    #[wasm_bindgen(js_name = setTablePropertiesByPath)]
+    pub fn set_table_properties_by_path(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        json: &str,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(cell_path_json)?;
+        self.set_table_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            json,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표의 모든 셀 bbox를 반환한다 (F5 셀 선택 모드용).
     ///
     /// 반환: JSON `[{cellIdx, row, col, rowSpan, colSpan, pageIndex, x, y, w, h}, ...]`

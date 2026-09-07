@@ -1120,6 +1120,18 @@ export class WasmBridge {
     return JSON.parse(this.doc.setTableProperties(sec, parentPara, controlIdx, JSON.stringify(props)));
   }
 
+  /** 표 속성 조회 — 경로 기반(중첩 표). 마지막 항목의 controlIndex 가 대상 표 (flat 잔여 2026-09-07). */
+  getTablePropertiesByPath(sec: number, parentPara: number, pathJson: string): TableProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getTablePropertiesByPath(sec, parentPara, pathJson));
+  }
+
+  /** 표 속성 수정 — 경로 기반(중첩 표). JSON 계약은 setTableProperties 와 같다. */
+  setTablePropertiesByPath(sec: number, parentPara: number, pathJson: string, props: Partial<TableProperties>): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).setTablePropertiesByPath(sec, parentPara, pathJson, JSON.stringify(props)));
+  }
+
   mergeTableCells(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number): { ok: boolean; cellCount: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.mergeTableCells(sec, parentPara, controlIdx, startRow, startCol, endRow, endCol));

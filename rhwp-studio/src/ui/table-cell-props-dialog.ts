@@ -1,7 +1,7 @@
 import { ModalDialog } from './dialog';
 import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { CellProperties, TableProperties } from '@/core/types';
+import type { CellProperties, TableProperties, CellPathEntry } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 
@@ -41,7 +41,7 @@ interface TabDef {
 export class TableCellPropsDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
-  private tableCtx: { sec: number; ppi: number; ci: number };
+  private tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] };
   private cellIdx: number;
   /** 'table' = 표 선택 (6탭), 'cell' = 셀 선택 (4탭: 테두리·배경 제외) */
   private mode: 'table' | 'cell';
@@ -133,7 +133,7 @@ export class TableCellPropsDialog extends ModalDialog {
   constructor(
     wasm: WasmBridge,
     eventBus: EventBus,
-    tableCtx: { sec: number; ppi: number; ci: number },
+    tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] },
     cellIdx: number,
     mode: 'table' | 'cell' = 'cell',
     services?: CommandServices,
@@ -147,13 +147,27 @@ export class TableCellPropsDialog extends ModalDialog {
     this.services = services;
   }
 
+  /** 중첩 표(cellPath 깊이 2 이상)면 대상 셀(cellIdx)까지의 경로 JSON, 아니면 null (flat API). */
+  private nestedPathJson(): string | null {
+    const path = this.tableCtx.cellPath;
+    if (!path || path.length < 2) return null;
+    return JSON.stringify(path.map((e, i) => i === path.length - 1 ? { ...e, cellIndex: this.cellIdx, cellParaIndex: 0 } : { ...e }));
+  }
+
   show(): void {
     super.show();
     this.dialog.classList.add('tcp-dialog');
-    // 속성 조회
+    // 속성 조회 — 중첩 표(cellPath 깊이 2 이상)는 경로 API 로 «그 중첩 표·셀» 을 읽는다 (flat 잔여 2026-09-07:
+    // 종전에는 flat (ci, cellIdx) 라 바깥 표의 같은 번호 셀을 읽고 썼다).
     const { sec, ppi, ci } = this.tableCtx;
-    this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
-    this.tableProps = this.wasm.getTableProperties(sec, ppi, ci);
+    const pathJson = this.nestedPathJson();
+    if (pathJson) {
+      this.cellProps = this.wasm.getCellPropertiesByPath(sec, ppi, pathJson);
+      this.tableProps = this.wasm.getTablePropertiesByPath(sec, ppi, pathJson);
+    } else {
+      this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
+      this.tableProps = this.wasm.getTableProperties(sec, ppi, ci);
+    }
     this.populateFields();
   }
 
@@ -1437,7 +1451,13 @@ export class TableCellPropsDialog extends ModalDialog {
       }
     }
 
+    const pathJson = this.nestedPathJson();
     const applyProps = () => {
+      if (pathJson) {
+        this.wasm.setCellPropertiesByPath(sec, ppi, pathJson, newCellProps as Partial<CellProperties>);
+        this.wasm.setTablePropertiesByPath(sec, ppi, pathJson, newTableProps as Partial<TableProperties>);
+        return;
+      }
       this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newCellProps as Partial<CellProperties>);
       this.wasm.setTableProperties(sec, ppi, ci, newTableProps as Partial<TableProperties>);
     };

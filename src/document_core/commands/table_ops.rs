@@ -31,62 +31,7 @@ impl DocumentCore {
         parent_para_idx: usize,
         path: &[(usize, usize, usize)],
     ) -> Result<&mut crate::model::table::Table, HwpError> {
-        use crate::model::control::Control;
-        if path.is_empty() {
-            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
-        }
-        let mut para = self
-            .document
-            .sections
-            .get_mut(section_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?
-            .paragraphs
-            .get_mut(parent_para_idx)
-            .ok_or_else(|| {
-                HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx))
-            })?;
-        for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
-            let is_last = i == path.len() - 1;
-            let ctrl = para.controls.get_mut(ctrl_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("경로[{}]: controls[{}] 범위 초과", i, ctrl_idx))
-            })?;
-            if is_last {
-                return match ctrl {
-                    Control::Table(t) => Ok(t),
-                    _ => Err(HwpError::RenderError(format!(
-                        "경로[{}]: controls[{}]가 표가 아닙니다",
-                        i, ctrl_idx
-                    ))),
-                };
-            }
-            para = match ctrl {
-                Control::Table(table) => table
-                    .cells
-                    .get_mut(cell_idx)
-                    .and_then(|c| c.paragraphs.get_mut(cell_para_idx))
-                    .ok_or_else(|| {
-                        HwpError::RenderError(format!(
-                            "경로[{}]: 셀 {}/문단 {} 범위 초과",
-                            i, cell_idx, cell_para_idx
-                        ))
-                    })?,
-                Control::Shape(shape) => super::super::helpers::get_textbox_from_shape_mut(shape)
-                    .and_then(|tb| tb.paragraphs.get_mut(cell_para_idx))
-                    .ok_or_else(|| {
-                        HwpError::RenderError(format!(
-                            "경로[{}]: 글상자 문단 {} 범위 초과",
-                            i, cell_para_idx
-                        ))
-                    })?,
-                _ => {
-                    return Err(HwpError::RenderError(format!(
-                        "경로[{}]: 표/글상자가 아닌 컨트롤",
-                        i
-                    )))
-                }
-            };
-        }
-        unreachable!()
+        table_mut_by_path_in(&mut self.document, section_idx, parent_para_idx, path)
     }
     pub(crate) fn get_table_by_path(
         &mut self,
@@ -2317,25 +2262,18 @@ impl DocumentCore {
         parent_para_idx: usize,
         control_idx: usize,
     ) -> Result<String, HwpError> {
-        let para = self
-            .document
-            .sections
-            .get(section_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx)))?
-            .paragraphs
-            .get(parent_para_idx)
-            .ok_or_else(|| {
-                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
-            })?;
+        self.get_table_properties_by_path_native(section_idx, parent_para_idx, &[(control_idx, 0, 0)])
+    }
 
-        let table = match para.controls.get(control_idx) {
-            Some(Control::Table(t)) => t,
-            _ => {
-                return Err(HwpError::RenderError(
-                    "지정된 컨트롤이 표가 아닙니다".to_string(),
-                ))
-            }
-        };
+    /// 표 속성 조회 — 경로 기반(중첩 표). 마지막 항목의 control_idx 가 대상 표(`resolve_table_by_path` 규약);
+    /// flat 판은 `[(control_idx, 0, 0)]` 로 여기에 위임한다 (flat 잔여 2026-09-07 — 표/셀 속성 대화상자의 중첩 셀).
+    pub(crate) fn get_table_properties_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        let table = self.resolve_table_by_path(section_idx, parent_para_idx, path)?;
 
         let pb = match table.page_break {
             crate::model::table::TablePageBreak::None => 0,
@@ -2483,6 +2421,17 @@ impl DocumentCore {
         control_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
+        self.set_table_properties_by_path_native(section_idx, parent_para_idx, &[(control_idx, 0, 0)], json)
+    }
+
+    /// 표 속성 수정 — 경로 기반(중첩 표). JSON 계약·부수효과(캡션 생성/재조판·recompose)는 flat 판과 같다.
+    pub(crate) fn set_table_properties_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        json: &str,
+    ) -> Result<String, HwpError> {
         use super::super::helpers::{json_bool, json_i16, json_i32, json_str, json_u32, json_u8};
 
         let caption_style = self
@@ -2496,7 +2445,7 @@ impl DocumentCore {
             .map(|(idx, s)| (idx as u8, s.para_shape_id, s.char_shape_id as u32))
             .unwrap_or((0, 0, 0));
 
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        let table = self.get_table_mut_by_path(section_idx, parent_para_idx, path)?;
 
         if let Some(v) = json_i16(json, "cellSpacing") {
             table.cell_spacing = v;
@@ -2794,7 +2743,7 @@ impl DocumentCore {
             || json.contains("\"centerLine\"");
         if has_border_fill_change {
             let new_bf_id = self.create_border_fill_from_json(json);
-            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let table = self.get_table_mut_by_path(section_idx, parent_para_idx, path)?;
             table.border_fill_id = new_bf_id;
             for cell in &mut table.cells {
                 cell.border_fill_id = new_bf_id;
@@ -2806,10 +2755,8 @@ impl DocumentCore {
         // 중간 표 캡션 삭제 시 남은 표 번호가 한컴처럼 1부터 이어지도록 보장한다.
         if caption_created || caption_changed {
             crate::parser::assign_auto_numbers(&mut self.document);
-            if let Some(crate::model::control::Control::Table(ref mut tbl)) =
-                self.document.sections[section_idx].paragraphs[parent_para_idx]
-                    .controls
-                    .get_mut(control_idx)
+            if let Ok(tbl) =
+                table_mut_by_path_in(&mut self.document, section_idx, parent_para_idx, path)
             {
                 if let Some(ref mut cap) = tbl.caption {
                     let available_width_hu = if matches!(
@@ -2839,7 +2786,7 @@ impl DocumentCore {
 
         if caption_created {
             let char_offset = {
-                let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+                let table = self.get_table_mut_by_path(section_idx, parent_para_idx, path)?;
                 table.caption.as_ref().map_or(0, |c| {
                     c.paragraphs.first().map_or(0, |p| p.text.chars().count())
                 })
@@ -3259,6 +3206,72 @@ fn json_escape(s: &str) -> String {
     r
 }
 
+
+/// `get_table_mut_by_path` 의 자유 함수판 — `&mut Document` 만 빌리므로 호출자가 `self.styles`·`self.dpi` 를
+/// 같은 스코프에서 쓸 수 있다(표 속성 by-path 의 캡션 재조판, flat 잔여 2026-09-07). 경로 규약은 같다.
+pub(crate) fn table_mut_by_path_in<'a>(
+    document: &'a mut crate::model::document::Document,
+    section_idx: usize,
+    parent_para_idx: usize,
+    path: &[(usize, usize, usize)],
+) -> Result<&'a mut crate::model::table::Table, HwpError> {
+    use crate::model::control::Control;
+    if path.is_empty() {
+        return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+    }
+    let mut para = document
+        .sections
+        .get_mut(section_idx)
+        .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?
+        .paragraphs
+        .get_mut(parent_para_idx)
+        .ok_or_else(|| {
+            HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx))
+        })?;
+    for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
+        let is_last = i == path.len() - 1;
+        let ctrl = para.controls.get_mut(ctrl_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("경로[{}]: controls[{}] 범위 초과", i, ctrl_idx))
+        })?;
+        if is_last {
+            return match ctrl {
+                Control::Table(t) => Ok(t),
+                _ => Err(HwpError::RenderError(format!(
+                    "경로[{}]: controls[{}]가 표가 아닙니다",
+                    i, ctrl_idx
+                ))),
+            };
+        }
+        para = match ctrl {
+            Control::Table(table) => table
+                .cells
+                .get_mut(cell_idx)
+                .and_then(|c| c.paragraphs.get_mut(cell_para_idx))
+                .ok_or_else(|| {
+                    HwpError::RenderError(format!(
+                        "경로[{}]: 셀 {}/문단 {} 범위 초과",
+                        i, cell_idx, cell_para_idx
+                    ))
+                })?,
+            Control::Shape(shape) => super::super::helpers::get_textbox_from_shape_mut(shape)
+                .and_then(|tb| tb.paragraphs.get_mut(cell_para_idx))
+                .ok_or_else(|| {
+                    HwpError::RenderError(format!(
+                        "경로[{}]: 글상자 문단 {} 범위 초과",
+                        i, cell_para_idx
+                    ))
+                })?,
+            _ => {
+                return Err(HwpError::RenderError(format!(
+                    "경로[{}]: 표/글상자가 아닌 컨트롤",
+                    i
+                )))
+            }
+        };
+    }
+    unreachable!()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::model::shape::common_obj_offsets;
@@ -3656,6 +3669,45 @@ mod cell_properties_by_path_tests {
     ) -> &'a crate::model::table::Cell {
         let table = core.resolve_table_by_path(0, ppi, path).unwrap();
         &table.cells[path.last().unwrap().1]
+    }
+
+    /// 깊이 2 경로로 표 속성을 바꾸면 «그 중첩 표» 만 바뀌고 호스트 표는 그대로다; flat 판은 `[(ci,0,0)]` 로 같은 표를 본다.
+    #[test]
+    fn table_properties_by_path_targets_nested_table_only() {
+        let (mut core, ppi, path) = nested_table_fixture();
+        let host_ctrl = path[0].0;
+        let host_before = compact(&core.get_table_properties_native(0, ppi, host_ctrl).unwrap());
+        let nested_before = compact(
+            &core
+                .get_table_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        assert!(!nested_before.contains(r#""cellSpacing":37"#), "{nested_before}");
+        core.set_table_properties_by_path_native(
+            0,
+            ppi,
+            &path,
+            r#"{"cellSpacing":37,"paddingLeft":210}"#,
+        )
+        .unwrap();
+        let nested_after = compact(
+            &core
+                .get_table_properties_by_path_native(0, ppi, &path)
+                .unwrap(),
+        );
+        assert!(nested_after.contains(r#""cellSpacing":37"#), "{nested_after}");
+        assert!(nested_after.contains(r#""paddingLeft":210"#), "{nested_after}");
+        let nested = core.resolve_table_by_path(0, ppi, &path).unwrap();
+        assert_eq!(nested.cell_spacing, 37);
+        assert_eq!(nested.padding.left, 210);
+        let host_after = compact(&core.get_table_properties_native(0, ppi, host_ctrl).unwrap());
+        assert_eq!(host_after, host_before, "호스트 표는 그대로");
+        let flat = compact(
+            &core
+                .get_table_properties_by_path_native(0, ppi, &[(host_ctrl, 0, 0)])
+                .unwrap(),
+        );
+        assert_eq!(flat, host_after, "flat 판과 by-path [(ci,0,0)] 는 같은 표");
     }
 
     /// 깊이 2 경로로 셀 속성을 바꾸면 중첩 표의 그 셀만 바뀌고, 중첩 표 이웃 셀·호스트 셀은 그대로다.

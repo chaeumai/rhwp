@@ -279,7 +279,7 @@ export const tableCommands: CommandDef[] = [
       if (ih.isInTableObjectSelection()) {
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
-        const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
+        const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, cellPath: ref.cellPath };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
         dialog.show();
         return;
@@ -287,7 +287,8 @@ export const tableCommands: CommandDef[] = [
 
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      // 중첩 셀(cellPath 깊이 2 이상)은 경로를 함께 넘긴다 — 대화상자가 «그 중첩 표·셀» 을 읽고 쓴다 (flat 잔여 2026-09-07)
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
       dialog.show();
     },
