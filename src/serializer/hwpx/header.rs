@@ -1068,15 +1068,53 @@ fn write_para_pr<W: Write>(
             ("vertical", vertical),
         ],
     )?;
-    empty_tag(
-        w,
-        "hh:heading",
-        &[
-            ("type", head_type_str(ps.head_type)),
-            ("idRef", &ps.numbering_id.to_string()),
-            ("level", &ps.para_level.to_string()),
-        ],
-    )?;
+    // [E11 2026-09-07] 개요 8~10 수준(para_level 7~9)은 한글 2024 자신의 저장 형상대로
+    //   <hp:switch><hp:case hp:required-namespace="…/2016/paragraph"><hh:heading OUTLINE level=N/></hp:case>
+    //   <hp:default><hh:heading NONE level=0/></hp:default></hp:switch>
+    // 로 쓴다 — 7수준만 아는 옛 판이 default(NONE) 로 읽도록 한 호환 형상이고, 파서(A4 #2395)는
+    // case 를 읽으므로 라운드트립이 보존된다. 실측 저장본 `temp_output/e11-hancom/out/e11c-out.hwpx`
+    // paraPr 366 (E11 §3). 8~10 을 직계 heading 으로 쓰면 형상이 한컴과 달라진다(L1 저장 gate diff).
+    let heading_id_ref = ps.numbering_id.to_string();
+    let heading_level = ps.para_level.to_string();
+    if ps.head_type == HeadType::Outline && ps.para_level >= 7 {
+        super::utils::start_tag(w, "hp:switch")?;
+        start_tag_attrs(
+            w,
+            "hp:case",
+            &[(
+                "hp:required-namespace",
+                "http://www.hancom.co.kr/hwpml/2016/paragraph",
+            )],
+        )?;
+        empty_tag(
+            w,
+            "hh:heading",
+            &[
+                ("type", head_type_str(ps.head_type)),
+                ("idRef", &heading_id_ref),
+                ("level", &heading_level),
+            ],
+        )?;
+        end_tag(w, "hp:case")?;
+        super::utils::start_tag(w, "hp:default")?;
+        empty_tag(
+            w,
+            "hh:heading",
+            &[("type", "NONE"), ("idRef", &heading_id_ref), ("level", "0")],
+        )?;
+        end_tag(w, "hp:default")?;
+        end_tag(w, "hp:switch")?;
+    } else {
+        empty_tag(
+            w,
+            "hh:heading",
+            &[
+                ("type", head_type_str(ps.head_type)),
+                ("idRef", &heading_id_ref),
+                ("level", &heading_level),
+            ],
+        )?;
+    }
     empty_tag(
         w,
         "hh:breakSetting",
@@ -1855,6 +1893,70 @@ mod tests {
             !xml.contains("<hh:intent"),
             "margin 자식이 hh: 네임스페이스로 남으면 안 됨: {xml}"
         );
+    }
+
+    /// [E11 2026-09-07] 개요 8~10 수준(para_level 7~9)은 한글 2024 저장 형상
+    /// `<hp:switch><hp:case …/2016/paragraph><hh:heading OUTLINE level=N/></hp:case><hp:default><hh:heading NONE level=0/></hp:default></hp:switch>`
+    /// 로 쓴다(실측 저장본 e11c-out.hwpx paraPr 366). 7 이하와 NUMBER/BULLET 은 종전대로 직계 heading.
+    #[test]
+    fn write_para_pr_emits_heading_switch_for_outline_level_8_to_10() {
+        for level in [7u8, 8, 9] {
+            let mut ps = ParaShape::default();
+            ps.head_type = HeadType::Outline;
+            ps.para_level = level;
+            ps.numbering_id = 0;
+            let mut writer = Writer::new(Vec::new());
+            write_para_pr(&mut writer, 1, &ps).expect("write paraPr");
+            let xml = String::from_utf8(writer.into_inner()).unwrap();
+            let expected = format!(
+                r#"<hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/paragraph"><hh:heading type="OUTLINE" idRef="0" level="{level}"/></hp:case><hp:default><hh:heading type="NONE" idRef="0" level="0"/></hp:default></hp:switch>"#
+            );
+            assert!(xml.contains(&expected), "level {level}: {xml}");
+            assert_eq!(
+                xml.matches("<hh:heading ").count(),
+                2,
+                "직계 heading 없이 case/default 둘뿐이어야 한다 (level {level}): {xml}"
+            );
+            let align = xml.find("<hh:align ").unwrap();
+            let sw = xml.find("<hp:switch><hp:case hp:required-namespace=\"http://www.hancom.co.kr/hwpml/2016/paragraph\">").unwrap();
+            let brk = xml.find("<hh:breakSetting ").unwrap();
+            assert!(align < sw && sw < brk, "순서 align<switch(heading)<breakSetting (level {level}): {xml}");
+        }
+        let mut ps = ParaShape::default();
+        ps.head_type = HeadType::Outline;
+        ps.para_level = 6;
+        let mut writer = Writer::new(Vec::new());
+        write_para_pr(&mut writer, 1, &ps).expect("write paraPr");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert!(
+            xml.contains(r#"<hh:heading type="OUTLINE" idRef="0" level="6"/>"#),
+            "7 수준(0-based 6)은 직계: {xml}"
+        );
+        assert!(!xml.contains("2016/paragraph"), "{xml}");
+        let mut ps = ParaShape::default();
+        ps.head_type = HeadType::Number;
+        ps.para_level = 8;
+        let mut writer = Writer::new(Vec::new());
+        write_para_pr(&mut writer, 1, &ps).expect("write paraPr");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert!(!xml.contains("2016/paragraph"), "NUMBER 는 수준과 무관하게 직계: {xml}");
+    }
+
+    /// [E11] write → parse(A4 는 case 를 읽는다) 라운드트립이 head_type/para_level 을 보존한다.
+    #[test]
+    fn write_para_pr_heading_switch_roundtrips_through_parser() {
+        let mut doc = Document::default();
+        let mut ps = ParaShape::default();
+        ps.head_type = HeadType::Outline;
+        ps.para_level = 9;
+        doc.doc_info.para_shapes = vec![ParaShape::default(), ps];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).expect("write_header")).unwrap();
+        let (info, _) = crate::parser::hwpx::header::parse_hwpx_header(&xml).expect("parse header");
+        let p1 = &info.para_shapes[1];
+        assert_eq!(p1.head_type, HeadType::Outline, "{xml}");
+        assert_eq!(p1.para_level, 9, "{xml}");
+        assert_eq!(info.para_shapes[0].head_type, HeadType::None);
     }
 
     #[test]

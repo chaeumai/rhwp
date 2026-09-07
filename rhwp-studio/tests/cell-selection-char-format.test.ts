@@ -366,32 +366,41 @@ test('planOutlineLevelChange: 개요만 있는 블록은 각자 ±1 — 첫 셀 
   assert.deepEqual(planOutlineLevelChange([null, 2, 3], -1, 7, null), [null, 1, 2]);
 });
 
-test('planOutlineLevelChange: 개요 1 ▲ 도 개요 7 ▼ 도 개요 해제 — 양 끝에서 풀린다 (w3·w4 · E9 §1)', () => {
-  assert.deepEqual(planOutlineLevelChange([2], -1, 7, null), [1]);
-  assert.deepEqual(planOutlineLevelChange([1], -1, 7, null), ['body']);
-  // 한컴 실측(E9 §1): 개요 7 에서 한 번 더 증가하면 번호가 사라지고 바탕글이 된다. 종전 기대값은 [2, null] 이었다.
-  assert.deepEqual(planOutlineLevelChange([1, 7], 1, 7, null), [2, 'body']);
-  assert.deepEqual(planOutlineLevelChange([7], 1, 7, null), ['body']);
+test('planOutlineLevelChange: 개요 1 ▲ 는 개요 해제, 상한 10 ▼ 는 클램프(불변) — E1 · E11 실측', () => {
+  assert.deepEqual(planOutlineLevelChange([2], -1, 10, null), [1]);
+  assert.deepEqual(planOutlineLevelChange([1], -1, 10, null), ['body']);
+  // E11 CRD 재측정(2026-09-07): 실문서 3편에서 ▼ 12회 뒤 level=9(0-based) 그대로, 11·12회 불변 — 상한에서 풀리지 않는다.
+  // E9 의 「7 에서 해제」 기대값([2, 'body'])은 그 픽스처의 「개요 8」 스타일이 NONE 으로 읽힌 문서 특수였다.
+  assert.deepEqual(planOutlineLevelChange([1, 10], 1, 10, null), [2, null]);
+  assert.deepEqual(planOutlineLevelChange([10], 1, 10, null), [null]);
+  assert.deepEqual(planOutlineLevelChange([7], 1, 10, null), [8], '7 → 8 — E9 의 해제는 폐기');
+  assert.deepEqual(planOutlineLevelChange([9], 1, 10, null), [10]);
 });
 
-test('planOutlineLevelChange: 상한에서 풀린 뒤 ▼ 는 개요 1 → 2 로 재진입한다 (E9 §1 표 7·8번째)', () => {
-  // 7 에서 ▼ → 해제. 그 문단은 이제 비개요이므로 다음 ▼ 는 규칙 3(개요 없는 블록)이 받는다.
-  assert.deepEqual(planOutlineLevelChange([7], 1, 7, null), ['body']);
-  assert.deepEqual(planOutlineLevelChange([null], 1, 7, null), [1]);   // 7번째 — 앞선 개요 없음 → 1
-  assert.deepEqual(planOutlineLevelChange([1], 1, 7, null), [2]);      // 8번째 — 개요 1 → 2
+test('planOutlineLevelChange: 계승 뒤 클램프 — 9 를 이어받은 문단에 ▼ 를 거듭 눌러도 10 에서 멈춘다 (E11 e11c P3)', () => {
+  // e11c P3(8회): P1 의 9 를 계승(첫 ▼) → 이후 7회는 각자 +1 이되 10 에서 클램프.
+  let levels = planOutlineLevelChange([null], 1, 10, 9);
+  assert.deepEqual(levels, [9]);
+  for (let i = 0; i < 7; i++) {
+    const next = planOutlineLevelChange(levels, 1, 10, null);
+    levels = levels.map((l, k) => (next[k] === null ? l : next[k] === 'body' ? null : next[k]));
+  }
+  assert.deepEqual(levels, [10]);
 });
 
-test('HANCOM_MAX_OUTLINE_LEVEL 은 문서 스타일 목록이 아니라 한컴 고정 7 이다 (E9)', () => {
-  assert.equal(HANCOM_MAX_OUTLINE_LEVEL, 7);
-  // 실측 픽스처는 「개요 1」~「개요 10」 을 갖고도 7 에서 풀렸다 — 스타일 최대치를 상한으로 쓰면 8·9·10 까지 간다.
-  assert.deepEqual(planOutlineLevelChange([7], 1, HANCOM_MAX_OUTLINE_LEVEL, null), ['body']);
-  assert.deepEqual(planOutlineLevelChange([7], 1, 10, null), [8], '스타일 최대치를 넣으면 한컴과 갈린다(반증용)');
+test('HANCOM_MAX_OUTLINE_LEVEL 은 문서 스타일 목록도 번호 정의도 아닌 한컴 고정 10 이다 (E9 반증 유지 · E11 정정)', () => {
+  assert.equal(HANCOM_MAX_OUTLINE_LEVEL, 10);
+  assert.deepEqual(planOutlineLevelChange([10], 1, HANCOM_MAX_OUTLINE_LEVEL, null), [null]);
   const ih = source('src/engine/input-handler.ts');
   const lvl = ih.slice(ih.indexOf('  changeOutlineLevel(delta: number): void {'));
   const lvlBody = lvl.slice(0, lvl.indexOf('\n  }\n'));
   assert.match(lvlBody, /const maxLevel = HANCOM_MAX_OUTLINE_LEVEL;/);
   assert.doesNotMatch(lvlBody, /const maxLevel = Math\.max\(\.\.\.outlineByLevel\.keys\(\)\)/,
     '상한을 문서 스타일 목록에서 뽑으면 개요 10 문서에서 한컴과 갈린다 (E9 §1)');
+  // E11: 개요 스타일이 없는 문서에서도 명령이 동작한다(직접 모드) — 종전 무동작 가드가 남아 있으면 안 된다.
+  assert.doesNotMatch(lvlBody, /if \(outlineByLevel\.size === 0\) return;/,
+    '개요 스타일이 없는 문서는 heading 을 직접 올린다 (E11 실측 2026-09-07)');
+  assert.match(lvlBody, /const styleMode = outlineByLevel\.size > 0;/);
 });
 
 test('planOutlineLevelChange: 개요 없는 블록 ▼ 는 전부 개요(앞선 개요 수준 계승, 없으면 1), ▲ 는 무동작 (w1·w2·t2b)', () => {
@@ -423,12 +432,13 @@ test('changeOutlineLevel 은 문단마다 스타일을 읽어 계획대로 한 �
 
 test('개요 수준 읽기는 문단 모양의 head/level 을 먼저 보고, 앞선 수준 탐색은 같은 셀의 앞 문단부터 본다 (E8-b)', () => {
   const ih = source('src/engine/input-handler.ts');
-  // 결함 2: 렌더 번호는 head_type/para_level 이 정한다 — 스타일 이름은 폴백
+  // 결함 2: 렌더 번호는 head_type/para_level 이 정한다. E11(2026-09-07)로 축이 heading 으로 옮겨져
+  // 스타일 이름은 더 이상 «비개요 head 의 폴백» 이 아니다 — 문단 속성 조회가 실패했을 때만 폴백한다.
   const lot = ih.slice(ih.indexOf('  private outlineLevelOfTarget(target: ParaFormatTarget'));
   const lotBody = lot.slice(0, lot.indexOf('\n  }\n'));
-  assert.match(lotBody, /headType === 'Outline'/);
-  assert.match(lotBody, /return level \+ 1;/);
-  assert.match(lotBody, /return outlineLevelOf\(this\.styleOfParaTarget\(target\)\?\.name\);/);
+  assert.match(lotBody, /if \(headType !== 'Outline'\) return null;/);
+  assert.match(lotBody, /return typeof level === 'number' \? level \+ 1 : null;/);
+  assert.match(lotBody, /if \(headType === undefined\) return outlineLevelOf\(this\.styleOfParaTarget\(target\)\?\.name\);/);
   // 결함 1: 같은 셀의 앞 문단이 문서 순 직전이다
   const pre = ih.slice(ih.indexOf('  private precedingOutlineLevel(target: ParaFormatTarget)'));
   const preBody = pre.slice(0, pre.indexOf('\n  }\n'));

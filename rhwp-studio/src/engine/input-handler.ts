@@ -4727,11 +4727,16 @@ export class InputHandler {
 
   /**
    * 개요 수준 변경 (delta: -1 = 수준▲ = 한컴 Ctrl+Num−, +1 = 수준▼ = 한컴 Ctrl+Num+).
-   * 한컴 실측(2026-09-06, rhwp-cai `docs/E1-한컴실측-…-20260906-0128.md` §2)대로 **문단마다** 판단한다 — 첫 셀 기준이 아니다:
+   * 한컴 실측(E1 2026-09-06 §2 · E11 2026-09-07 `docs/E11-한컴재측정-…-20260907-1110.md` §4)대로 **문단마다** 판단하고,
+   * 축은 스타일 이름이 아니라 **문단 속성 heading(`headType`/`paraLevel`)** 이다:
    *  1. 대상(F5 셀 블록의 모든 문단 · 텍스트 범위 · 캐럿 문단)에 개요 문단이 하나라도 있으면 개요 문단만 각자 ±1, 비개요 문단은 그대로.
-   *  2. 개요 1 에서 ▲ 는 개요 해제(바탕글).
+   *  2. 개요 1 에서 ▲ 는 개요 해제(바탕글). **상한 10 에서 ▼ 는 불변(클램프)** — E11.
    *  3. 개요 문단이 하나도 없으면 ▼ 는 전부 개요로(수준 = 문서 순 앞선 개요 문단의 수준, 없으면 1), ▲ 는 무동작.
-   *  4. 한 스냅샷으로 적용해 되돌리기 한 단계.
+   *  4. 두 모드(E11 §4): 문서에 「개요 L」 스타일이 있으면 그 스타일을 적용하고 heading 을 함께 명시한다(E8-b — 직접 서식
+   *     문단은 스타일만으로 head/level 이 안 바뀐다). 그 수준의 스타일이 없으면(개요 스타일이 없는 문서, 또는 개요 1~7 만
+   *     정의된 문서의 8~10) 스타일은 두고 문단 heading 만 직접 올린다 — 한글 2024 도 그렇게 저장한다(새 paraPr, 8~10 수준은
+   *     `hp:switch/case[2016/paragraph]`, serializer 가 그 형상으로 쓴다). 종전 「개요 스타일이 없는 문서는 무동작」은 폐기.
+   *  5. 한 스냅샷으로 적용해 되돌리기 한 단계.
    * 종전(UI-5)은 선택 첫 셀 스타일로 방향을 정해 첫 셀이 개요가 아니면 무동작이었다 — 한컴에 대한 반례로 폐기 (E8).
    */
   changeOutlineLevel(delta: number): void {
@@ -4744,21 +4749,19 @@ export class InputHandler {
         const level = outlineLevelOf(s.name);
         if (level !== null && !outlineByLevel.has(level)) outlineByLevel.set(level, s.id);
       }
-      if (outlineByLevel.size === 0) return;
-      // 상한은 **문서 스타일 목록이 아니라 한컴 고정값 7** 이다 — 실측 픽스처가 「개요 1」~「개요 10」 을
-      // 갖고도 7 에서 풀렸다(E9 §1, `HANCOM_MAX_OUTLINE_LEVEL` 주석). 스타일이 없는 수준은 아래
-      // `outlineByLevel.get(entry)` 가 undefined 라 그 문단만 건너뛴다 — 종전(상한=스타일 최대)과 같은 무동작.
+      // 스타일 모드(개요 스타일이 하나라도 있다) / 직접 모드(없다 — 스타일은 건드리지 않고 heading 만).
+      const styleMode = outlineByLevel.size > 0;
       const maxLevel = HANCOM_MAX_OUTLINE_LEVEL;
       const bodyStyle = styles.find((s) => s.name === '바탕글') ?? styles.find((s) => s.id === 0);
       const heads = targets.map((t) => this.paraPropsOfTarget(t)?.headType);
       const levels = targets.map((t, i) => this.outlineLevelOfTarget(t, i < heads.length ? heads[i] : undefined));
       const preceding = levels.every((l) => l === null) && delta > 0 ? this.precedingOutlineLevel(targets[0]) : null;
       const plan = planOutlineLevelChange(levels, delta, maxLevel, preceding);
-      const ops: Array<{ target: ParaFormatTarget; styleId: number; propsJson: string }> = [];
+      const ops: Array<{ target: ParaFormatTarget; styleId: number | undefined; propsJson: string }> = [];
       plan.forEach((entry, i) => {
         if (entry === null) return;
-        const styleId = entry === 'body' ? bodyStyle?.id : outlineByLevel.get(entry);
-        if (styleId === undefined) return;
+        // 스타일 모드에서만 스타일을 옮긴다 — 해제는 바탕글, 수준 L 은 「개요 L」. 그 수준의 스타일이 없으면 heading 만.
+        const styleId = !styleMode ? undefined : entry === 'body' ? bodyStyle?.id : outlineByLevel.get(entry);
         // 스타일만 바꾸면 **직접 문단 서식이 있는 문단**에서는 `para_shape_id` 가 보존돼(task 1470)
         // head/level 이 그대로다 — 렌더 개요 번호는 para_shape 의 head_type·para_level 로만 정해지므로
         // 서식바만 「개요 N」 으로 바뀌고 번호가 안 그려진다(E8 리뷰 결함 2). 같은 스냅샷에서 head 를 명시한다.
@@ -4775,7 +4778,7 @@ export class InputHandler {
       const cursorBefore = this.cursor.getPosition();
       const operation = (wasm: WasmBridge): DocumentPosition => {
         for (const { target, styleId, propsJson } of ops) {
-          this.applyStyleToParaTarget(wasm, target, styleId);
+          if (styleId !== undefined) this.applyStyleToParaTarget(wasm, target, styleId);
           applyParaFormatToTarget(wasm, target, propsJson);
         }
         return { ...cursorBefore };
@@ -4810,17 +4813,19 @@ export class InputHandler {
   }
 
   /**
-   * 문단 하나의 개요 수준(1-based). **문단 모양의 `headType`/`paraLevel` 을 먼저 본다** — 렌더 개요 번호가
-   * 그것으로만 정해지므로 스타일 이름만 보면 화면과 다른 것을 읽는다(E8 리뷰 결함 2). head 가 개요가 아니면
-   * 스타일 이름(`개요 N`)으로 폴백한다. 개요가 아니면 null.
+   * 문단 하나의 개요 수준(1-based). 축은 **문단 모양의 `headType`/`paraLevel`** 이다 — 한컴의 개요 수준은 문단 속성이고
+   * 「개요 N」 이라는 스타일 이름은 관용적 이름표일 뿐이다(E11 §8: 코퍼스 「개요 N」 문단 1665건 중 429건이 이름과 속성이
+   * 어긋난다 · E11 CRD 실측 2026-09-07: 스타일이 없는 문서에서도 명령이 heading 을 직접 만든다). 렌더 개요 번호도 그것으로만
+   * 정해진다(E8 리뷰 결함 2). head 가 개요가 아니면 **비개요(null)** — 스타일 이름으로는 폴백하지 않는다.
+   * 문단 속성 조회 자체가 실패했을 때만 스타일 이름(`개요 N`)으로 폴백한다.
    */
   private outlineLevelOfTarget(target: ParaFormatTarget, head?: string): number | null {
-    const headType = head ?? this.paraPropsOfTarget(target)?.headType;
-    if (headType === 'Outline') {
-      const level = this.paraPropsOfTarget(target)?.paraLevel;
-      if (typeof level === 'number') return level + 1;
-    }
-    return outlineLevelOf(this.styleOfParaTarget(target)?.name);
+    const props = head === undefined ? this.paraPropsOfTarget(target) : null;
+    const headType = head ?? props?.headType;
+    if (headType === undefined) return outlineLevelOf(this.styleOfParaTarget(target)?.name);
+    if (headType !== 'Outline') return null;
+    const level = (props ?? this.paraPropsOfTarget(target))?.paraLevel;
+    return typeof level === 'number' ? level + 1 : null;
   }
 
   /** 문단 서식 대상 하나에 스타일을 적용한다 (`applyStyle` 과 같은 세 갈래). */
