@@ -1148,8 +1148,12 @@ fn parse_para_shape_switch(
     //   <hp:default><hh:heading type="NONE"/></hp:default></hp:switch>
     // 로 적는다(189+51). 종전에는 HwpUnitChar case 만 보고 heading 은 case 도 default 도 안 읽어
     // 개요 번호가 사라졌다(감사 F9: e1-cellblock 의 heading 1건을 switch 로 감싸면 「가.」 소실).
-    // 한컴은 case 를 적용한다 — 어느 네임스페이스든 case 의 heading 을 쓰고, 없으면 default.
+    // [A4-b 2026-09-07] 한글 2024 는 «자기가 지원하는 네임스페이스» 의 case 만 적용한다 — CRD 실측
+    // (temp_output/lane-e11/fixtures/e1-a4b-4way2.hwpx, 같은 표 4셀): 2016/paragraph case 는 heading 으로
+    // 읽어 ①·㉯ 를 그리고, 2021/metatag case 는 읽지 않아 default(NONE) 로 번호가 없다. 종전 A4 의
+    // 「어느 네임스페이스든 case 우선」 은 2021/metatag 문서(코퍼스 paraPr 51건)에서 우리만 번호를 그렸다.
     let mut in_any_case = false;
+    let mut in_honored_case = false;
     let mut case_heading: Option<(HeadType, u16, u8)> = None;
     let mut def_heading: Option<(HeadType, u16, u8)> = None;
 
@@ -1169,6 +1173,10 @@ fn parse_para_shape_switch(
                         if is_hwpunitchar {
                             in_hwpunitchar_case = true;
                         }
+                        // heading 은 2016/paragraph case 만 (A4-b)
+                        in_honored_case = ce.attributes().flatten().any(|attr| {
+                            attr_str(&attr).contains("/2016/paragraph")
+                        });
                     }
                     b"default" => {
                         in_default = true;
@@ -1199,8 +1207,8 @@ fn parse_para_shape_switch(
                         }
                     }
                     if in_any_case {
-                        // 첫 case 가 이긴다 (한컴이 지원하는 확장 네임스페이스의 분기)
-                        if case_heading.is_none() {
+                        // 한컴이 지원하는 네임스페이스(2016/paragraph)의 첫 case 가 이긴다 (A4-b)
+                        if in_honored_case && case_heading.is_none() {
                             case_heading = Some((ht, id, lv));
                         }
                     } else {
@@ -1290,6 +1298,7 @@ fn parse_para_shape_switch(
                     b"case" => {
                         in_hwpunitchar_case = false;
                         in_any_case = false;
+                        in_honored_case = false;
                     }
                     b"default" => {
                         in_default = false;
@@ -1305,7 +1314,7 @@ fn parse_para_shape_switch(
         buf.clear();
     }
 
-    // [A4] heading — case 우선, 없으면 default
+    // [A4] heading — 지원 네임스페이스의 case 우선, 없으면 default (A4-b)
     if let Some((ht, id, lv)) = case_heading.or(def_heading) {
         ps.head_type = ht;
         ps.numbering_id = id;
@@ -2339,7 +2348,8 @@ mod tests {
     }
 
     /// [A4 2026-09-07] `hp:switch` 안의 heading — 코퍼스 240개 paraPr 형상(2016/paragraph·2021/metatag
-    /// case 에 OUTLINE 8~10, default 에 NONE). 한컴은 case 를 적용한다. 종전 파서는 둘 다 안 읽어 NONE 이었다.
+    /// case 에 OUTLINE 8~10, default 에 NONE). 종전 파서는 둘 다 안 읽어 NONE 이었다.
+    /// [A4-b] 한글 2024 는 2016/paragraph case 만 적용하고 2021/metatag case 는 default 로 읽는다(CRD 실측).
     #[test]
     fn test_parse_hwpx_para_shape_switch_heading_case_wins_default_fallback() {
         let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
@@ -2374,12 +2384,14 @@ mod tests {
         );
         assert_eq!(p0.para_level, 8);
         let p1 = &doc_info.para_shapes[1];
+        // [A4-b 2026-09-07] 한글 2024 는 2021/metatag case 를 heading 으로 읽지 않는다 — CRD 실측
+        // (e1-a4b-4way2.hwpx: 같은 표에서 2016/paragraph case 는 ①·㉯, 2021/metatag case 는 번호 없음).
         assert_eq!(
             p1.head_type,
-            HeadType::Outline,
-            "2021/metatag case 도 적용된다"
+            HeadType::None,
+            "2021/metatag case 는 한컴이 안 읽으므로 default(NONE) 로 폴백"
         );
-        assert_eq!(p1.para_level, 9);
+        assert_eq!(p1.para_level, 0);
         let p2 = &doc_info.para_shapes[2];
         assert_eq!(
             p2.head_type,
