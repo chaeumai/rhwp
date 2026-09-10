@@ -2710,6 +2710,61 @@ mod resize_clamp_tests {
         );
     }
 
+    /// 도형 offset 은 «부호 있는» 값이다 — 종전 셋터는 `json_u32` 라 `-N` 을 통째로 버렸고
+    /// (helpers.rs 의 json_u32 는 '-' 에서 즉시 실패한다) 그래서 도형은 정렬 기준점보다
+    /// 왼쪽·위로 한 칸도 못 갔다. 그림 경로(object_ops/picture.rs)는 이미 json_i32 였다.
+    #[test]
+    fn shape_offsets_accept_negative_values() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        core.set_shape_properties_native(0, para, ctrl, r#"{"horzOffset":-4300,"vertOffset":-750}"#)
+            .expect("negative offset");
+
+        let common = shape_common(&core, para, ctrl);
+        assert_eq!(common.horizontal_offset as i32, -4300);
+        assert_eq!(common.vertical_offset as i32, -750);
+    }
+
+    /// 게터도 같은 계약이어야 한다 — raw u32 를 내보내면 개체 속성 대화상자가
+    /// 음수 offset 을 «15,151,xxx mm» 로 보여 준다 (한컴 문서에 실제로 그런 값이 들어 있다:
+    /// HWPX `vertOffset="4294967248"` = −48, 코퍼스 251편 중 34편/80건).
+    #[test]
+    fn shape_properties_json_reports_signed_offsets() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        core.set_shape_properties_native(0, para, ctrl, r#"{"horzOffset":-4300,"vertOffset":-750}"#)
+            .expect("negative offset");
+        let json = core
+            .get_shape_properties_native(0, para, ctrl)
+            .expect("shape props");
+
+        assert!(
+            json.contains("\"horzOffset\":-4300"),
+            "게터가 부호를 복원해야 한다: {json}"
+        );
+        assert!(
+            json.contains("\"vertOffset\":-750"),
+            "게터가 부호를 복원해야 한다: {json}"
+        );
+    }
+
+    /// 정렬 「안쪽/바깥쪽」은 모델에 있고 개체 속성 대화상자가 내보내는데,
+    /// 셋터가 매핑하지 않아 조용히 버려지고 `{"ok":true}` 를 돌려주고 있었다.
+    #[test]
+    fn shape_align_accepts_inside_and_outside() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        core.set_shape_properties_native(0, para, ctrl, r#"{"horzAlign":"Outside","vertAlign":"Inside"}"#)
+            .expect("align");
+
+        let common = shape_common(&core, para, ctrl);
+        assert_eq!(common.horz_align, crate::model::shape::HorzAlign::Outside);
+        assert_eq!(common.vert_align, crate::model::shape::VertAlign::Inside);
+    }
+
     /// Rectangle은 common.width/height 를 기반으로 x_coords/y_coords 를 재계산한다.
     /// 0으로 내려가면 [0,0,0,0]이 되어 화면에서 사라졌던 버그 방어.
     #[test]

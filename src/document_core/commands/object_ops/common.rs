@@ -135,8 +135,14 @@ impl DocumentCore {
             vert_align,
             horz_rel,
             horz_align,
-            c.vertical_offset,
-            c.horizontal_offset,
+            // HwpUnit 은 u32 지만 offset 은 «부호 있는» 값이다 — 한컴도 음수를 2의 보수로
+            // 랩해서 쓴다(HWPX `vertOffset="4294967248"` = −48, 코퍼스 251편 중 34편/80건이
+            // 그 형태이고 전부 `application="Hancom Office Hangul"`). 그림 경로는 이미
+            // `as i32` 로 복원해 내보내는데(object_ops/picture.rs) 도형 경로만 raw u32 를
+            // 내보내 대화상자에 «15,151,xxx mm» 가 뜨고, 셋터의 json_u32 와 짝이 되어
+            // 음수 입력이 조용히 버려졌다. 게터·셋터를 그림과 같은 계약으로 맞춘다.
+            c.vertical_offset as i32,
+            c.horizontal_offset as i32,
             text_wrap,
             c.flow_with_text,
             c.allow_overlap,
@@ -155,7 +161,7 @@ impl DocumentCore {
         c: &mut crate::model::shape::CommonObjAttr,
         props_json: &str,
     ) {
-        use crate::document_core::helpers::{json_bool, json_i16, json_str, json_u32};
+        use crate::document_core::helpers::{json_bool, json_i16, json_i32, json_str, json_u32};
 
         if let Some(w) = json_u32(props_json, "width") {
             c.width = w.max(MIN_SHAPE_SIZE);
@@ -193,6 +199,9 @@ impl DocumentCore {
                 "Top" => crate::model::shape::VertAlign::Top,
                 "Center" => crate::model::shape::VertAlign::Center,
                 "Bottom" => crate::model::shape::VertAlign::Bottom,
+                // 모델에 있는 값인데 셋터가 안 받아 «조용히 무시»되던 둘 (개체 속성 대화상자가 내보낸다)
+                "Inside" => crate::model::shape::VertAlign::Inside,
+                "Outside" => crate::model::shape::VertAlign::Outside,
                 _ => c.vert_align,
             };
         }
@@ -201,6 +210,8 @@ impl DocumentCore {
                 "Left" => crate::model::shape::HorzAlign::Left,
                 "Center" => crate::model::shape::HorzAlign::Center,
                 "Right" => crate::model::shape::HorzAlign::Right,
+                "Inside" => crate::model::shape::HorzAlign::Inside,
+                "Outside" => crate::model::shape::HorzAlign::Outside,
                 _ => c.horz_align,
             };
         }
@@ -245,11 +256,14 @@ impl DocumentCore {
             c.allow_overlap = false;
             c.attr &= !(1 << 14);
         }
-        if let Some(v) = json_u32(props_json, "vertOffset") {
-            c.vertical_offset = v;
+        // offset 은 부호 있는 값이다 — json_u32 는 '-' 에서 즉시 실패해(helpers.rs) 음수 입력을
+        // 조용히 버렸고, 그래서 도형은 정렬 기준점보다 왼쪽·위로 한 칸도 못 갔다.
+        // 그림 경로(object_ops/picture.rs)와 같은 json_i32 계약으로 맞춘다.
+        if let Some(v) = json_i32(props_json, "vertOffset") {
+            c.vertical_offset = v as u32;
         }
-        if let Some(v) = json_u32(props_json, "horzOffset") {
-            c.horizontal_offset = v;
+        if let Some(v) = json_i32(props_json, "horzOffset") {
+            c.horizontal_offset = v as u32;
         }
         if let Some(v) = json_str(props_json, "description") {
             c.description = v;

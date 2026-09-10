@@ -506,7 +506,8 @@ export function onClick(this: any, e: MouseEvent): void {
                     continue;
                   }
                   const bb = this.findPictureBbox(r);
-                  if (!p.treatAsChar && bb) multiResizeRefs.push({ ...r, origWidth: p.width, origHeight: p.height, origHorzOffset: p.horzOffset, origVertOffset: p.vertOffset, bboxX: bb.x, bboxY: bb.y });
+                  // horzAlign/vertAlign 을 함께 담는다 — offset 증감의 부호·기준점이 정렬에 달렸다(object-offset-axis).
+                  if (!p.treatAsChar && bb) multiResizeRefs.push({ ...r, origWidth: p.width, origHeight: p.height, origHorzOffset: p.horzOffset, origVertOffset: p.vertOffset, horzAlign: p.horzAlign, vertAlign: p.vertAlign, bboxX: bb.x, bboxY: bb.y });
                 } catch { /* skip */ }
               }
               if (hasSizeProtected) return;
@@ -550,6 +551,9 @@ export function onClick(this: any, e: MouseEvent): void {
                 lastPageX: px, lastPageY: py,
                 totalDeltaH: 0, totalDeltaV: 0,
                 pageIndex: pi,
+                hasMoved: false,
+                startBbox: { x: minX, y: minY },   // 격자 스냅 기준
+                lastBbox: null,
                 multiRefs: multiMoveRefs,
               };
               this.container.style.cursor = 'move';
@@ -634,6 +638,10 @@ export function onClick(this: any, e: MouseEvent): void {
                 origHeight: props.height,
                 origHorzOffset: props.horzOffset,
                 origVertOffset: props.vertOffset,
+                // offset 의 부호·기준점은 정렬에 달렸다(object-offset-axis) — 드래그 중
+                // 바뀌지 않으므로 시작 시점에 한 번만 잡아 둔다.
+                horzAlign: props.horzAlign,
+                vertAlign: props.vertAlign,
                 rotationAngle: (props.rotationAngle ?? 0) as number,
                 startClientX: e.clientX,
                 startClientY: e.clientY,
@@ -682,12 +690,18 @@ export function onClick(this: any, e: MouseEvent): void {
                     lastPageX: px, lastPageY: py,
                     totalDeltaH: 0, totalDeltaV: 0,
                     pageIndex: pi,
+                    hasMoved: false,
+                    startBbox: { x: picBbox.x, y: picBbox.y },   // 격자 스냅 기준
+                    lastBbox: { x: picBbox.x, y: picBbox.y },
                   };
                   this.container.style.cursor = 'move';
                   document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
                   this.textarea.focus();
                   return;
                 }
+                // 「글자처럼 취급」 개체 — 종전에는 여기서 조용히 아무 일도 안 했다.
+                this.notifyTreatAsCharBlocked(ref);
+                return;
               } catch { /* ignore */ }
             }
           }

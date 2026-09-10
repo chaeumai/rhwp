@@ -411,12 +411,15 @@ export class InputHandler {
     origHeight: number;
     origHorzOffset?: number;
     origVertOffset?: number;
+    /** offset 축 변환용 정렬 기준 — 드래그 중 불변이라 시작 시점 값을 들고 있는다 */
+    horzAlign?: string;
+    vertAlign?: string;
     startClientX: number;
     startClientY: number;
     pageIndex: number;
     bbox: { x: number; y: number; w: number; h: number };
-    /** 다중 선택 리사이즈 시 각 개체의 원래 크기/위치 */
-    multiRefs?: { sec: number; ppi: number; ci: number; type: string; origWidth: number; origHeight: number; origHorzOffset: number; origVertOffset: number; bboxX: number; bboxY: number }[];
+    /** 다중 선택 리사이즈 시 각 개체의 원래 크기/위치/정렬 */
+    multiRefs?: { sec: number; ppi: number; ci: number; type: string; origWidth: number; origHeight: number; origHorzOffset: number; origVertOffset: number; horzAlign?: string; vertAlign?: string; bboxX: number; bboxY: number }[];
   } | null = null;
 
   // 그림/글상자 이동 드래그 상태
@@ -432,6 +435,15 @@ export class InputHandler {
     totalDeltaH: number;
     totalDeltaV: number;
     pageIndex: number;
+    /** 3px 이동 문턱을 넘었는가 — 넘은 뒤에는 다시 묻지 않는다 */
+    hasMoved?: boolean;
+    /** 격자 스냅 기준이 되는 «드래그 시작 시» 렌더 위치 (페이지 px) */
+    startBbox?: { x: number; y: number } | null;
+    /** 직전 프레임에 실제로 그려진 위치 — 렌더 클램프 되먹임 판정용 */
+    lastBbox?: { x: number; y: number } | null;
+    /** 렌더 클램프에 막힌 방향(부호). 같은 방향 요청은 건너뛰어 헛된 왕복을 막는다 */
+    clampedX?: number;
+    clampedY?: number;
     /** 다중 선택 이동 시 각 개체의 원래 offset 기록 */
     multiRefs?: { sec: number; ppi: number; ci: number; type: string; origHorzOffset: number; origVertOffset: number }[];
   } | null = null;
@@ -3295,6 +3307,11 @@ export class InputHandler {
   /** 개체 속성을 타입에 따라 조회한다 (그림/글상자 분기) */
   private getObjectProperties(ref: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole' }): any {
     return _picture.getObjectProperties.call(this, ref);
+  }
+
+  /** 「글자처럼 취급」 개체를 옮기려 했을 때 왜 안 움직이는지 알린다 */
+  private notifyTreatAsCharBlocked(ref: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole' }): void {
+    _picture.notifyTreatAsCharBlocked.call(this, ref as any);
   }
 
   /** 개체 속성을 타입에 따라 변경한다 (그림/글상자 분기) */

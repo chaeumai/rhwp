@@ -4,8 +4,10 @@
 import { MovePictureCommand, MoveShapeCommand, ResizeObjectCommand } from './command';
 import type { ObjectResizeTarget } from './command';
 import { computeArrowResize, MIN_SIZE_HWP, type ArrowKey } from './picture-resize';
-import type { CellPathLike } from '@/core/types';
+import { moveOffsetDelta, horzOffsetDelta, vertOffsetDelta } from './object-offset-axis';
+import { getGridViewSettings } from '@/view/grid-settings';
 import { showToast } from '@/ui/toast';
+import type { CellPathLike } from '@/core/types';
 
 type PictureObjectRef = {
   sec: number;
@@ -326,13 +328,19 @@ export function findPictureAtClick(this: any,
 /** 선택된 개체의 bbox를 페이지 레이아웃에서 찾는다. */
 export function findPictureBbox(this: any,
   ref: { sec: number; ppi: number; ci: number; type?: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole'; cellIdx?: number; cellParaIdx?: number; cellPath?: CellPathLike; noteRef?: any },
+  preferPage?: number,
 ): { pageIndex: number; x: number; y: number; w: number; h: number; x1?: number; y1?: number; x2?: number; y2?: number } | null {
   const matchType = ref.type ?? 'image';
   // line은 shape의 하위 타입 → layout에서 'line'으로 반환됨
   const layoutType = matchType === 'line' ? 'line' : matchType;
   try {
     const pageCount = this.wasm.pageCount;
-    for (let p = 0; p < pageCount; p++) {
+    // preferPage 가 있으면 그 쪽을 먼저 본다 — 드래그 중 매 프레임 호출되므로 뒤쪽 쪽에
+    // 있는 개체에서 0..p 전수 스캔이 프레임마다 반복되는 것을 막는다.
+    const order: number[] = [];
+    if (preferPage !== undefined && preferPage >= 0 && preferPage < pageCount) order.push(preferPage);
+    for (let p = 0; p < pageCount; p++) if (p !== preferPage) order.push(p);
+    for (const p of order) {
       const layout = this.wasm.getPageControlLayout(p);
       for (const ctrl of layout.controls) {
         if (matchesControlRef(ctrl, { ...ref, type: matchType } as PictureObjectRef, layoutType)) {
@@ -400,8 +408,10 @@ export function renderPictureObjectSelection(this: any): void {
   const ref = this.cursor.getSelectedPictureRef();
   if (!ref) {
     this.pictureObjectRenderer.clear();
+    showObjectReadout.call(this, null);
     return;
   }
+  showObjectReadout.call(this, ref);
   const matchType = ref.type ?? 'image';
   const layoutType = matchType === 'line' ? 'line' : matchType;
   try {
@@ -489,7 +499,39 @@ export function exitPictureObjectSelectionIfNeeded(this: any): void {
   if (this.cursor.isInPictureObjectSelection()) {
     this.cursor.exitPictureObjectSelection();
     this.pictureObjectRenderer?.clear();
+    showObjectReadout.call(this, null);
     this.eventBus.emit('picture-object-selection-changed', false);
+  }
+}
+
+/**
+ * 선택·드래그 중인 개체의 위치·크기를 상태 표시줄에 mm 로 보여 준다.
+ *
+ * 종전에는 «지금 개체가 어디에 얼마나 있는지»를 숫자로 보여 주는 곳이 한 군데도 없었다
+ * (상태표시줄·드래그 툴팁·선택 오버레이 전부 무언). 눈대중만으로는 «정확히» 놓을 수 없다.
+ * 정렬 기준을 함께 적는 것은 offset 의 부호·기준점이 거기 달렸기 때문이다(object-offset-axis).
+ */
+export function showObjectReadout(this: any, ref: PictureObjectRef | null | undefined): void {
+  const el = document.getElementById('sb-object');
+  if (!el) return;
+  const hide = () => { el.style.display = 'none'; el.textContent = ''; };
+  if (!ref) { hide(); return; }
+  try {
+    const p = getObjectProperties.call(this, ref);
+    if (!p) { hide(); return; }
+    const mm = (hu: number) => (Number(hu) * 25.4 / 7200).toFixed(1);
+    const H: Record<string, string> = { Left: '왼쪽', Center: '가운데', Right: '오른쪽', Inside: '안쪽', Outside: '바깥쪽' };
+    const V: Record<string, string> = { Top: '위', Center: '가운데', Bottom: '아래', Inside: '안쪽', Outside: '바깥쪽' };
+    if (p.treatAsChar) {
+      el.textContent = `개체 ${mm(p.width)}×${mm(p.height)}mm · 글자처럼 취급`;
+    } else {
+      const h = `${H[p.horzAlign] ?? p.horzAlign} ${mm(p.horzOffset)}`;
+      const v = `${V[p.vertAlign] ?? p.vertAlign} ${mm(p.vertOffset)}`;
+      el.textContent = `개체 ${mm(p.width)}×${mm(p.height)}mm · 가로 ${h} · 세로 ${v}mm`;
+    }
+    el.style.display = '';
+  } catch {
+    hide();
   }
 }
 
@@ -557,6 +599,51 @@ export function setObjectProperties(this: any, ref: PictureObjectRef, props: Rec
     }
     this.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
   }
+}
+
+/**
+ * 「글자처럼 취급」 개체를 옮기려 했을 때의 안내.
+ *
+ * 이 개체는 자유 배치가 아니라 «문자 사이»에 놓이므로 offset 이동이 화면에 나타나지 않는다.
+ * 종전에는 드래그·방향키가 조용히 무동작이라(진입 게이트 input-handler-mouse.ts, 방향키
+ * input-handler-table.ts) 사용자가 «편집기가 멈췄나» 로 읽었다 — 크기 조절 핸들은 잡히니 더 헷갈렸다.
+ * 코퍼스 HWPX 251편 그림 1383개 중 **1141개(82.5%)** 가 이 상태다.
+ *
+ * ⚠ 한컴 실측(2026-09-10, 한글 2024): 한컴은 이 개체를 끌면 «드롭 지점의 문자 위치로 재삽입»한다
+ * (속성은 그대로, 문단 안 위치만 바뀐다). 그 재삽입은 Rust 쪽 문자 위치 재배치가 필요한 별도 단위이고,
+ * 여기서는 그때까지 «왜 안 움직이는지»와 «빠져나갈 길»을 준다.
+ */
+export function notifyTreatAsCharBlocked(this: any, ref: PictureObjectRef): void {
+  const now = Date.now();
+  if (this._tacBlockToastAt && now - this._tacBlockToastAt < 4000) return; // 연타 억제
+  this._tacBlockToastAt = now;
+  try {
+    this.container.style.cursor = 'not-allowed';
+    setTimeout(() => { try { this.container.style.cursor = ''; } catch { /* ignore */ } }, 700);
+  } catch { /* ignore */ }
+  showToast({
+    message: '「글자처럼 취급」 개체는 글자처럼 문자 사이에 놓여서 마우스·방향키로 옮길 수 없습니다.\n자유롭게 배치하려면 「글자처럼 취급」을 끄세요.',
+    durationMs: 6000,
+    action: {
+      label: '글자처럼 취급 끄기',
+      onClick: () => {
+        try {
+          this.executeOperation({
+            kind: 'snapshot',
+            operationType: 'clearTreatAsChar',
+            operation: () => {
+              setObjectProperties.call(this, ref, { treatAsChar: false });
+              return this.cursor.getPosition();
+            },
+          });
+          this.eventBus.emit('document-changed');
+          this.renderPictureObjectSelection();
+        } catch (err) {
+          console.warn('[InputHandler] 글자처럼 취급 해제 실패:', err);
+        }
+      },
+    },
+  });
 }
 
 /** 크기 고정 개체인지 조회한다. 조회 실패 시 기존 조작 흐름을 막지 않는다. */
@@ -820,8 +907,12 @@ export function updatePictureResizeDrag(this: any, e: MouseEvent): void {
         const newW = Math.max(Math.round(r.origWidth * sx), MIN_SIZE_HWP);
         const newH = Math.max(Math.round(r.origHeight * sy), MIN_SIZE_HWP);
         const updated: Record<string, unknown> = { width: newW, height: newH };
-        if (deltaH !== 0) updated['horzOffset'] = r.origHorzOffset + deltaH;
-        if (deltaV !== 0) updated['vertOffset'] = r.origVertOffset + deltaV;
+        // 좌상단 델타 + 크기 델타를 정렬 기준으로 환산한다 — 오른쪽/가운데 기준 개체는
+        // 폭이 바뀌기만 해도 렌더 x 가 움직이므로 좌상단 델타만 더하면 어긋난다.
+        const offH = horzOffsetDelta(r.horzAlign, deltaH, newW - r.origWidth);
+        const offV = vertOffsetDelta(r.vertAlign, deltaV, newH - r.origHeight);
+        if (offH !== 0) updated['horzOffset'] = r.origHorzOffset + offH;
+        if (offV !== 0) updated['vertOffset'] = r.origVertOffset + offV;
         setObjectProperties.call(this, r, updated);
       }
       this.eventBus.emit('document-changed');
@@ -848,8 +939,10 @@ export function updatePictureResizeDrag(this: any, e: MouseEvent): void {
       setObjectProperties.call(this, state.ref, {
         width: newW,
         height: newH,
-        horzOffset: beforeHorzOffset + (newHorzOffset - origHorzOffset),
-        vertOffset: beforeVertOffset + (newVertOffset - origVertOffset),
+        horzOffset: beforeHorzOffset
+          + horzOffsetDelta(state.horzAlign, newHorzOffset - origHorzOffset, newW - state.origWidth),
+        vertOffset: beforeVertOffset
+          + vertOffsetDelta(state.vertAlign, newVertOffset - origVertOffset, newH - state.origHeight),
       });
       this.eventBus.emit('document-changed');
     } catch { /* ignore */ }
@@ -895,12 +988,15 @@ export function finishPictureResizeDrag(this: any, e: MouseEvent): void {
         const newH = Math.max(Math.round(r.origHeight * sy), MIN_SIZE_HWP);
         const updated: Record<string, unknown> = { width: newW, height: newH };
         const before: Record<string, unknown> = { width: r.origWidth, height: r.origHeight };
-        if (deltaH !== 0) {
-          updated['horzOffset'] = r.origHorzOffset + deltaH;
+        // 좌상단 델타 + 크기 델타 → 정렬 기준의 offset 증감 (object-offset-axis)
+        const offH = horzOffsetDelta(r.horzAlign, deltaH, newW - r.origWidth);
+        const offV = vertOffsetDelta(r.vertAlign, deltaV, newH - r.origHeight);
+        if (offH !== 0) {
+          updated['horzOffset'] = r.origHorzOffset + offH;
           before['horzOffset'] = r.origHorzOffset;
         }
-        if (deltaV !== 0) {
-          updated['vertOffset'] = r.origVertOffset + deltaV;
+        if (offV !== 0) {
+          updated['vertOffset'] = r.origVertOffset + offV;
           before['vertOffset'] = r.origVertOffset;
         }
         const changed = Object.keys(updated).some(key => updated[key] !== before[key]);
@@ -949,8 +1045,10 @@ export function finishPictureResizeDrag(this: any, e: MouseEvent): void {
     // offset 은 페이지 절대값이 아니라 "저장된 offset + 페이지좌표 델타"로 적용한다.
     // (글상자/셀 중첩 picture 는 offset 이 컨테이너 상대라, 페이지 절대값을 쓰면 밖으로 튕김.
     //  다중 선택 리사이즈 경로와 동일한 델타 방식 — 본문 그림은 before≈orig 이므로 동작 불변.)
-    const deltaHorz = newHorzOffset - origHorzOffset;
-    const deltaVert = newVertOffset - origVertOffset;
+    // 좌상단 델타 + 크기 델타 → 정렬 기준의 offset 증감 (object-offset-axis).
+    // Left/Top 기준(코퍼스 91%/99%)에서는 종전과 같은 값이다.
+    const deltaHorz = horzOffsetDelta(state.horzAlign, newHorzOffset - origHorzOffset, newW - state.origWidth);
+    const deltaVert = vertOffsetDelta(state.vertAlign, newVertOffset - origVertOffset, newH - state.origHeight);
     if (deltaHorz !== 0) {
       updated['horzOffset'] = beforeHorzOffset + deltaHorz;
       before['horzOffset'] = beforeHorzOffset;
@@ -1029,34 +1127,104 @@ export function updatePictureMoveDrag(this: any, e: MouseEvent): void {
   const cr = sc.getBoundingClientRect();
   const cx = e.clientX - cr.left;
   const cy = e.clientY - cr.top;
-  const pi = this.virtualScroll.getPageAtPoint(cx, cy);
+  // 좌표 기준은 «드래그를 시작한 쪽» 으로 못박는다. 매 프레임 getPageAtPoint 로 다시
+  // 고르면 포인터가 쪽 경계를 넘는 순간 원점이 pageHeight+gap 만큼 불연속으로 바뀌어,
+  // 그 차이가 통째로 이동 델타가 된다(A4 기준 약 -84,900HU ≈ -299mm 점프).
+  const pi = this.pictureMoveState.pageIndex;
   const po = this.virtualScroll.getPageOffset(pi);
-  const pw = this.virtualScroll.getPageWidth(pi);
   const pl = this.virtualScroll.getPageLeftResolved(pi, sc.clientWidth);
   const px = (cx - pl) / zoom;
   const py = (cy - po) / zoom;
 
-  const deltaXpx = px - this.pictureMoveState.lastPageX;
-  const deltaYpx = py - this.pictureMoveState.lastPageY;
-  const deltaH = Math.round(deltaXpx * 75); // 1 page px = 75 HWPUNIT
-  const deltaV = Math.round(deltaYpx * 75);
+  // 시작점 기준 총 이동량 — 축 고정(Shift)·격자 스냅·이동 문턱은 모두 이 위에서 정한다.
+  let totalXpx = px - this.pictureMoveState.startPageX;
+  let totalYpx = py - this.pictureMoveState.startPageY;
 
-  if (deltaH === 0 && deltaV === 0) return;
+  // 이동 문턱 — 이미 움직이기 시작했으면 다시 묻지 않는다. 표 드래그와 같은 3px 가드
+  // (없으면 «선택된 그림을 클릭만» 해도 손떨림 1px 이 0.26mm 이동으로 기록된다).
+  if (!this.pictureMoveState.hasMoved) {
+    const threshold = 3 / Math.max(zoom, 0.1);
+    if (Math.abs(totalXpx) < threshold && Math.abs(totalYpx) < threshold) return;
+    this.pictureMoveState.hasMoved = true;
+  }
+
+  // Shift — 우세한 축만 남긴다(수평/수직 고정)
+  if (e.shiftKey) {
+    if (Math.abs(totalXpx) >= Math.abs(totalYpx)) totalYpx = 0; else totalXpx = 0;
+  }
+
+  // 격자 스냅 — 「자석 효과」·「격자에만 붙이기」는 시작 위치 + 총 이동량을 격자 간격으로 반올림한다.
+  // (누적은 실수로 들고 표시만 스냅하므로 잔차가 사라지지 않는다.)
+  const grid = getGridViewSettings();
+  if (grid.snapMode !== 'free' && this.pictureMoveState.startBbox) {
+    const stepX = Math.max(0.5, grid.horizontalMm) * 96 / 25.4; // mm → page px(96dpi)
+    const stepY = Math.max(0.5, grid.verticalMm) * 96 / 25.4;
+    const snap = (v: number, step: number) => Math.round(v / step) * step;
+    const b = this.pictureMoveState.startBbox;
+    if (totalXpx !== 0) totalXpx = snap(b.x + totalXpx, stepX) - b.x;
+    if (totalYpx !== 0) totalYpx = snap(b.y + totalYpx, stepY) - b.y;
+  }
+
+  let dLeftHu = Math.round(totalXpx * 75) - this.pictureMoveState.totalDeltaH; // 1 page px = 75 HWPUNIT
+  let dTopHu = Math.round(totalYpx * 75) - this.pictureMoveState.totalDeltaV;
+
+  // 직전 프레임에 «그 방향으로» 막힌 축은 다시 시도하지 않는다 — 경계에 붙어 있는 동안
+  // 프레임마다 (적용 → 되돌리기) 두 번 쓰는 것을 막는다. 방향이 뒤집히면 바로 푼다.
+  if (this.pictureMoveState.clampedX && Math.sign(dLeftHu) === this.pictureMoveState.clampedX) dLeftHu = 0;
+  else this.pictureMoveState.clampedX = 0;
+  if (this.pictureMoveState.clampedY && Math.sign(dTopHu) === this.pictureMoveState.clampedY) dTopHu = 0;
+  else this.pictureMoveState.clampedY = 0;
+
+  if (dLeftHu === 0 && dTopHu === 0) return;
 
   try {
-    // 다중 선택: 모든 개체를 동일 delta로 이동
+    // 다중 선택: 모든 개체를 «화면에서» 동일 delta 만큼 이동한다. offset 증감은
+    // 개체마다 정렬 기준이 다를 수 있으므로 개체별로 축 변환한다.
     const targets = this.pictureMoveState.multiRefs || [this.pictureMoveState.ref];
+    const primary = targets[0];
+    const bboxBefore = this.pictureMoveState.lastBbox ?? findPictureBbox.call(this, primary, pi);
+    const applied: { ref: any; prevH: number; prevV: number; horzAlign?: string; vertAlign?: string }[] = [];
     for (const ref of targets) {
       const props = getObjectProperties.call(this, ref);
+      const { deltaH, deltaV } = moveOffsetDelta(props, dLeftHu, dTopHu);
+      if (deltaH === 0 && deltaV === 0) continue;
       setObjectProperties.call(this, ref, {
         horzOffset: props.horzOffset + deltaH,
         vertOffset: props.vertOffset + deltaV,
       });
+      applied.push({ ref, prevH: props.horzOffset, prevV: props.vertOffset,
+                     horzAlign: props.horzAlign, vertAlign: props.vertAlign });
     }
-    this.pictureMoveState.lastPageX = px;
-    this.pictureMoveState.lastPageY = py;
-    this.pictureMoveState.totalDeltaH += deltaH;
-    this.pictureMoveState.totalDeltaV += deltaV;
+    // 「쪽 영역 안으로 제한」 등 렌더 클램프에 걸리면 화면은 멈추는데 저장 offset 만 계속
+    // 커진다 — 되돌릴 때 누적분이 소진될 때까지 개체가 꿈쩍도 않는 «죽은 구간»이다.
+    // 실제로 그려진 자리를 되먹임으로 재서, «달성한 만큼만» offset 과 누적에 반영한다.
+    const bboxAfter = findPictureBbox.call(this, primary, pi);
+    const TOL_HU = 40; // ≈0.5 page px — 부동소수 잡음과 진짜 클램프를 가른다
+    let commitX = dLeftHu;
+    let commitY = dTopHu;
+    if (bboxBefore && bboxAfter) {
+      const achX = Math.round((bboxAfter.x - bboxBefore.x) * 75);
+      const achY = Math.round((bboxAfter.y - bboxBefore.y) * 75);
+      if (dLeftHu !== 0 && Math.abs(achX - dLeftHu) > TOL_HU) commitX = achX;
+      if (dTopHu !== 0 && Math.abs(achY - dTopHu) > TOL_HU) commitY = achY;
+    }
+    if (commitX !== dLeftHu || commitY !== dTopHu) {
+      for (const a of applied) {
+        const fix: Record<string, unknown> = {};
+        if (commitX !== dLeftHu) fix['horzOffset'] = a.prevH + horzOffsetDelta(a.horzAlign, commitX);
+        if (commitY !== dTopHu) fix['vertOffset'] = a.prevV + vertOffsetDelta(a.vertAlign, commitY);
+        if (Object.keys(fix).length > 0) setObjectProperties.call(this, a.ref, fix);
+      }
+      // 이 방향으로는 더 못 간다고 표시해 다음 프레임의 헛된 왕복을 막는다.
+      if (commitX !== dLeftHu) this.pictureMoveState.clampedX = Math.sign(dLeftHu);
+      if (commitY !== dTopHu) this.pictureMoveState.clampedY = Math.sign(dTopHu);
+      this.pictureMoveState.lastBbox = findPictureBbox.call(this, primary, pi);
+    } else {
+      this.pictureMoveState.lastBbox = bboxAfter;
+    }
+    // 누적은 «화면 델타» 로 들고 있는다 — 종료 시 개체별로 다시 축 변환한다.
+    this.pictureMoveState.totalDeltaH += commitX;
+    this.pictureMoveState.totalDeltaV += commitY;
     // 연결선 자동 추적
     try { this.wasm.updateConnectorsInSection(targets[0].sec); } catch { /* ignore */ }
     this.eventBus.emit('document-changed');
@@ -1073,11 +1241,20 @@ export function finishPictureMoveDrag(this: any): void {
       const targets = multiRefs || [{ ...this.pictureMoveState.ref, origHorzOffset: this.pictureMoveState.origHorzOffset, origVertOffset: this.pictureMoveState.origVertOffset }];
       for (const r of targets) {
         const CmdClass = (r.type === 'shape' || r.type === 'line' || r.type === 'group' || r.type === 'ole') ? MoveShapeCommand : MovePictureCommand;
+        // 히스토리 명령은 «offset 공간» 으로 기록한다(redo 가 offset 에 그대로 더하므로).
+        // 정렬 기준은 드래그 중 바뀌지 않으니 누적 화면 델타를 한 번만 축 변환하면 된다.
+        let cmdH = totalDeltaH;
+        let cmdV = totalDeltaV;
+        try {
+          const props = getObjectProperties.call(this, r);
+          const d = moveOffsetDelta(props, totalDeltaH, totalDeltaV);
+          cmdH = d.deltaH; cmdV = d.deltaV;
+        } catch { /* 조회 실패 시 화면 델타 그대로 — 정렬 Left/Top 이면 동일하다 */ }
         this.executeOperation({
           kind: 'record',
           command: new CmdClass(
             r.sec, r.ppi, r.ci,
-            totalDeltaH, totalDeltaV,
+            cmdH, cmdV,
             r.origHorzOffset, r.origVertOffset,
             r.cellPath,
           ),

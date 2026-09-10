@@ -922,6 +922,9 @@ impl DocumentCore {
                 "Top" => crate::model::shape::VertAlign::Top,
                 "Center" => crate::model::shape::VertAlign::Center,
                 "Bottom" => crate::model::shape::VertAlign::Bottom,
+                // 모델에 있는 값인데 셋터가 안 받아 «조용히 무시»되던 둘 (개체 속성 대화상자가 내보낸다)
+                "Inside" => crate::model::shape::VertAlign::Inside,
+                "Outside" => crate::model::shape::VertAlign::Outside,
                 _ => pic.common.vert_align,
             };
         }
@@ -930,6 +933,8 @@ impl DocumentCore {
                 "Left" => crate::model::shape::HorzAlign::Left,
                 "Center" => crate::model::shape::HorzAlign::Center,
                 "Right" => crate::model::shape::HorzAlign::Right,
+                "Inside" => crate::model::shape::HorzAlign::Inside,
+                "Outside" => crate::model::shape::HorzAlign::Outside,
                 _ => pic.common.horz_align,
             };
         }

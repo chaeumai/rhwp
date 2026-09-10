@@ -2,7 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { MoveTableCommand, MovePictureCommand, MoveShapeCommand } from './command';
-import { getObjectProperties, setObjectProperties } from './input-handler-picture';
+import { getObjectProperties, setObjectProperties, notifyTreatAsCharBlocked } from './input-handler-picture';
+import { moveOffsetDelta } from './object-offset-axis';
 import type { CellBbox } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { BorderEdge } from './table-resize-renderer';
@@ -1547,21 +1548,27 @@ export function moveSelectedPicture(this: any, key: 'ArrowUp' | 'ArrowDown' | 'A
   if (!ref) return;
 
   const step = Math.round(this.gridStepMm * 7200 / 25.4); // mm → HWPUNIT
-  let deltaH = 0;
-  let deltaV = 0;
+  // 화면에서 옮길 양(좌상단 기준). offset 증감은 개체 정렬에 따라 달라지므로
+  // 개체별로 object-offset-axis 로 변환한다 — 안 하면 오른쪽/아래 기준 개체가 반대로 간다.
+  let dLeftHu = 0;
+  let dTopHu = 0;
   switch (key) {
-    case 'ArrowLeft':  deltaH = -step; break;
-    case 'ArrowRight': deltaH = step;  break;
-    case 'ArrowUp':    deltaV = -step; break;
-    case 'ArrowDown':  deltaV = step;  break;
+    case 'ArrowLeft':  dLeftHu = -step; break;
+    case 'ArrowRight': dLeftHu = step;  break;
+    case 'ArrowUp':    dTopHu = -step; break;
+    case 'ArrowDown':  dTopHu = step;  break;
   }
 
   // 다중 선택: 모든 선택된 개체를 동일 delta만큼 이동
   const targets = refs.length > 1 ? refs : [ref];
   try {
+    let blockedTac: any = null;
+    let movedAny = false;
     for (const r of targets) {
       const props = getObjectProperties.call(this, r);
-      if (props.treatAsChar) continue; // treat_as_char 개체는 이동 불가
+      if (props.treatAsChar) { blockedTac = blockedTac ?? r; continue; } // 문자 흐름 개체 — 아래에서 안내
+      movedAny = true;
+      const { deltaH, deltaV } = moveOffsetDelta(props, dLeftHu, dTopHu);
       const newHorzOffset = props.horzOffset + deltaH;
       const newVertOffset = props.vertOffset + deltaV;
       setObjectProperties.call(this, r, {
@@ -1572,6 +1579,11 @@ export function moveSelectedPicture(this: any, key: 'ArrowUp' | 'ArrowDown' | 'A
       this.executeOperation({ kind: 'record', command:
         new CmdClass(r.sec, r.ppi, r.ci, deltaH, deltaV, props.horzOffset, props.vertOffset, r.cellPath),
       });
+    }
+    // 하나도 못 옮겼고 막힌 이유가 「글자처럼 취급」이면 조용히 넘기지 말고 알린다.
+    if (!movedAny && blockedTac) {
+      notifyTreatAsCharBlocked.call(this, blockedTac);
+      return;
     }
     // 연결선 자동 추적
     try { this.wasm.updateConnectorsInSection(targets[0].sec); } catch { /* ignore */ }
